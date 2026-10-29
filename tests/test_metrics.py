@@ -20,11 +20,19 @@ from app.models import (
     WorkItem,
 )
 from app.outcomes import category_agreement, compute_dashboard
-from app.outcomes.metrics import deadline_label, deadline_labels, labels_from_json
+from app.outcomes.metrics import (
+    deadline_label,
+    deadline_labels,
+    is_submitted_fix,
+    labels_from_json,
+    latest_outcome,
+)
 from app.schemas import DashboardMetrics
 
 TODAY = date(2026, 10, 28)
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+PAID_ON = date(2026, 9, 1)
+PAID_LATER = date(2026, 9, 15)
 
 
 class Builder:
@@ -70,8 +78,10 @@ class Builder:
         decided=False,
         outcome=None,
         paid="0",
+        outcomes=None,
         review_seconds=None,
     ) -> WorkItem:
+        """`outcome`/`paid` add one outcome row; `outcomes` adds several as (result, paid, payment_date)."""
         self.n += 1
         claim = Claim(
             clinic_id=self.clinic.id,
@@ -109,15 +119,18 @@ class Builder:
         )
         self.session.add(work_item)
         self.session.flush()
+        rows = list(outcomes or [])
         if outcome:
+            rows.insert(0, (outcome, paid, PAID_ON))
+        for index, (result, amount, payment_date) in enumerate(rows):
             paid_rc = RemittanceClaim(
                 remittance=self.remittance,
                 claim=claim,
-                sequence=100 + self.n,
+                sequence=100 + 10 * self.n + index,
                 patient_control_number=claim.claim_control_number,
-                claim_status_code="1",
+                claim_status_code="22" if result == "reversed" else "1",
                 charge_amount=Decimal(dollars),
-                paid_amount=Decimal(paid),
+                paid_amount=Decimal(amount),
             )
             self.session.add(paid_rc)
             self.session.flush()
@@ -125,9 +138,9 @@ class Builder:
                 Outcome(
                     work_item=work_item,
                     remittance_claim=paid_rc,
-                    result=outcome,
-                    paid_amount=Decimal(paid),
-                    payment_date=date(2026, 9, 1),
+                    result=result,
+                    paid_amount=Decimal(amount),
+                    payment_date=payment_date,
                 )
             )
         if review_seconds is not None:
@@ -171,6 +184,29 @@ def dataset(session, clinic):
             category="missing_information", payer="Acme Synthetic", status="new", dollars="10.00",
             deadline=TODAY - timedelta(days=5),
         ),
+        # A reversal followed by the re-adjudication: one fix, counted once, by its latest outcome.
+        "wi9": b.item(
+            category="modifier", payer="Blue Synthetic", status="closed", dollars="80.00",
+            submitted=True, decided=True,
+            outcomes=[("reversed", "-80.00", PAID_ON), ("paid", "80.00", PAID_LATER)],
+        ),
+        # Reversed and not yet re-adjudicated: still a submitted fix, still open, nothing recovered.
+        "wi10": b.item(
+            category="eligibility", payer="Acme Synthetic", status="submitted", dollars="120.00",
+            deadline=TODAY + timedelta(days=40), submitted=True, decided=True,
+            outcomes=[("reversed", "-120.00", PAID_ON)],
+        ),
+        # Closed by the reviewer without ever being submitted: not a fix, whatever the payer did.
+        "wi11": b.item(
+            category="bundling", payer="Blue Synthetic", status="closed", dollars="40.00",
+            outcomes=[("paid", "40.00", PAID_ON)],
+        ),
+        # Two closing outcomes (a re-delivered 835, say): the latest stands, the payment is not doubled.
+        "wi12": b.item(
+            category="modifier", payer="Blue Synthetic", status="closed", dollars="90.00",
+            submitted=True, decided=True,
+            outcomes=[("paid", "90.00", PAID_ON), ("partial", "30.00", PAID_LATER)],
+        ),
     }  # fmt: skip
     session.add_all(
         [
@@ -192,21 +228,66 @@ def dataset(session, clinic):
 def test_dashboard_numbers(session, dataset):
     m = compute_dashboard(session, today=TODAY)
     assert isinstance(m, DashboardMetrics)
-    assert m.total_work_items == 8
+    assert m.total_work_items == 12
     assert m.items_by_status == {
         "new": 1, "proposed": 2, "in_review": 0, "approved": 0,
-        "rejected": 1, "exported": 0, "submitted": 1, "closed": 3,
+        "rejected": 1, "exported": 0, "submitted": 2, "closed": 6,
     }  # fmt: skip
-    assert m.dollars_at_stake == Decimal("760.00")
-    assert m.submitted_fixes == 4
-    assert (m.paid_fixes, m.partial_fixes, m.denied_again) == (1, 1, 1)
-    assert m.overturn_rate == 0.5
-    assert m.recovered_dollars == Decimal("150.00")
+    assert m.dollars_at_stake == Decimal("880.00")
+    # wi1, wi2, wi3, wi7, wi9, wi10, wi12 were marked submitted; wi11 was closed without a submission.
+    assert m.submitted_fixes == 7
+    # Per work item by its latest outcome: wi1 + wi9 paid, wi2 + wi12 partial, wi7 denied again;
+    # wi10 (reversed, pending) is in the denominator only; wi11's payment is nobody's fix.
+    assert (m.paid_fixes, m.partial_fixes, m.denied_again) == (2, 2, 1)
+    assert m.overturn_rate == round(4 / 7, 4)
+    assert m.recovered_dollars == Decimal("100.00") + Decimal("50.00") + Decimal("80.00") + Decimal("30.00")
     assert m.avg_review_minutes == 3.0
-    assert m.reviewed_items == 5
+    assert m.reviewed_items == 8
     assert (m.model_calls, m.model_input_tokens, m.model_output_tokens) == (2, 150, 30)
     assert m.audit_chain_ok is True
     assert m.generated_at.tzinfo is not None
+
+
+def test_dashboard_without_audit_verification(session, dataset):
+    m = compute_dashboard(session, today=TODAY, verify_audit=False)
+    assert m.audit_chain_ok is None and m.submitted_fixes == 7
+
+
+def test_counts_are_per_work_item_by_latest_outcome(session, dataset):
+    """Finding: one submitted item with two outcome rows counted once, as its latest outcome says."""
+    reversed_then_paid, reversed_only = dataset["wi9"], dataset["wi10"]
+    paid_then_partial, never_submitted = dataset["wi12"], dataset["wi11"]
+    assert [o.result for o in sorted(reversed_then_paid.outcomes, key=lambda o: o.id)] == ["reversed", "paid"]
+    assert latest_outcome(reversed_then_paid).result == "paid"
+    assert latest_outcome(reversed_only).result == "reversed"
+    assert latest_outcome(paid_then_partial).result == "partial"
+    assert latest_outcome(dataset["wi4"]) is None
+    assert is_submitted_fix(reversed_only) and is_submitted_fix(reversed_then_paid)
+    assert not is_submitted_fix(never_submitted) and not is_submitted_fix(dataset["wi4"])
+
+    m = compute_dashboard(session, today=TODAY)
+    modifier = next(c for c in m.by_category if c.key == "modifier")
+    assert (modifier.items, modifier.submitted, modifier.paid, modifier.partial) == (4, 4, 2, 2)
+    assert modifier.recovered_dollars == Decimal("260.00")  # 100 + 50 + 80 + 30, never 90 + 30 or 80 twice
+    bundling = next(c for c in m.by_category if c.key == "bundling")
+    assert (bundling.items, bundling.submitted, bundling.paid, bundling.recovered_dollars) == (
+        1,
+        0,
+        0,
+        Decimal("0"),
+    )
+    assert bundling.overturn_rate is None
+    assert m.overturn_rate is not None and m.overturn_rate <= 1.0
+
+
+def test_latest_outcome_orders_by_payment_date_then_record(session, dataset):
+    work_item = dataset["wi12"]
+    first, second = sorted(work_item.outcomes, key=lambda o: o.id)
+    assert (first.result, second.result) == ("paid", "partial")
+    second.payment_date = first.payment_date  # same day: the row recorded last stands
+    assert latest_outcome(work_item) is second
+    second.payment_date = None  # an undated outcome never outranks a dated one
+    assert latest_outcome(work_item) is first
 
 
 def test_by_category_and_payer(session, dataset):
@@ -217,34 +298,36 @@ def test_by_category_and_payer(session, dataset):
         "other",
         "missing_information",
         "authorization",
+        "bundling",
         "modifier",
     ]
     cats = {c.key: c for c in m.by_category}
     assert (cats["modifier"].items, cats["modifier"].dollars_at_stake, cats["modifier"].submitted) == (
-        2,
+        4,
         Decimal("0"),
-        2,
+        4,
     )
     assert (cats["modifier"].paid, cats["modifier"].partial, cats["modifier"].recovered_dollars) == (
-        1,
-        1,
-        Decimal("150.00"),
+        2,
+        2,
+        Decimal("260.00"),
     )
     assert cats["modifier"].overturn_rate == 1.0
-    assert (cats["eligibility"].items, cats["eligibility"].dollars_at_stake) == (2, Decimal("700.00"))
-    assert cats["eligibility"].submitted == 1
+    assert (cats["eligibility"].items, cats["eligibility"].dollars_at_stake) == (3, Decimal("820.00"))
+    assert cats["eligibility"].submitted == 2 and cats["eligibility"].overturn_rate == 0.0
     assert cats["authorization"].denied_again == 1 and cats["authorization"].overturn_rate == 0.0
     assert cats["other"].overturn_rate is None
 
     assert [p.key for p in m.by_payer] == ["Acme Synthetic", "Blue Synthetic"]
     payers = {p.key: p for p in m.by_payer}
-    assert (payers["Blue Synthetic"].items, payers["Blue Synthetic"].submitted) == (3, 2)
-    assert payers["Blue Synthetic"].recovered_dollars == Decimal("150.00")
+    assert (payers["Blue Synthetic"].items, payers["Blue Synthetic"].submitted) == (6, 4)
+    assert (payers["Blue Synthetic"].paid, payers["Blue Synthetic"].partial) == (2, 2)
+    assert payers["Blue Synthetic"].recovered_dollars == Decimal("260.00")
     assert (payers["Acme Synthetic"].items, payers["Acme Synthetic"].dollars_at_stake) == (
-        5,
-        Decimal("760.00"),
+        6,
+        Decimal("880.00"),
     )
-    assert payers["Acme Synthetic"].denied_again == 1
+    assert payers["Acme Synthetic"].submitted == 3 and payers["Acme Synthetic"].denied_again == 1
 
 
 def test_deadline_buckets(session, dataset, settings):
@@ -255,7 +338,7 @@ def test_deadline_buckets(session, dataset, settings):
     assert buckets["overdue"] == (1, Decimal("10.00"))
     assert buckets["<=14 days"] == (1, Decimal("300.00"))
     assert buckets["<=30 days"] == (1, Decimal("400.00"))
-    assert buckets[">30 days"] == (0, Decimal("0"))
+    assert buckets[">30 days"] == (1, Decimal("120.00"))  # the reversed, still-submitted fix is open
     assert buckets["none"] == (1, Decimal("50.00"))
 
 

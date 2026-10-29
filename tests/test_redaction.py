@@ -57,6 +57,11 @@ PAYMENT_DATE = date(2026, 4, 2)
 RECEIVED_DATE = date(2026, 3, 21)
 NOTE_DATE = date(2026, 3, 14)
 DOC_DATE = date(2026, 4, 5)
+# The payer's own spelling of the patient and member id, as the 835 NM1*QC carries them: a maiden
+# name and an alternate id the clinic's record knows nothing about.
+PAYER_FIRST = "Jonathan"
+PAYER_LAST = "Castellanos"
+PAYER_MEMBER_ID = "CAS55512345"
 
 TOKEN_SHAPE = re.compile(r"^\[\[[A-Z_]+_\d+\]\]$")
 
@@ -152,6 +157,14 @@ def build_registry() -> IdentifierRegistry:
     return IdentifierRegistry.from_context(build_context())
 
 
+def build_context_with_payer_spelling() -> DenialContext:
+    ctx = build_context()
+    ctx.remittance.patient_first_name = PAYER_FIRST
+    ctx.remittance.patient_last_name = PAYER_LAST
+    ctx.remittance.member_id = PAYER_MEMBER_ID
+    return ctx
+
+
 class CapturingClient:
     """Fake model client that records every rendered prompt and echoes the tokens it saw."""
 
@@ -233,6 +246,32 @@ def test_registry_collects_names_ids_addresses_dates_and_providers():
         assert {d.isoformat(), d.strftime("%m/%d/%Y"), d.strftime("%m%d%Y"), d.strftime("%Y%m%d")} <= dates
     assert not registry.is_empty
     assert "Jonah Pemberton" in registry and "JONAH PEMBERTON" in registry
+
+
+def test_registry_registers_the_payers_spelling_from_the_remittance():
+    """A payer letter uses the payer's spelling (835 NM1*QC); the registry must tokenize it too."""
+    registry = IdentifierRegistry.from_context(build_context_with_payer_spelling())
+    names = set(registry.values(IdentifierKind.PATIENT_NAME))
+    assert {f"{PAYER_FIRST} {PAYER_LAST}", f"{PAYER_LAST}, {PAYER_FIRST}", PAYER_FIRST, PAYER_LAST} <= names
+    assert {f"{FIRST} {LAST}", FIRST, LAST} <= names  # the clinic's record is still there
+    assert registry.values(IdentifierKind.MEMBER_ID) == [MEMBER_ID, PAYER_MEMBER_ID]
+
+    letter = (
+        f"Re: member {PAYER_MEMBER_ID}, patient {PAYER_LAST}, {PAYER_FIRST} (DOB 07/09/1981). "
+        f"Our records show {PAYER_FIRST} was not eligible on 3/14/2026."
+    )
+    redacted, redaction_map = redact(letter, registry)
+    for value in (PAYER_MEMBER_ID, PAYER_LAST, PAYER_FIRST, "07/09/1981"):
+        assert value not in redacted, value
+    assert scan(redacted, registry) == []
+    assert redaction_map.counts["PATIENT_NAME"] >= 2 and redaction_map.counts["MEMBER_ID"] == 1
+    assert restore(redacted, redaction_map) == letter
+
+    # Without the remittance spelling the payer's wording would pass straight through.
+    plain = IdentifierRegistry.from_context(build_context())
+    leaked, _ = redact(letter, plain)
+    assert PAYER_MEMBER_ID in leaked and PAYER_LAST in leaked and PAYER_FIRST in leaked
+    assert PAYER_MEMBER_ID not in plain and f"{PAYER_FIRST} {PAYER_LAST}" not in plain
 
 
 def test_registry_skips_short_values_and_case_duplicates():
@@ -426,6 +465,56 @@ def test_registry_from_patient_rows(session, clinic):
     )
     redacted, _ = redact(f"{LAST}, {FIRST} {MEMBER_ID} {CLAIM_CCN} 2026-03-14", registry)
     assert_no_registry_values(redacted, registry)
+
+
+def test_registry_from_patient_includes_remittance_spellings(session, clinic):
+    from app.models import Claim, Patient, Payer, Remittance, RemittanceClaim
+
+    payer = Payer(name="Acme Health Plan", payer_id="ACME01")
+    patient = Patient(
+        clinic_id=clinic.id,
+        token="PT-7F3A2C",
+        account_number=ACCOUNT,
+        first_name=FIRST,
+        last_name=LAST,
+        member_id=MEMBER_ID,
+    )
+    session.add_all([payer, patient])
+    session.flush()
+    claim = Claim(
+        clinic_id=clinic.id,
+        payer_id=payer.id,
+        patient_id=patient.id,
+        claim_control_number=CLAIM_CCN,
+        total_charge=Decimal("450.00"),
+    )
+    session.add(claim)
+    session.flush()
+    remittance = Remittance(payer_id=payer.id, file_name="r.835", file_sha256="0" * 64)
+    session.add(remittance)
+    session.flush()
+    rc = RemittanceClaim(
+        remittance_id=remittance.id,
+        claim_id=claim.id,
+        sequence=1,
+        patient_control_number=CLAIM_CCN,
+        claim_status_code="4",
+        patient_last_name=PAYER_LAST,
+        patient_first_name=PAYER_FIRST,
+        member_id=PAYER_MEMBER_ID,
+        payer_claim_control_number=PAYER_CCN,
+    )
+    session.add(rc)
+    session.flush()
+
+    registry = IdentifierRegistry.from_patient(patient, [claim], remittance_claims=[rc])
+    names = set(registry.values(IdentifierKind.PATIENT_NAME))
+    assert {f"{PAYER_FIRST} {PAYER_LAST}", f"{PAYER_LAST}, {PAYER_FIRST}", f"{FIRST} {LAST}"} <= names
+    assert registry.values(IdentifierKind.MEMBER_ID) == [MEMBER_ID, PAYER_MEMBER_ID]
+    assert {CLAIM_CCN, PAYER_CCN} <= set(registry.values(IdentifierKind.CLAIM_ID))
+    without = IdentifierRegistry.from_patient(patient, [claim])
+    assert without.values(IdentifierKind.MEMBER_ID) == [MEMBER_ID]
+    assert PAYER_LAST not in without.values(IdentifierKind.PATIENT_NAME)
 
 
 def test_iter_longest_first_orders_by_length():

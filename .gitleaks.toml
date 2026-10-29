@@ -6,10 +6,11 @@ title = "denial-agent"
 useDefault = true
 
 [allowlist]
-description = "Synthetic data only: generated fixtures hold fake identifiers, never credentials or real PHI; plus the obviously fake test secret key"
+description = "Synthetic data only: the generated fixture set and the parser/importer golden files hold fake identifiers, never credentials or real PHI; plus the obviously fake test secret key. tests/fixtures/llm (recorded model output) is scanned."
 paths = [
   '''^synthetic/fixtures/.*''',
-  '''^tests/fixtures/.*''',
+  '''^tests/fixtures/835/.*''',
+  '''^tests/fixtures/claims/.*''',
 ]
 regexes = [
   '''test-secret-key-not-for-production''',

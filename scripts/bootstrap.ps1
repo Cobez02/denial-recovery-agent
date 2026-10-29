@@ -45,6 +45,18 @@ if (-not (Test-Path ".env")) {
 
 New-Item -ItemType Directory -Force -Path "data" | Out-Null
 
+Write-Host "== Secret scanning hook (gitleaks through pre-commit, on every commit)"
+$PreCommit = Join-Path (Split-Path -Parent $Python) "pre-commit.exe"
+if (-not (Test-Path ".git")) {
+    Write-Host "(not a git checkout: no hook to install)"
+} elseif (Test-Path $PreCommit) {
+    & $PreCommit install
+    if ($LASTEXITCODE -ne 0) { throw "pre-commit install failed (exit $LASTEXITCODE)" }
+} else {
+    Write-Warning ("pre-commit is not installed, so commits are NOT scanned for secrets. " +
+        "Run 'uv sync' (the dev dependencies include pre-commit), then 'uv run pre-commit install'.")
+}
+
 Write-Host "== Database schema (alembic upgrade head)"
 Invoke-Agent init-db --migrate
 

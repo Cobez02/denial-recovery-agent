@@ -1,15 +1,19 @@
 """Filing and appeal deadlines for a denied claim (docs/SPEC.md section 9).
 
-Every proposal carries a deadline so the review queue can sort by it:
+Every proposal carries a deadline so the review queue can sort by it. Both windows count from the
+denial itself, not from the date of service:
 
-- corrected-claim deadline = min(service_date_from + payer.timely_filing_days,
-  remittance.payment_date + payer.corrected_claim_days) over the dates that are known. When neither
-  date is known the fall-back is remittance.claim_received_date + corrected_claim_days, then
-  today + corrected_claim_days.
-- appeal deadline = remittance.payment_date + payer.appeal_days, falling back to
-  remittance.claim_received_date, then today.
+- corrected-claim deadline = remittance.payment_date + payer.corrected_claim_days, falling back to
+  remittance.claim_received_date, then today. The payer accepts a replacement of a timely filed
+  claim within that window however long after the service the denial arrived, so a denial
+  adjudicated months after the visit is not "overdue" on the day it is received.
+- appeal deadline = remittance.payment_date + payer.appeal_days, with the same fall-backs.
 - clinic_question and no_action carry the corrected-claim deadline so the reviewer can see how much
   of the resubmission window is left.
+
+The payer's timely-filing window, counted from the first date of service (`first_service_date`),
+is not a deadline: it is the test the timely_filing playbook applies to the original submission
+date to decide between an appeal with proof of timely filing and `timely_filing_expired`.
 """
 
 from __future__ import annotations
@@ -28,24 +32,20 @@ def first_service_date(ctx: DenialContext) -> date | None:
     return min(dates) if dates else None
 
 
+def denial_date(ctx: DenialContext) -> date:
+    """The day the denial is counted from: the remittance payment date, else the date the payer
+    received the claim, else today."""
+    return ctx.remittance.payment_date or ctx.remittance.claim_received_date or ctx.today
+
+
 def corrected_claim_deadline(ctx: DenialContext) -> date:
-    """Last day a replacement claim can be filed, from the dates that are known."""
-    candidates: list[date] = []
-    dos = first_service_date(ctx)
-    if dos is not None:
-        candidates.append(dos + timedelta(days=ctx.payer.timely_filing_days))
-    if ctx.remittance.payment_date is not None:
-        candidates.append(ctx.remittance.payment_date + timedelta(days=ctx.payer.corrected_claim_days))
-    if candidates:
-        return min(candidates)
-    base = ctx.remittance.claim_received_date or ctx.today
-    return base + timedelta(days=ctx.payer.corrected_claim_days)
+    """Last day a replacement claim can be filed: payer.corrected_claim_days after the denial."""
+    return denial_date(ctx) + timedelta(days=ctx.payer.corrected_claim_days)
 
 
 def appeal_deadline(ctx: DenialContext) -> date:
-    """Last day a formal appeal can be filed: payer.appeal_days after the remittance."""
-    base = ctx.remittance.payment_date or ctx.remittance.claim_received_date or ctx.today
-    return base + timedelta(days=ctx.payer.appeal_days)
+    """Last day a formal appeal can be filed: payer.appeal_days after the denial."""
+    return denial_date(ctx) + timedelta(days=ctx.payer.appeal_days)
 
 
 def deadline_for(action_type: ActionType | str, ctx: DenialContext) -> tuple[date, DeadlineKind]:
@@ -62,4 +62,11 @@ def days_until(deadline: date | None, today: date) -> int | None:
     return (deadline - today).days
 
 
-__all__ = ["appeal_deadline", "corrected_claim_deadline", "days_until", "deadline_for", "first_service_date"]
+__all__ = [
+    "appeal_deadline",
+    "corrected_claim_deadline",
+    "days_until",
+    "deadline_for",
+    "denial_date",
+    "first_service_date",
+]

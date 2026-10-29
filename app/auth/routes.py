@@ -99,7 +99,7 @@ def mfa_submit(
         _clear_login(request)
         flash(request, "Please log in again.", "error")
         return _redirect("/login")
-    if not service.verify_totp(user, code):
+    if not service.verify_totp(user, code, session=session):
         service.record_mfa_failure(session, user)
         session.commit()
         if service.is_locked(user):

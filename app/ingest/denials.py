@@ -3,8 +3,12 @@
 A remittance claim is a denial when CLP02 is ``4`` (denied) or when any CAS adjustment in group
 CO/PI/OA/PR carries a CARC that is not purely informational and a positive amount. Informational
 CARCs (contractual write-offs, patient responsibility splits, interest ...) never make a denial on
-their own. Reasons are returned largest amount first; on ties claim-level reasons come before
-line-level ones, then lower line numbers first.
+their own, and neither do PR-group adjustments that assign a non-covered or plan-limited service to
+the patient (``PATIENT_RESPONSIBILITY_CARCS``): the patient owes those amounts and the clinic has
+nothing to fix, so no work item is created for them alone. They still count as reasons (and in the
+denied amount) when the claim is a denial for another reason or carries CLP02 ``4``. Reasons are
+returned largest amount first; on ties claim-level reasons come before line-level ones, then lower
+line numbers first.
 """
 
 from __future__ import annotations
@@ -22,6 +26,11 @@ INFORMATIONAL_CARCS: frozenset[str] = frozenset(
 )
 DENIAL_GROUPS: frozenset[str] = frozenset({"CO", "PI", "OA", "PR"})
 DENIED_CLAIM_STATUS = "4"
+# CARCs that, in group PR, assign a non-covered or plan-limited service to the patient. They mirror
+# the ``patient_responsibility_noncovered_pr`` rule in app/classify/rules.yaml: never a denial on
+# their own (the cost-share codes 1, 2, 3 and 66 are informational already).
+PATIENT_RESPONSIBILITY_CARCS: frozenset[str] = frozenset({"96", "204", "49", "119"})
+PATIENT_RESPONSIBILITY_GROUP = "PR"
 
 _ZERO = Decimal("0")
 
@@ -51,6 +60,23 @@ def is_denial_adjustment(
     if str(carc).strip() in INFORMATIONAL_CARCS:
         return False
     return Decimal(amount or 0) > _ZERO
+
+
+def is_patient_responsibility_adjustment(group_code: str | None, carc: str | None) -> bool:
+    """True for a PR-group adjustment whose CARC assigns the amount to the patient (no clinic action)."""
+    if not group_code or not carc:
+        return False
+    return (
+        str(group_code).strip().upper() == PATIENT_RESPONSIBILITY_GROUP
+        and str(carc).strip() in PATIENT_RESPONSIBILITY_CARCS
+    )
+
+
+def _is_denied(status_code: str | None, denial_adjustments: Iterable[AdjustmentInput]) -> bool:
+    """CLP02 ``4``, or at least one denial adjustment that is not the patient's own share."""
+    if (status_code or "").strip() == DENIED_CLAIM_STATUS:
+        return True
+    return any(not is_patient_responsibility_adjustment(a.group_code, a.carc) for a in denial_adjustments)
 
 
 def _sort_key(level: str, amount: Decimal, line_number: int | None) -> tuple[Decimal, int, int]:
@@ -120,18 +146,21 @@ def detect(rc: ClaimFacts, adjustments: Iterable[Any]) -> tuple[bool, Decimal, l
     (what the importer builds from a parsed CLP), stored ``Adjustment`` rows
     (``detect(rc, rc.adjustments)``) or claim-level parsed adjustments. ``denied_amount`` is the sum
     of the denial adjustments; a claim denied outright (CLP02 ``4``) that carries no denial
-    adjustment at all is denied for its full charge.
+    adjustment at all is denied for its full charge. A claim whose only denial adjustments are
+    PR-group patient-responsibility CARCs (and whose CLP02 is not ``4``) is not a denial at all:
+    ``(False, 0, [])``.
     """
     claim_rarcs = [str(code) for code in (getattr(rc, "remark_codes", None) or [])]
     inputs = [_coerce(item, claim_rarcs) for item in adjustments]
     denial_adjustments = [a for a in inputs if is_denial_adjustment(a.group_code, a.carc, a.amount)]
-    status = (rc.claim_status_code or "").strip()
-    is_denial = status == DENIED_CLAIM_STATUS or bool(denial_adjustments)
+    is_denial = _is_denied(rc.claim_status_code, denial_adjustments)
+    if not is_denial:
+        return False, _ZERO, []
     denied_amount = sum((Decimal(a.amount) for a in denial_adjustments), _ZERO)
-    if is_denial and not denial_adjustments:
+    if not denial_adjustments:
         denied_amount = Decimal(rc.charge_amount or 0)
     ordered = sorted(denial_adjustments, key=lambda a: _sort_key(a.level, a.amount, a.line_number))
-    return is_denial, denied_amount, [_reason(a) for a in ordered]
+    return True, denied_amount, [_reason(a) for a in ordered]
 
 
 def adjustment_inputs_for(rc: RemittanceClaim, *, denials_only: bool = False) -> list[AdjustmentInput]:
@@ -165,6 +194,8 @@ def denial_reasons_for(rc: RemittanceClaim) -> list[DenialReason]:
     them from the code catalog.
     """
     inputs = adjustment_inputs_for(rc, denials_only=True)
+    if not _is_denied(rc.claim_status_code, inputs):
+        return []  # the patient's own share only: not a denial, nothing to classify
     ordered = sorted(inputs, key=lambda a: _sort_key(a.level, a.amount, a.line_number))
     return [_reason(a) for a in ordered]
 
@@ -173,10 +204,12 @@ __all__ = [
     "DENIAL_GROUPS",
     "DENIED_CLAIM_STATUS",
     "INFORMATIONAL_CARCS",
+    "PATIENT_RESPONSIBILITY_CARCS",
     "AdjustmentInput",
     "adjustment_inputs_for",
     "denial_reasons_for",
     "detect",
     "detect_for",
     "is_denial_adjustment",
+    "is_patient_responsibility_adjustment",
 ]

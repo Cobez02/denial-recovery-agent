@@ -9,7 +9,14 @@ from __future__ import annotations
 
 from app.drafting.corrected_claim import build_corrected_claim
 from app.enums import ActionType, DenialCategory
-from app.playbooks.base import FLAG_NO_NOTES, Playbook, dedupe_citations, latest_note, split_sentences
+from app.playbooks.base import (
+    FLAG_NO_NOTES,
+    Playbook,
+    dedupe_citations,
+    latest_note,
+    split_sentences,
+    usable_notes,
+)
 from app.playbooks.medical_necessity import MedicalNecessityPlaybook
 from app.schemas import ClassificationResult, CorrectedClaimChange, DenialContext, ProposalDraft
 
@@ -76,7 +83,7 @@ class AuthorizationPlaybook(Playbook):
                 confidence=0.75,
             )
 
-        if not ctx.notes:
+        if not usable_notes(ctx):  # a note flagged for planted instructions counts as absent
             question = (
                 f"Claim {ctx.claim.claim_control_number} (DOS {self.dos_label(ctx)}) was denied for missing authorization "
                 f"({self.reasons_summary(ctx)}) and the record has no authorization number or note excerpt. Please confirm "
@@ -100,7 +107,7 @@ class AuthorizationPlaybook(Playbook):
         confidence = 0.65
         if not support:
             latest = latest_note(ctx)
-            assert latest is not None  # ctx.notes is non-empty here
+            assert latest is not None  # usable_notes(ctx) is non-empty here
             support = [(latest, sentence) for sentence in split_sentences(latest.text)[:2]]
             flags.append(FLAG_WEAK_NOTE_SUPPORT)
             confidence = 0.45

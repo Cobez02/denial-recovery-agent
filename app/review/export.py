@@ -141,6 +141,19 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
         "coding_change": bool(proposal.coding_change),
         "requires_note_excerpt": bool(proposal.requires_note_excerpt),
         "note_excerpt_attached": service.has_note_excerpt(work_item),
+        # The excerpts the reviewer attached, with their provenance: source "reviewer" means the
+        # text was typed on the item page (it may quote a chart the system never saw).
+        "note_excerpts": [
+            {
+                "note_id": note.id,
+                "source": note.source,
+                "author": note.author,
+                "note_date": note.note_date,
+                "typed_by_reviewer": str(note.source or "") == service.NOTE_SOURCE_REVIEWER,
+                "text": note.text,
+            }
+            for note in service.attached_notes(session, work_item)
+        ],
         "proposal_id": proposal.id,
         "proposal_version": proposal.version,
         "generated_by": proposal.generated_by,

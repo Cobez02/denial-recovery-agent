@@ -1,5 +1,9 @@
 <div id="queue-table">
-<p class="muted">{{ rows|length }} item(s). Sorted by deadline (soonest first, none last), then dollars, then confidence.</p>
+<p class="muted showing">
+  {% if listing.total %}Showing {{ listing.start }}-{{ listing.end }} of {{ listing.total }} item(s){% else %}0 item(s){% endif %}
+  {% if listing.pages > 1 %}· page {{ listing.page }} of {{ listing.pages }}{% endif %}.
+  Sorted by deadline (soonest first, none last), then dollars, then confidence.
+</p>
 <table class="table queue">
   <thead>
     <tr>
@@ -42,4 +46,11 @@
     {% endfor %}
   </tbody>
 </table>
+{% if listing.pages > 1 %}
+<p class="pager">
+  {% if prev_url %}<a rel="prev" href="{{ prev_url }}">Previous {{ listing.per_page }}</a>{% endif %}
+  <span class="muted">Page {{ listing.page }} of {{ listing.pages }}</span>
+  {% if next_url %}<a rel="next" href="{{ next_url }}">Next {{ listing.per_page }}</a>{% endif %}
+</p>
+{% endif %}
 </div>

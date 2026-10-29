@@ -33,6 +33,7 @@ from app.playbooks.base import (
     dedupe_citations,
     keyword_pattern,
     split_sentences,
+    usable_notes,
 )
 from app.schemas import (
     Citation,
@@ -349,7 +350,9 @@ def _format_mods(mods: list[str]) -> str:
 
 def notes_mention_any(ctx: DenialContext, keywords: list[str]) -> bool:
     patterns = [keyword_pattern(k) for k in keywords if k]
-    return any(p.search(s) for note in ctx.notes for s in split_sentences(note.text) for p in patterns)
+    return any(
+        p.search(s) for note in usable_notes(ctx) for s in split_sentences(note.text) for p in patterns
+    )
 
 
 __all__ = ["ModifierFix", "ModifierPlaybook", "load_modifier_rules", "notes_mention_any", "RULES_PATH"]

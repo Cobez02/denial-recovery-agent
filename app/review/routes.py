@@ -4,6 +4,13 @@ Every route depends on ``require_user``; every POST also on ``csrf_protect``. Ac
 service, commit, then answer with the refreshed item panel (HTMX) or a redirect to the item page.
 A ``ValueError`` from the service is a refused action: the page is re-rendered with the message and
 status 400, never a 500, and nothing is committed.
+
+The upload routes declare no ``File`` parameter on purpose: FastAPI would parse (and spool) the
+multipart body before any dependency runs. They depend on ``require_user`` alone and let
+``_handle_upload`` run the next two checks in order: a declared Content-Length no upload could fit
+in is refused first, and only then does ``csrf_protect`` run, because the imports page's plain forms
+carry the token in the multipart body and reading it parses the whole upload. An anonymous request
+is turned away before a byte of the upload is parsed, an oversized one before the body is read.
 """
 
 from __future__ import annotations
@@ -16,11 +23,13 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import distinct, exists, func, select
 from sqlalchemy.orm import Session, selectinload
+from starlette.datastructures import UploadFile
 
 from app import audit
 from app.auth.deps import HX_HEADER, CurrentUser, csrf_protect, require_user
@@ -42,6 +51,9 @@ router = APIRouter(tags=["review"])
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 UPLOAD_CHUNK = 1024 * 1024
+# A multipart body may exceed the file limit by its boundaries, headers and the CSRF field; a
+# declared Content-Length beyond this is refused before the body is parsed.
+UPLOAD_ENVELOPE_BYTES = 64 * 1024
 AUDIT_PAGE_SIZE = 100
 BATCH_LIST_LIMIT = 100
 UNMATCHED_LIST_LIMIT = 200
@@ -59,6 +71,12 @@ PROCESS_TASK = "app.jobs.tasks.process_pending"
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 ActionFn = Callable[[WorkItem], Any]
+
+# Order matters: the login check runs before the CSRF check parses the form body.
+PROTECTED_POST = [Depends(require_user), Depends(csrf_protect)]
+# Upload routes: ``_handle_upload`` refuses a declared oversize body and then calls ``csrf_protect``
+# itself (see the module docstring); only the login check is a dependency here.
+UPLOAD_POST = [Depends(require_user)]
 
 
 # --------------------------------------------------------------------------------------
@@ -167,6 +185,14 @@ def home() -> Response:
     return _redirect(QUEUE_PATH)
 
 
+def _queue_url(filters: dict[str, Any], per_page: int, page: int) -> str:
+    """A queue URL carrying the filters, the page size and the page (for the pager links)."""
+    params = {key: value for key, value in filters.items() if value not in (None, "", "default")}
+    params["per_page"] = per_page
+    params["page"] = page
+    return f"{QUEUE_PATH}?{urlencode(params)}"
+
+
 @router.get("/queue")
 def queue_page(
     request: Request,
@@ -175,6 +201,8 @@ def queue_page(
     payer_id: str | None = None,
     flagged: str | None = None,
     sort: str | None = None,
+    page: str | None = None,
+    per_page: str | None = None,
     user: CurrentUser = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
@@ -185,13 +213,16 @@ def queue_page(
         "flagged": _blank(flagged),
         "sort": _blank(sort) or "default",
     }
-    items = service.queue(
+    size = service.clamp_per_page(_parse_int(per_page))
+    listing = service.queue_page(
         session,
         status=filters["status"],
         category=filters["category"],
         payer_id=filters["payer_id"],
         flagged=_parse_flag(filters["flagged"]),
         sort=filters["sort"],
+        page=_parse_int(page) or 1,
+        per_page=size,
     )
     today = today_utc()
     rows = [
@@ -202,10 +233,13 @@ def queue_page(
             "proposal": wi.current_proposal,
             "patient_name": _patient_name(wi),
         }
-        for wi in items
+        for wi in listing.items
     ]
     context = {
         "rows": rows,
+        "listing": listing,
+        "prev_url": _queue_url(filters, listing.per_page, listing.page - 1) if listing.has_previous else None,
+        "next_url": _queue_url(filters, listing.per_page, listing.page + 1) if listing.has_next else None,
         "filters": filters,
         "counts": service.status_counts(session),
         "payers": list(session.execute(select(Payer).order_by(Payer.name)).scalars()),
@@ -231,7 +265,7 @@ def item_page(
     return _render_item(request, session, item_id, partial=_is_hx(request))
 
 
-@router.post("/items/{item_id}/approve", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/approve", dependencies=PROTECTED_POST)
 def approve_item(
     item_id: int,
     request: Request,
@@ -248,7 +282,7 @@ def approve_item(
     )
 
 
-@router.post("/items/{item_id}/edit", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/edit", dependencies=PROTECTED_POST)
 async def edit_item(
     item_id: int,
     request: Request,
@@ -272,7 +306,7 @@ async def edit_item(
     )
 
 
-@router.post("/items/{item_id}/reject", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/reject", dependencies=PROTECTED_POST)
 def reject_item(
     item_id: int,
     request: Request,
@@ -283,7 +317,7 @@ def reject_item(
     return _run_action(request, session, item_id, lambda wi: service.reject(session, wi, user, reason=reason))
 
 
-@router.post("/items/{item_id}/mark-submitted", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/mark-submitted", dependencies=PROTECTED_POST)
 def mark_submitted_item(
     item_id: int,
     request: Request,
@@ -304,7 +338,7 @@ def mark_submitted_item(
     return _run_action(request, session, item_id, fn)
 
 
-@router.post("/items/{item_id}/reopen", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/reopen", dependencies=PROTECTED_POST)
 def reopen_item(
     item_id: int,
     request: Request,
@@ -315,7 +349,7 @@ def reopen_item(
     return _run_action(request, session, item_id, lambda wi: service.reopen(session, wi, user, reason=reason))
 
 
-@router.post("/items/{item_id}/close", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/close", dependencies=PROTECTED_POST)
 def close_item(
     item_id: int,
     request: Request,
@@ -326,7 +360,7 @@ def close_item(
     return _run_action(request, session, item_id, lambda wi: service.close(session, wi, user, reason=reason))
 
 
-@router.post("/items/{item_id}/attach-note", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/attach-note", dependencies=PROTECTED_POST)
 def attach_note_item(
     item_id: int,
     request: Request,
@@ -339,7 +373,7 @@ def attach_note_item(
     )
 
 
-@router.post("/items/{item_id}/regenerate", dependencies=[Depends(csrf_protect)])
+@router.post("/items/{item_id}/regenerate", dependencies=PROTECTED_POST)
 def regenerate_item(
     item_id: int,
     request: Request,
@@ -440,6 +474,9 @@ def _job_view(handle: JobHandle, *, kind: str, file_name: str | None) -> dict[st
         "pipeline_error": result.get("pipeline_error"),
         "work_items_created": result.get("work_items_created"),
         "work_item_ids": list(result.get("work_item_ids") or [])[:50],
+        # A `partial` run skipped these denials (rolled back to their savepoints); ids only.
+        "pipeline_failures": result.get("pipeline_failures"),
+        "failed_remittance_claim_ids": list(result.get("failed_remittance_claim_ids") or [])[:50],
     }
 
 
@@ -454,6 +491,8 @@ def _job_details(job: dict[str, Any]) -> dict[str, Any]:
         "pipeline": job["pipeline"],
         "pipeline_error": job["pipeline_error"],
         "work_items_created": job["work_items_created"],
+        "pipeline_failures": job["pipeline_failures"],
+        "failed_remittance_claim_ids": job["failed_remittance_claim_ids"],
     }
 
 
@@ -488,20 +527,42 @@ async def _store_upload(file: UploadFile, kind: str, original_name: str) -> tupl
     return path, sha, len(data)
 
 
-async def _handle_upload(
-    request: Request, session: Session, user: CurrentUser, kind: str, file: UploadFile
-) -> Response:
+def _declared_too_large(request: Request) -> bool:
+    """True when the request announces a body no upload could fit in (refused before parsing)."""
+    declared = (request.headers.get("content-length") or "").strip()
+    return declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES + UPLOAD_ENVELOPE_BYTES
+
+
+async def _uploaded_file(request: Request) -> UploadFile:
+    """The ``file`` part of the multipart form, read only now that the size, login and CSRF checks passed."""
+    form = await request.form()
+    upload = form.get("file")
+    if not isinstance(upload, UploadFile):
+        raise ValueError("file_required")
+    return upload
+
+
+async def _handle_upload(request: Request, session: Session, user: CurrentUser, kind: str) -> Response:
+    # A body no upload could fit in is refused before anything reads it; the CSRF check comes next
+    # because it parses the multipart form for the token (the imports page posts plain forms).
+    if _declared_too_large(request):
+        return render(
+            request, "pages/imports.html", _imports_context(session, error="file_too_large"), status_code=413
+        )
+    await csrf_protect(request)
     task_path, extension = IMPORT_TASKS[kind]
-    original_name = _safe_file_name(file.filename, extension)
     actor = actor_for(user)
+    file: UploadFile | None = None
     try:
-        path, sha, size = await _store_upload(file, kind, original_name)
         clinic_id: int | None = None
-        if kind != "835":
+        if kind != "835":  # resolved before the body is stored: no file lands on disk for nothing
             clinic = _resolve_clinic(session)
             if clinic is None:
                 raise ValueError("no_clinic")
             clinic_id = clinic.id
+        file = await _uploaded_file(request)
+        original_name = _safe_file_name(file.filename, extension)
+        path, sha, size = await _store_upload(file, kind, original_name)
     except ValueError as exc:
         code = str(exc)
         status_code = 413 if code == "file_too_large" else 400
@@ -509,7 +570,8 @@ async def _handle_upload(
             request, "pages/imports.html", _imports_context(session, error=code), status_code=status_code
         )
     finally:
-        await file.close()
+        if file is not None:
+            await file.close()
 
     audit.record(
         session,
@@ -547,47 +609,43 @@ def imports_page(
     return render(request, "pages/imports.html", _imports_context(session))
 
 
-@router.post("/imports/835", dependencies=[Depends(csrf_protect)])
+@router.post("/imports/835", dependencies=UPLOAD_POST)
 async def import_835(
     request: Request,
-    file: UploadFile = File(...),
     user: CurrentUser = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    return await _handle_upload(request, session, user, "835", file)
+    return await _handle_upload(request, session, user, "835")
 
 
-@router.post("/imports/claims", dependencies=[Depends(csrf_protect)])
+@router.post("/imports/claims", dependencies=UPLOAD_POST)
 async def import_claims(
     request: Request,
-    file: UploadFile = File(...),
     user: CurrentUser = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    return await _handle_upload(request, session, user, "claims", file)
+    return await _handle_upload(request, session, user, "claims")
 
 
-@router.post("/imports/notes", dependencies=[Depends(csrf_protect)])
+@router.post("/imports/notes", dependencies=UPLOAD_POST)
 async def import_notes(
     request: Request,
-    file: UploadFile = File(...),
     user: CurrentUser = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    return await _handle_upload(request, session, user, "notes", file)
+    return await _handle_upload(request, session, user, "notes")
 
 
-@router.post("/imports/documents", dependencies=[Depends(csrf_protect)])
+@router.post("/imports/documents", dependencies=UPLOAD_POST)
 async def import_documents(
     request: Request,
-    file: UploadFile = File(...),
     user: CurrentUser = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    return await _handle_upload(request, session, user, "documents", file)
+    return await _handle_upload(request, session, user, "documents")
 
 
-@router.post("/imports/process", dependencies=[Depends(csrf_protect)])
+@router.post("/imports/process", dependencies=PROTECTED_POST)
 def process_pending(
     request: Request,
     user: CurrentUser = Depends(require_user),
@@ -609,7 +667,7 @@ def process_pending(
     return render(request, "pages/imports.html", _imports_context(session, job=job))
 
 
-@router.post("/imports/rematch", dependencies=[Depends(csrf_protect)])
+@router.post("/imports/rematch", dependencies=PROTECTED_POST)
 def rematch(
     request: Request,
     user: CurrentUser = Depends(require_user),
@@ -642,7 +700,10 @@ def dashboard(
     user: CurrentUser = Depends(require_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    return render(request, "pages/dashboard.html", {"m": compute_dashboard(session)})
+    # The dashboard never walks the audit chain (a full re-hash of every row); it links to the
+    # audit page, which verifies it in full on every request.
+    metrics = compute_dashboard(session, verify_audit=False)
+    return render(request, "pages/dashboard.html", {"m": metrics})
 
 
 @router.get("/audit")

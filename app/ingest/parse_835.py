@@ -6,7 +6,9 @@ One ``Parsed835`` per ST/SE transaction set. Mapping, in file order:
 * BPR01/02/03/04/16 and TRN02/03 -> ``payment``; DTM*405 -> production date
 * N1*PR (+ N3, N4, REF*2U, PER) -> ``payer``; N1*PE (+ N3, N4, REF*TJ) -> ``payee``
 * CLP -> one ``ParsedClaimPayment``; claim-level CAS, NM1*QC/IL/82, DTM*050/232/233, AMT*AU,
-  other REF qualifiers into ``references``; LQ*HE before the first SVC -> claim remark codes
+  other REF qualifiers into ``references``; LQ*HE before the first SVC -> claim remark codes.
+  ``member_id`` is NM1*QC's NM109 under any identification qualifier a payer uses for a member
+  (``MEMBER_ID_QUALIFIERS``: MI, MR Medicaid, HN Medicare HICN, II, 34), else NM1*IL's NM109
 * MOA03-07 / MIA05,20-23 (where 5010 carries claim-level remark codes) -> claim remark codes,
   after any LQ*HE seen before the first SVC; the other MOA/MIA amounts are not modelled
 * SVC -> one ``ParsedServicePayment``; DTM*472 (or DTM*150/151), line CAS, REF*6R, AMT*B6, LQ*HE
@@ -55,6 +57,9 @@ _PLB_PAIR_STARTS = (3, 5, 7, 9, 11, 13)
 # MIA05 and MIA20-23); the remaining MOA/MIA elements are amounts and indicators not modelled here.
 _MOA_REMARK_INDEXES = (3, 4, 5, 6, 7)
 _MIA_REMARK_INDEXES = (5, 20, 21, 22, 23)
+# NM108 qualifiers under which NM109 identifies the member: MI member id, MR Medicaid recipient id,
+# HN Medicare HICN, II standard unique health identifier, 34 social security number.
+MEMBER_ID_QUALIFIERS: frozenset[str] = frozenset({"MI", "MR", "HN", "II", "34"})
 
 
 def _decimal(segment: Segment, index: int, default: Decimal | None) -> Decimal | None:
@@ -334,18 +339,27 @@ class _TransactionBuilder:
         if entity == "QC":
             self.claim.patient_last_name = seg.element(3)
             self.claim.patient_first_name = seg.element(4)
-            if seg.element(8) == "MI":
-                self.claim.member_id = seg.element(9)
+            if self._member_identifier(seg) is not None:
+                self.claim.member_id = self._member_identifier(seg)
             return True
         if entity == "IL":
             self.claim.insured_last_name = seg.element(3)
             self.claim.insured_first_name = seg.element(4)
+            if self.claim.member_id is None:  # a dependent's claim may carry the id on the subscriber only
+                self.claim.member_id = self._member_identifier(seg)
             return True
         if entity == "82":
             if seg.element(8) == "XX":
                 self.claim.rendering_provider_npi = seg.element(9)
             return True
         return False
+
+    @staticmethod
+    def _member_identifier(seg: Segment) -> str | None:
+        """NM109 when NM108 is a member-id qualifier (``MEMBER_ID_QUALIFIERS``)."""
+        if seg.element(8) in MEMBER_ID_QUALIFIERS:
+            return seg.element(9)
+        return None
 
     def _amt(self, seg: Segment) -> bool:
         qualifier = seg.element(1)
@@ -452,4 +466,4 @@ def parse_835(text: str) -> list[Parsed835]:
     return results
 
 
-__all__ = ["parse_835", "parse_cas", "parse_plb"]
+__all__ = ["MEMBER_ID_QUALIFIERS", "parse_835", "parse_cas", "parse_plb"]

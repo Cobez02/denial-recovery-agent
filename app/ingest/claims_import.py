@@ -2,9 +2,14 @@
 
 ``import_claims_csv`` upserts payers (by payer_id), patients (by clinic + account number) and
 claims with their lines (by clinic + claim control number; lines replaced by line number, never
-duplicated). ``import_notes_csv`` and ``import_payer_documents_csv`` attach note excerpts and payer
-documents to existing claims; payer documents are untrusted and are scanned for planted
-instructions on the way in.
+duplicated; a line the re-export no longer carries is dropped, and the remittance lines of an
+updated claim are re-linked so a renumbered or trimmed export never leaves one pointing at the
+wrong procedure). Payer windows (timely filing, corrected claim, appeal days) are set from the
+settings defaults when a payer is first seen and never overwritten by a later import: an operator
+sets them with ``app.ingest.payers.set_payer_windows``. ``import_notes_csv`` and
+``import_payer_documents_csv`` attach note excerpts and payer documents to existing claims; both
+are untrusted text and every row is scanned for planted instructions on the way in
+(``flagged_injection`` / ``injection_findings`` on the stored row, ``flagged`` in the counts).
 
 Every importer: hashes the whole file (a re-import is a ``duplicate`` batch and changes nothing;
 a notes or documents file whose earlier import skipped rows for claims not yet known may be
@@ -41,7 +46,7 @@ from app.ingest import (
     read_source,
     sha256_hex,
 )
-from app.ingest.remit_import import rematch_unmatched
+from app.ingest.remit_import import relink_remittance_lines, rematch_unmatched
 from app.models import (
     Claim,
     ClaimLine,
@@ -52,6 +57,7 @@ from app.models import (
     PayerDocument,
     RemittanceLine,
 )
+from app.redact.injection import detect_injection
 from app.schemas import CLAIM_EXPORT_COLUMNS, ClaimExportRow, NoteRow, PayerDocumentRow
 
 log = logging.getLogger(__name__)
@@ -67,6 +73,7 @@ CLAIM_COUNT_KEYS: tuple[str, ...] = (
     "payers_created",
     "warnings",
     "remittance_claims_matched",
+    "remittance_lines_relinked",
 )
 
 _TOKEN_LENGTHS = (6, 8, 10, 12, 16, 24, 32)
@@ -287,11 +294,16 @@ def _find_claim(
     return claim
 
 
-def _line_is_referenced(session: Session, line: ClaimLine) -> bool:
+def _unlink_remittance_lines(session: Session, line: ClaimLine) -> int:
+    """Detach every remittance line that points at ``line`` so the line can be dropped; returns how many."""
     if line.id is None:
-        return False
-    stmt = select(RemittanceLine.id).where(RemittanceLine.claim_line_id == line.id).limit(1)
-    return session.execute(stmt).first() is not None
+        return 0
+    stmt = select(RemittanceLine).where(RemittanceLine.claim_line_id == line.id)
+    remittance_lines = list(session.execute(stmt).scalars())
+    for remittance_line in remittance_lines:
+        remittance_line.claim_line = None
+        remittance_line.claim_line_id = None
+    return len(remittance_lines)
 
 
 def _apply_line(line: ClaimLine, row: ClaimExportRow) -> None:
@@ -362,13 +374,19 @@ def _upsert_claim(
         _apply_line(line, row)
         file_line_numbers.add(row.line_number)
         counts["lines"] += 1
+    dropped_referenced = 0
     for line_number, line in existing_lines.items():
         if line_number in file_line_numbers:
             continue
-        if _line_is_referenced(session, line):
-            counts["warnings"] += 1  # a remittance already points at this line; keep it
-        else:
-            claim.lines.remove(line)
+        # The export is the record of the claim: a line it no longer carries goes, even when a
+        # remittance already adjudicated it (that remittance line is detached first, then re-linked
+        # below to whichever line now carries its procedure, or left unlinked).
+        if _unlink_remittance_lines(session, line):
+            dropped_referenced += 1
+            counts["warnings"] += 1
+        claim.lines.remove(line)
+    if dropped_referenced:
+        session.flush()  # detach before the orphaned lines are deleted
 
     service_dates: list[date] = [row.service_date for row in group]
     claim.service_date_from = min(service_dates)
@@ -382,6 +400,9 @@ def _upsert_claim(
     claim.total_charge = line_total
 
     session.flush()
+    if not created:
+        # Lines may have been renumbered, re-ordered or trimmed: remittance lines follow procedures.
+        counts["remittance_lines_relinked"] += relink_remittance_lines(session, claim)
     claims_cache[control_number] = claim
     counts["claims_created" if created else "claims_updated"] += 1
     return claim
@@ -454,10 +475,22 @@ def import_claims_csv(
     return complete_batch(session, batch, status=ImportStatus.DONE, counts=counts, created_by=created_by)
 
 
+def _finding_dict(finding: Any) -> dict[str, Any]:
+    if hasattr(finding, "model_dump"):
+        return finding.model_dump(mode="json")
+    return dict(finding)
+
+
 def import_notes_csv(
     session: Session, source: str | Path, clinic_id: int, created_by: str = "system"
 ) -> ImportBatch:
-    """Attach quoted note excerpts to existing claims. Rows for unknown claims are counted as skipped."""
+    """Attach quoted note excerpts to existing claims, scanning each for planted instructions.
+
+    Notes are untrusted text like payer letters: a row with findings is stored with
+    ``flagged_injection=True`` (counted under ``flagged``) so the pipeline, the drafter and the review
+    page treat it as data to warn about, never as a sentence to quote. Rows for unknown claims are
+    counted as skipped.
+    """
     kind = str(ImportKind.NOTES)
     src = read_source(source, default_name="notes.csv")
     sha = sha256_hex(src.raw)
@@ -476,7 +509,7 @@ def import_notes_csv(
             error=_invalid_error(errors),
         )
 
-    counts: dict[str, int] = {"rows": total, "notes": 0, "skipped": 0, "duplicates": 0}
+    counts: dict[str, int] = {"rows": total, "notes": 0, "skipped": 0, "duplicates": 0, "flagged": 0}
     claims: dict[str, Claim] = {}
     for _, row in rows:
         claim = _find_claim(session, claims, clinic_id, row.claim_control_number)
@@ -489,8 +522,18 @@ def import_notes_csv(
         ):
             counts["duplicates"] += 1
             continue
+        findings = detect_injection(row.text)
+        if findings:
+            counts["flagged"] += 1
         claim.notes.append(
-            NoteExcerpt(note_date=row.note_date, author=author, text=row.text, source=src.name[:100])
+            NoteExcerpt(
+                note_date=row.note_date,
+                author=author,
+                text=row.text,
+                source=src.name[:100],
+                flagged_injection=bool(findings),
+                injection_findings=[_finding_dict(f) for f in findings],
+            )
         )
         counts["notes"] += 1
     session.flush()
@@ -500,12 +543,6 @@ def import_notes_csv(
 def _normalize_document_type(value: str | None) -> str:
     candidate = (value or "").strip().lower()
     return candidate if candidate in _DOCUMENT_TYPES else str(DocumentType.OTHER)
-
-
-def _finding_dict(finding: Any) -> dict[str, Any]:
-    if hasattr(finding, "model_dump"):
-        return finding.model_dump(mode="json")
-    return dict(finding)
 
 
 def import_payer_documents_csv(
@@ -531,13 +568,6 @@ def import_payer_documents_csv(
         )
 
     counts: dict[str, int] = {"rows": total, "documents": 0, "skipped": 0, "duplicates": 0, "flagged": 0}
-    try:
-        from app.redact.injection import detect_injection
-    except ImportError:  # the scanner is built separately; documents are stored unscanned until it exists
-        detect_injection = None
-        counts["injection_scan_unavailable"] = 1
-        log.warning("injection scanner unavailable; payer documents in batch %s stored unscanned", batch.id)
-
     claims: dict[str, Claim] = {}
     for _, row in rows:
         claim = _find_claim(session, claims, clinic_id, row.claim_control_number)
@@ -551,7 +581,7 @@ def import_payer_documents_csv(
         ):
             counts["duplicates"] += 1
             continue
-        findings = list(detect_injection(row.text)) if detect_injection is not None else []
+        findings = detect_injection(row.text)
         if findings:
             counts["flagged"] += 1
         claim.documents.append(

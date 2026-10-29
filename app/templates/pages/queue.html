@@ -52,6 +52,7 @@
       {% endfor %}
     </select>
   </label>
+  <input type="hidden" name="per_page" value="{{ listing.per_page }}">
   <noscript><button type="submit">Apply</button></noscript>
 </form>
 {% include "partials/queue_table.html" %}

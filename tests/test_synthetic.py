@@ -704,10 +704,8 @@ def test_payer_documents_quote_codes_and_plant_injections() -> None:
 
 
 def test_injection_detector_flags_planted_documents() -> None:
-    try:
-        from app.redact.injection import detect_injection
-    except ImportError:
-        pytest.skip("app.redact.injection is not built yet")
+    from app.redact.injection import detect_injection
+
     labels = {label["claim_control_number"]: label for label in _fixture_labels()}
     docs = _read_csv(FIXTURE_DIR / "payer_documents.csv")
     checked = 0
@@ -889,9 +887,16 @@ def test_followup_files_pay_deny_and_reverse(session, clinic) -> None:
     claims = {c["clp"][1]: c for data in parsed.values() for c in data["claims"]}
     paid = claims["CLM000001-R1"]  # submitted control number wins
     assert paid["clp"][2] == "1" and Decimal(paid["clp"][4]) == Decimal("264.00")  # 330 minus 20%
-    assert all(("CO", "45", Decimal(svc["svc"][2]) * Decimal("0.2")) in svc["cas"] for svc in paid["svcs"])
+    assert [svc["cas"] for svc in paid["svcs"]] == [
+        [("CO", "45", Decimal(svc["svc"][2]) * Decimal("0.2"))] for svc in paid["svcs"]
+    ]  # the contracted rate and nothing else: no denial remains
     partial = claims["CLM000002"]
     assert partial["clp"][2] == "1" and Decimal(partial["clp"][4]) == Decimal("165.00")
+    # the unpaid part of every line is a real denial (the item's first reason, CO-27), never CO-45
+    assert [svc["cas"] for svc in partial["svcs"]] == [
+        [("CO", "27", Decimal("75"))],
+        [("CO", "27", Decimal("90"))],
+    ]
     denied = claims["CLM000003-R1"]
     assert denied["clp"][2] == "4" and Decimal(denied["clp"][4]) == 0
     assert denied["cas"] == [("CO", "16", Decimal("330"))], (
@@ -918,26 +923,67 @@ def test_followup_files_pay_deny_and_reverse(session, clinic) -> None:
     segments = split_segments(single)
     assert segments[0][0] == "ISA" and sum(1 for s in segments if s[0] == "ST") == 2
     assert next(s for s in segments if s[0] == "GE")[1] == "2"
-    try:
-        from app.ingest.x12 import tokenize
-    except ImportError:
-        pytest.skip("app.ingest.x12 is not built yet")
+    from app.ingest.parse_835 import parse_835
+    from app.ingest.x12 import tokenize
+
     tokens = tokenize(files["NW001"])
     assert [t.id for t in tokens][:3] == ["ISA", "GS", "ST"]
     assert sum(1 for t in tokens if t.id == "CLP") == 2
-    try:
-        from app.ingest.parse_835 import parse_835
-    except ImportError:
-        return
     parsed_files = parse_835(files["NW001"])
     assert len(parsed_files) == 1 and len(parsed_files[0].claims) == 2
 
 
+def _remittance_claim_from_parsed(claim: dict[str, Any]) -> Any:
+    """A stored-shape RemittanceClaim (adjustment and line rows attached) for one parsed CLP."""
+    from app.ingest.denials import detect_for, is_denial_adjustment
+    from app.models import Adjustment, RemittanceClaim, RemittanceLine
+
+    rc = RemittanceClaim(
+        patient_control_number=claim["clp"][1],
+        claim_status_code=claim["clp"][2],
+        charge_amount=Decimal(claim["clp"][3]),
+        paid_amount=Decimal(claim["clp"][4]),
+    )
+    for group, carc, amount in claim["cas"]:
+        rc.adjustments.append(
+            Adjustment(
+                level="claim",
+                group_code=group,
+                carc=carc,
+                amount=amount,
+                is_denial=is_denial_adjustment(group, carc, amount),
+            )
+        )
+    for number, svc in enumerate(claim["svcs"], start=1):
+        line = RemittanceLine(
+            line_number=number,
+            procedure_code=svc["svc"][1].split(":")[1],
+            charge_amount=Decimal(svc["svc"][2]),
+            paid_amount=Decimal(svc["svc"][3]),
+        )
+        rc.lines.append(line)
+        for group, carc, amount in svc["cas"]:
+            row = Adjustment(
+                level="line",
+                group_code=group,
+                carc=carc,
+                amount=amount,
+                is_denial=is_denial_adjustment(group, carc, amount),
+            )
+            row.remittance_line = line
+            rc.adjustments.append(row)
+    rc.is_denial, rc.denied_amount, _reasons = detect_for(rc)
+    return rc
+
+
 @pytest.mark.parametrize("dollar_value", ["330.00", "150.00", "48.00"])
 def test_followup_amounts_follow_the_outcome_rule(session, clinic, dollar_value: str) -> None:
-    """SPEC section 10 records `paid` only at >= 95% of the work item's dollar value and `partial`
-    strictly between zero and that, so the follow-up amounts must depend on the dollar value: a
-    claim denied in full is paid in full, a claim denied on one line still gets its contractual."""
+    """SPEC section 10 records `paid` when no denial adjustment remains on what the work item
+    disputed (or at >= 95% of its dollar value) and `partial` when something is paid but a denial
+    remains below that. The follow-up pays at the contracted rate whatever the dollar value (a
+    full-charge denial overturned is paid below 95% of it) and makes a partial payment a real
+    denial on the unpaid part."""
+    from app.outcomes.matching import classify_outcome, remaining_denial_codes
     from synthetic.followup import PLAN_VALUES, generate_followup_files
 
     items = _seed_work_items(session, clinic)
@@ -958,36 +1004,31 @@ def test_followup_amounts_follow_the_outcome_rule(session, clinic, dollar_value:
         assert charge - paid == sum(a for _, _, a in all_cas)
     threshold = value * Decimal("0.95")
     paid = Decimal(by_plan["paid"]["clp"][4])
-    assert by_plan["paid"]["clp"][2] == "1" and threshold <= paid <= Decimal("330")
-    if value == Decimal("330"):  # the whole charge was denied: no room for a contractual write-off
-        assert paid == Decimal("330") and not any(svc["cas"] for svc in by_plan["paid"]["svcs"])
-    else:  # 20% contractual on every line
-        assert paid == Decimal("264")
-        assert all(
-            ("CO", "45", Decimal(svc["svc"][2]) * Decimal("0.2")) in svc["cas"]
-            for svc in by_plan["paid"]["svcs"]
-        )
+    assert by_plan["paid"]["clp"][2] == "1" and paid == Decimal("264")  # 20% contractual on every line
+    assert [svc["cas"] for svc in by_plan["paid"]["svcs"]] == [
+        [("CO", "45", Decimal(svc["svc"][2]) * Decimal("0.2"))] for svc in by_plan["paid"]["svcs"]
+    ]
+    if value == Decimal("330"):  # the whole charge was denied: the contracted rate is below 95% of it
+        assert paid < threshold
     partial = Decimal(by_plan["partial"]["clp"][4])
     assert by_plan["partial"]["clp"][2] == "1" and Decimal("0") < partial < threshold
     assert value / 2 - Decimal("0.02") <= partial <= value / 2  # half the dollar value, rounded down per line
+    partial_cas = [t for svc in by_plan["partial"]["svcs"] for t in svc["cas"]]
+    assert partial_cas and all((g, c) == ("CO", "27") for g, c, _ in partial_cas)  # the item's first reason
     assert by_plan["denied_again"]["clp"][2] == "4" and Decimal(by_plan["denied_again"]["clp"][4]) == 0
     assert by_plan["reversed"]["clp"][2] == "22" and Decimal(by_plan["reversed"]["clp"][4]) < 0
-    try:
-        from app.outcomes.matching import classify_outcome
-    except ImportError:
-        pytest.skip("app.outcomes.matching is not built yet")
-    from app.models import RemittanceClaim
 
+    reasons_of = {plan[item.id]: item.all_reasons for item in items}
     for planned, claim in by_plan.items():
-        rc = RemittanceClaim(
-            patient_control_number=claim["clp"][1],
-            claim_status_code=claim["clp"][2],
-            charge_amount=Decimal(claim["clp"][3]),
-            paid_amount=Decimal(claim["clp"][4]),
-            is_denial=planned == "denied_again",
-        )
-        result, _details = classify_outcome(rc, value)
+        rc = _remittance_claim_from_parsed(claim)
+        assert rc.is_denial == (planned in ("partial", "denied_again")), planned
+        result, details = classify_outcome(rc, value, reasons=reasons_of[planned])
         assert str(result) == planned, f"plan {planned} at dollar_value {value} was recorded as {result}"
+        if planned == "paid":
+            assert details["reason"] == "no_denial_remaining" and details["remaining_denials"] == []
+        elif planned == "partial":
+            assert details["reason"] == "denial_remains"
+            assert remaining_denial_codes(rc, reasons_of[planned]) == ["CO-27@1", "CO-27@2"]
 
 
 # --------------------------------------------------------------------------------------

@@ -369,11 +369,15 @@ def http_run(
     from app.db import configure_engine, dispose_engine, init_db, make_engine, session_factory
     from app.llm import clients
     from app.logging_config import PHIMaskingFilter
-    from app.main import create_app
     from app.models import Clinic
     from tests.conftest import set_test_env  # the one definition of the test environment
 
     set_test_env(Path(tmp_dir))
+    # app.main builds the application at import and refuses a placeholder SECRET_KEY outside
+    # APP_ENV=test, so it is imported only once the test environment is in place (this module
+    # may be the first one in a run to import it).
+    from app.main import create_app
+
     reset_settings_cache()
     dispose_engine()
     settings = get_settings()

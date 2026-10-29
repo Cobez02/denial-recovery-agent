@@ -4,59 +4,67 @@ Source plan: "Denial Recovery Agent: Local MVP to Pilot Plan" (Oct 28, 2026). Th
 plan's Phase 1 milestones (M1–M8) and testing plan into a concrete, buildable specification. Every
 module author builds against the interfaces here. When this spec and a module disagree, fix the module.
 
+Revision note (Oct 28, 2026): reconciled with the shipped code after the adversarial review. The
+signatures, routes, tables and rules below are the ones in the repository; where the review changed a
+rule (the outcome rule, deadlines, the injection policy, note scanning, `purge-clinic`, logging in the
+worker and under uvicorn, the placeholder `SECRET_KEY`, per-payer windows) the new rule is stated here
+and the earlier wording is gone.
+
 ## 0. Ground rules that are enforced in code
 
 | Rule from the plan | Enforcement in this codebase |
 |---|---|
 | No real patient data until the BAAs and the security checklist are done | `data/` is git-ignored; all fixtures are synthetic; `docs/SECURITY_CHECKLIST.md` must be dated before Phase 2 |
-| The software never submits anything | There is no clearinghouse/payer integration. Approved items become an **export package**; a human marks them submitted |
-| Never change codes or add modifiers to raise payment unless documentation supports it | Every corrected-claim change carries `coding_change: bool`; a coding change sets `requires_note_excerpt=True`, is listed under `flags`, and the reviewer must attach or confirm a quoted note excerpt before approval |
-| Minimum-necessary data to the model; names, member IDs, addresses, DOBs tokenized | `app/redact` tokenizes before every model call and restores after; `app/llm/guard.py` refuses to send a payload the scanner flags |
-| Log every action by every person and agent | `app/audit` append-only, hash-chained log; every pipeline step and review action records an event |
-| Payer letters, notes and portal text are untrusted | Documents are wrapped as data in prompts, scanned for planted instructions, flagged on the work item; the injection test suite proves the agent ignores them |
-| The clinic can stop the pilot; data returned or destroyed | `denial-agent purge-clinic <id>` exports then deletes a clinic's data and writes a destruction record |
+| The software never submits anything | There is no clearinghouse/payer integration. Approved items become an **export package**; a human marks them submitted (`POST /items/{id}/mark-submitted`) |
+| Never change codes or add modifiers to raise payment unless documentation supports it | Every corrected-claim change carries `coding_change: bool`; a coding change sets `requires_note_excerpt=True`, is listed under `flags`, and the reviewer must attach a quoted note excerpt before approval (an excerpt typed by the reviewer is stored with source `reviewer` and labelled as such) |
+| Minimum-necessary data to the model; names, member IDs, addresses, DOBs tokenized | `app/redact` tokenizes before every model call and restores after; `app/llm/guard.py` is the only path to a client and refuses a payload the scanner flags |
+| Log every action by every person and agent | `app/audit` append-only, hash-chained log; every pipeline step, review action, import, login attempt and model call records an event |
+| Payer letters, notes and portal text are untrusted | Documents **and note excerpts** are scanned for planted instructions on import and when a context is built, flagged on the work item, rendered as data inside `<untrusted_document>` tags; a flagged document or a model answer reporting injection never overrides the rules; a flagged note is never quoted; the injection test suite proves it, including against a deliberately obedient fake model |
+| The clinic can stop the pilot; data returned or destroyed | `denial-agent purge-clinic <id> --confirm` deletes every uploaded file and export package on disk, exports the clinic's rows to one zip, deletes the rows and writes a destruction record naming the files; the zip is the hand-over copy |
 
 ## 1. Stack and layout
 
-- Python 3.12+ (local dev on 3.13 is fine), FastAPI, Jinja2 server-rendered pages with HTMX (vendored at `app/static/htmx.min.js`).
-- SQLAlchemy 2.0 ORM + Alembic. PostgreSQL 16 in Docker for runtime; **SQLite for the automated test suite** so tests run with no services. Models must therefore stay dialect-neutral (`JSON`, `Numeric`, `String`, `DateTime(timezone=True)`; no Postgres-only column types; Postgres-only triggers are added in migrations guarded by dialect).
-- Background jobs: RQ + Redis in Docker; `JOB_BACKEND=inline` runs jobs synchronously (default locally and in tests).
+- Python 3.12+ (local dev on 3.13 is fine), FastAPI, Jinja2 server-rendered pages (autoescape on) with HTMX (vendored at `app/static/htmx.min.js`).
+- SQLAlchemy 2.0 ORM + Alembic. PostgreSQL 16 in Docker for runtime; **SQLite for the automated test suite** so tests run with no services. Models stay dialect-neutral (`JSON`, `Numeric`, `String`, `DateTime(timezone=True)`; no Postgres-only column types; the Postgres-only audit trigger is added in the migration guarded by dialect).
+- Background jobs: RQ + Redis in Docker, run by `python -m app.jobs.worker` (masked logging); `JOB_BACKEND=inline` runs jobs synchronously (default locally and in tests).
 - Model client: Anthropic Python SDK, plain Messages API only (no batch, files, code execution — those are outside the BAA). Pinned model id from config. Prompts are versioned files in `app/llm/prompts/`.
-- PDFs: WeasyPrint when importable (Docker image has it); otherwise the HTML letter is exported and the package notes that the PDF was skipped.
-- Tests: pytest. Secret scanning: gitleaks via pre-commit and CI.
+- PDFs: WeasyPrint when importable (the Docker image fails its build without it); otherwise the export package carries the text and HTML letter plus a `README.txt` saying the PDF was skipped.
+- Tests: pytest. Secret scanning: gitleaks via pre-commit and CI; ruff check and format in both.
 
 ```
 denial-agent/
-  docker-compose.yml  Dockerfile  .env.example  pyproject.toml  alembic.ini
+  docker-compose.yml  Dockerfile  .env.example  pyproject.toml  alembic.ini  .gitleaks.toml  .pre-commit-config.yaml
   app/
-    main.py            FastAPI app factory, middleware, router registration
-    config.py          Settings (pydantic-settings), env-driven
-    db.py              engine/session factory, `get_session` dependency, `init_db()`
+    main.py            FastAPI app factory (refuses a placeholder SECRET_KEY), session middleware, routers
+    config.py          Settings (pydantic-settings), env-driven, reads <project root>/.env
+    db.py              engine/session factory, `get_session` dependency, `session_scope`, `init_db()`
     enums.py           StrEnums shared by every module
     models.py          SQLAlchemy models (M2)
     schemas.py         Pydantic contracts passed between modules
-    logging_config.py  stdlib logging with PHI-masking filter
-    pipeline.py        orchestrates import -> denial detection -> classify -> propose -> draft
-    api/               JSON/HTML routes that are not the review UI (health, imports, dashboard data)
-    ingest/            x12 tokenizer, 835 parser, claim-export importer, matching, import batches
-    classify/          rules engine (CARC/RARC -> category), model classifier for ambiguous cases
-    playbooks/         fix logic per category -> ProposalDraft
-    drafting/          corrected-claim builder + diff, appeal letter templates, PDF rendering
-    redact/            identifier registry, tokenizer/restore, scanner, injection detector
-    review/            review queue pages and actions, export package
+    logging_config.py  stdlib logging with the PHI-masking filter and MASK_HITS
+    pipeline.py        denied remittance claim -> context -> classify -> propose -> draft -> work item (savepoint per claim)
+    api/               JSON routes: health, metrics, identifier-free item view
+    ingest/            x12 tokenizer, 835 parser, claim-export importer, payer windows, matching, denial detection, import batches
+    classify/          codes catalog, rules engine (rules.yaml), model classifier and merge policy
+    playbooks/         fix logic per category -> ProposalDraft, deadlines, priority
+    drafting/          corrected-claim builder + diff, letter templates, appeal drafter, fact check, HTML/PDF
+    redact/            identifier registry, tokenizer/restore, scanner + generic masks, injection detector
+    review/            queue and item pages, actions (service), export package, template filters
     outcomes/          payment matching for submitted fixes, dashboard metrics
     audit/             append-only audit log with hash chain
-    llm/               client protocol, Anthropic client, stub/replay clients, prompt registry, guard
-    auth/              users, argon2 passwords, TOTP MFA, session login
-    jobs/              job runner (inline | rq)
-    migrations/        alembic env + versions
-    templates/         Jinja2 templates (pages/, partials/, letters/)
+    llm/               client protocol, Anthropic/stub/replay/recording clients, factory, prompt registry, guard
+    auth/              users, argon2 passwords, TOTP MFA with replay guard, session login, CSRF
+    jobs/              job runner (inline | rq), tasks, the masked rq worker entry point
+    migrations/        alembic env + versions (0001_initial)
+    templates/         Jinja2 templates (pages/, partials/, letters/*.txt.j2)
     static/            htmx.min.js, app.css
-    cli.py             `denial-agent` command (init-db, create-user, import-835, import-claims, process, generate-synthetic, verify-audit, purge-clinic)
-  synthetic/           generators, specialty profile(s), committed labeled fixture set
-  tests/               pytest suite + golden fixtures
+    cli.py             `denial-agent`: init-db, create-clinic, create-user, import-835, import-claims, import-notes,
+                       import-documents, process, generate-synthetic, verify-audit, list-payers, set-payer, purge-clinic, serve
+  synthetic/           generators, specialty profile(s), x12 writer, follow-up 835s, committed labeled fixture set
+  tests/               pytest suite + golden fixtures (tests/fixtures/835, tests/fixtures/claims, tests/fixtures/llm)
   docs/                SPEC.md (this), SECURITY_CHECKLIST.md, PILOT_CHECKLIST.md, TESTING.md, PHASES.md
-  data/                git-ignored runtime data (encrypted disk)
+  scripts/             bootstrap.ps1 / bootstrap.sh, env-notes.md, precommit-gitleaks.sh
+  data/                git-ignored runtime data (encrypted disk): the SQLite file, uploads/, exports/
 ```
 
 ## 2. Data model (M2) — `app/models.py`
@@ -67,56 +75,61 @@ timezone-aware UTC. JSON columns use SQLAlchemy `JSON`.
 | Table | Purpose / key columns |
 |---|---|
 | `clinics` | name, npi, tax_id, pm_system, created_at |
-| `payers` | name, `payer_id` (X12 payer identifier, unique), timely_filing_days (default 90), corrected_claim_days (default 90), appeal_days (default 180), address JSON |
-| `users` | email (unique), password_hash (argon2), totp_secret, role (`reviewer`/`admin`), is_active, failed_logins, locked_until, created_at, last_login_at |
-| `patients` | clinic_id, `token` (stable pseudonym like `PT-7F3A2C`, unique), account_number (PM account, unique per clinic), first_name, last_name, dob, sex, address_line1, city, state, zip, member_id |
-| `claims` | clinic_id, payer_id, patient_id, `claim_control_number` (unique per clinic), frequency_code (`1` original, `7` replacement, `8` void), original_claim_id (self FK for corrected claims), billing_provider_npi, rendering_provider_npi, rendering_provider_name, referring_provider_npi, place_of_service, diagnosis_codes JSON list, prior_auth_number, service_date_from, service_date_to, total_charge, original_submission_date, status (`ClaimStatus`), import_batch_id, extra JSON |
+| `payers` | name, `payer_id` (X12 payer identifier, unique), timely_filing_days, corrected_claim_days, appeal_days (defaults from `DEFAULT_*_DAYS` when the claims importer creates the row; changed only by `denial-agent set-payer`), address JSON, created_at |
+| `users` | email (unique), password_hash (argon2id), totp_secret, role (`reviewer`/`admin`), is_active, failed_logins, locked_until, created_at, last_login_at, `totp_last_step` (last accepted TOTP time step: the replay guard) |
+| `patients` | clinic_id, `token` (stable pseudonym `PT-<6 hex>`, unique; see section 15), account_number (PM account, unique per clinic), first_name, last_name, dob, sex, address_line1, city, state, zip, member_id, created_at |
+| `claims` | clinic_id, payer_id, patient_id, `claim_control_number` (unique per clinic), frequency_code (`1` original, `7` replacement, `8` void), original_claim_id (self FK), billing_provider_npi, rendering_provider_npi, rendering_provider_name, referring_provider_npi, place_of_service, diagnosis_codes JSON list, prior_auth_number, service_date_from, service_date_to, total_charge, original_submission_date, status (`ClaimStatus`), import_batch_id, extra JSON, created_at, updated_at |
 | `claim_lines` | claim_id, line_number (unique per claim), service_date, procedure_code, modifiers JSON list, units Numeric(8,2), charge_amount, diagnosis_pointers JSON list (1-based ints), ndc, line_item_control_number |
-| `remittances` | payer_id (nullable until matched), file_name, `file_sha256` (unique: duplicate-safe), trace_number (TRN02), payer_identifier (TRN03), payment_method (BPR04), payment_amount (BPR02), payment_date (BPR16), production_date (DTM*405), payer_name, payee_npi, received_at, import_batch_id, raw_meta JSON |
-| `remittance_claims` | remittance_id, claim_id (nullable), sequence, patient_control_number (CLP01), claim_status_code (CLP02), charge_amount, paid_amount, patient_responsibility, filing_indicator, payer_claim_control_number (CLP07), facility_type_code, frequency_code (CLP09), patient_last_name, patient_first_name, member_id, claim_received_date, statement_from, statement_to, remark_codes JSON, is_denial, denied_amount, match_method |
+| `remittances` | payer_id (nullable until matched), file_name, `file_sha256`, `transaction_index` (one row per ST/SE; unique together with file_sha256: duplicate-safe), trace_number (TRN02), payer_identifier (TRN03), payment_method (BPR04), payment_amount (BPR02), payment_date (BPR16), production_date (DTM*405), payer_name, payee_npi, received_at, import_batch_id, raw_meta JSON |
+| `remittance_claims` | remittance_id, claim_id (nullable), sequence, patient_control_number (CLP01), claim_status_code (CLP02), charge_amount, paid_amount, patient_responsibility, filing_indicator, payer_claim_control_number (CLP07), facility_type_code, frequency_code (CLP09), patient_last_name, patient_first_name, member_id (the payer's own spelling: registered for redaction), rendering_provider_npi, claim_received_date, statement_from, statement_to, remark_codes JSON, is_denial, denied_amount, match_method (`ccn`, `submitted_ccn`, `payer_ccn`, `fuzzy`) |
 | `remittance_lines` | remittance_claim_id, claim_line_id (nullable), line_number, procedure_code, modifiers JSON, charge_amount, paid_amount, units, service_date, line_item_control_number, remark_codes JSON |
 | `adjustments` | remittance_claim_id, remittance_line_id (nullable), level (`claim`/`line`), group_code (CO/PR/OA/PI/CR), carc, amount, quantity, is_denial |
-| `note_excerpts` | claim_id, note_date, author, text, source |
-| `payer_documents` | claim_id (nullable), remittance_claim_id (nullable), document_type (`letter`/`portal`/`other`), received_date, text, flagged_injection, injection_findings JSON |
-| `work_items` | claim_id, remittance_claim_id, category (`DenialCategory`), category_confidence, classification_source (`rules`/`model`/`rules+model`), all_reasons JSON, status (`WorkItemStatus`), dollar_value, deadline, deadline_kind (`corrected_claim`/`appeal`), priority_score, assigned_user_id, first_viewed_at, decided_at, submitted_at, submitted_claim_control_number, closed_at, flags JSON list |
-| `proposals` | work_item_id, version, is_current, action_type (`ActionType`), summary, rationale, citations JSON, corrected_claim JSON `{before, after, changes}`, appeal_letter (text), clinic_question, coding_change, requires_note_excerpt, confidence, prompt_version, model_id, generated_by |
-| `actions` (`ReviewAction`) | work_item_id, proposal_id, user_id, action (`ReviewActionType`), reason, edited_payload JSON, review_seconds |
+| `note_excerpts` | claim_id, note_date, author, text, source (`reviewer` when typed on the item page), `flagged_injection`, `injection_findings` JSON, created_at |
+| `payer_documents` | claim_id (nullable), remittance_claim_id (nullable), document_type (`letter`/`portal`/`other`), received_date, text, flagged_injection, injection_findings JSON, created_at |
+| `work_items` | claim_id, remittance_claim_id, category (`DenialCategory`), category_confidence, classification_source (`rules`/`model`/`rules+model`), classification_rationale, all_reasons JSON, status (`WorkItemStatus`), dollar_value, deadline, deadline_kind (`corrected_claim`/`appeal`), priority_score, assigned_user_id, first_viewed_at, decided_at, submitted_at, submitted_claim_control_number, closed_at, flags JSON list, created_at, updated_at |
+| `proposals` | work_item_id, version (unique per work item), is_current, action_type (`ActionType`), summary, rationale, citations JSON, corrected_claim JSON `{before, after, changes}`, appeal_letter (text), clinic_question, coding_change, requires_note_excerpt, confidence, prompt_version, model_id, generated_by (`playbook`/`reviewer`), created_at |
+| `actions` (`ReviewAction`) | work_item_id, proposal_id, user_id, action (`ReviewActionType`), reason, edited_payload JSON, review_seconds, created_at |
 | `outcomes` | work_item_id, remittance_claim_id, result (`OutcomeResult`), paid_amount, payment_date, matched_at, details JSON |
 | `audit_log` | ts, actor_type (`user`/`agent`/`system`), actor_id, action, entity_type, entity_id, claim_id, reason, details JSON, prev_hash, hash — **append-only** |
-| `import_batches` | kind (`835`/`claims`/`notes`/`payer_documents`), file_name, file_sha256, status, counts JSON, error, started_at, finished_at, created_by |
-| `model_calls` | ts, prompt_name, prompt_version, model_id, purpose, work_item_id, input_tokens, output_tokens, cache_read_tokens, latency_ms, redaction_counts JSON, request_id, status (`ok`/`refusal`/`error`), payload_sha256 |
+| `import_batches` | kind (`835`/`claims`/`notes`/`payer_documents`), file_name, file_sha256, status (`pending`/`done`/`failed`/`duplicate`), counts JSON, error, started_at, finished_at, created_by |
+| `model_calls` | ts, prompt_name, prompt_version, model_id, purpose, work_item_id, input_tokens, output_tokens, cache_read_tokens, latency_ms, redaction_counts JSON, request_id, status (`ok`/`refusal`/`error`), error (error code or SDK exception class name, never content), payload_sha256 |
 
 Append-only audit log: (1) ORM listeners raise on UPDATE/DELETE of `AuditLog`; (2) the Postgres migration
-adds a trigger that raises on UPDATE/DELETE; (3) each row's `hash = sha256(prev_hash + canonical JSON of the row
-without hash fields)`; `app.audit.verify_chain(session)` walks the table and returns the first broken row id or None.
+adds `BEFORE UPDATE/DELETE` triggers that raise; (3) each row's `hash = sha256(prev_hash + canonical JSON of the row
+without hash fields)`; `app.audit.verify_chain(session)` walks the table and returns the first broken row id or None;
+`app.audit.record(session, *, actor_type, actor_id, action, entity_type=None, entity_id=None, claim_id=None, reason=None, details=None)`
+takes a transaction-scoped advisory lock on Postgres so two processes cannot fork the chain.
 
 ## 3. Shared enums — `app/enums.py`
 
-- `DenialCategory`: `eligibility, authorization, modifier, duplicate, timely_filing, medical_necessity, bundling, coordination_of_benefits, missing_information, contractual, patient_responsibility, other`
+- `DenialCategory`: `eligibility, authorization, modifier, duplicate, timely_filing, medical_necessity, bundling, coordination_of_benefits, missing_information, contractual, patient_responsibility, other`; `ACTIONABLE_CATEGORIES` excludes `contractual` and `patient_responsibility`; `CATEGORY_PRIORITY` (lowest index wins when a claim carries several reasons): timely_filing, eligibility, coordination_of_benefits, authorization, duplicate, bundling, modifier, medical_necessity, missing_information, other, contractual, patient_responsibility
 - `ActionType`: `corrected_claim, appeal, clinic_question, no_action`
 - `WorkItemStatus`: `new, proposed, in_review, approved, rejected, exported, submitted, closed`
-- `ReviewActionType`: `view, approve, edit, reject, export, mark_submitted, reopen, close, attach_note`
+- `ReviewActionType`: `view, approve, edit, reject, export, mark_submitted, reopen, close, attach_note, regenerate`
 - `ClaimStatus`: `submitted, denied, paid, partial, corrected, appealed, closed`
 - `OutcomeResult`: `paid, partial, denied_again, reversed`
 - `ClassificationSource`: `rules, model, rules+model`
 - `ActorType`: `user, agent, system`
+- `DeadlineKind`: `corrected_claim, appeal`; `UserRole`: `reviewer, admin`; `ImportKind`: `835, claims, notes, payer_documents`; `ImportStatus`: `pending, done, failed, duplicate`; `DocumentType`: `letter, portal, other`; `CitationKind`: `carc, rarc, claim_field, remittance_field, note_excerpt, payer_document, payer_policy`; `ModelCallStatus`: `ok, refusal, error`; `IdentifierKind`: `PATIENT_NAME, MEMBER_ID, DOB, ADDRESS, ACCOUNT, CLAIM_ID, PROVIDER_NAME, DATE`
 
 ## 4. File formats
 
 ### 4.1 Claim export (the one practice-management system) — CSV, UTF-8, header row, one row per claim line
 
-Columns, in order:
+Columns, in order (`app.schemas.CLAIM_EXPORT_COLUMNS`):
 `claim_control_number, patient_account_number, patient_first_name, patient_last_name, patient_dob (YYYY-MM-DD), patient_sex (M/F/U), patient_address_line1, patient_city, patient_state, patient_zip, member_id, payer_id, payer_name, billing_provider_npi, rendering_provider_npi, rendering_provider_name, referring_provider_npi, place_of_service, diagnosis_codes (pipe-separated ICD-10), prior_auth_number, original_submission_date (YYYY-MM-DD), claim_frequency_code (1/7/8), original_claim_control_number, line_number, service_date (YYYY-MM-DD), procedure_code, modifiers (pipe-separated), units, charge_amount, diagnosis_pointers (pipe-separated 1-based), ndc, line_item_control_number, claim_total_charge`
 
-Rules: rows of one claim share `claim_control_number` and must be contiguous; `claim_total_charge` must equal the sum of line charges (importer warns and uses the line sum when they differ); re-importing the same file is a no-op (`import_batches.file_sha256`); re-importing a claim with the same control number updates mutable fields and never duplicates lines.
+Rules: rows of one claim share `claim_control_number` and must be contiguous; `claim_total_charge` must equal the sum of line charges (importer warns and uses the line sum when they differ); an invalid row, a missing column, a duplicate line number or a value longer than its column fails the whole batch and writes nothing; re-importing the same file is a no-op (`import_batches.file_sha256`, status `duplicate`); re-importing a claim with the same control number updates mutable fields, matches existing lines by `line_item_control_number`, then by (procedure code, service date, charge), then by line number, drops lines missing from the file (detaching their remittance lines) and re-links the claim's remittance lines, never duplicating a line.
 
 Companion files (same importer family):
 - `notes.csv`: `claim_control_number, note_date, author, text`
 - `payer_documents.csv`: `claim_control_number, document_type, received_date, text`
 
+Both are untrusted text: every row is scanned with `app.redact.injection.detect_injection` and stored with `flagged_injection` / `injection_findings`; the batch counts record `flagged`. Rows for unknown claims are counted as skipped (notes imported before their claims attach on the claims re-import).
+
 ### 4.2 X12 835 (005010X221A1) — what the parser must handle
 
-Delimiters are read from ISA (element `*`, sub-element `:`, segment terminator `~`, with optional trailing newlines). Segments and loops:
+Delimiters are read from ISA (element `*`, sub-element `:`, segment terminator `~`, with optional trailing newlines; LF and CRLF parse identically). Segments and loops:
 
 ```
 ISA GS ST
@@ -126,7 +139,7 @@ N1*PE payee (N102 name, N104 NPI) N3 N4 REF*TJ tax id
 LX
   CLP (01 patient control #, 02 status, 03 charge, 04 paid, 05 patient resp, 06 filing indicator, 07 payer claim #, 08 facility type, 09 frequency)
   CAS (claim level; repeating triplets CAS02-04, 05-07, ... up to 6 groups)
-  NM1*QC patient (03 last, 04 first, 08 MI, 09 member id)   NM1*IL insured (optional)   NM1*82 rendering (optional, 09 NPI)
+  NM1*QC patient (03 last, 04 first, 08 qualifier, 09 id)   NM1*IL insured (optional)   NM1*82 rendering (optional, 09 NPI)
   REF*1L / REF*EA (optional)   DTM*050 received   DTM*232 / DTM*233 statement period
   AMT*AU (optional)   MOA / MIA (optional; MOA03-07 and MIA05,20-23 are claim-level RARCs)
   LQ*HE (claim level RARC, optional; MUST appear before the first SVC - an LQ after an SVC belongs to that service line)
@@ -136,44 +149,42 @@ PLB (provider-level adjustments, optional)
 SE GE IEA
 ```
 
-Parser output is `schemas.Parsed835` (section 5). Golden tests compare the parsed JSON to a checked-in expected file exactly. Unknown segments are preserved in `unparsed_segments` and never crash the parser. A file with more than one ST/SE transaction set yields one `Parsed835` per transaction.
+The member id is NM1*QC NM109 when NM108 is one of `MI`, `MR` (Medicaid), `HN` (Medicare HICN), `II`, `34` (`parse_835.MEMBER_ID_QUALIFIERS`), else NM1*IL's NM109; the insured's name is parsed too. Parser output is `schemas.Parsed835` (section 5). Golden tests compare the parsed JSON to a checked-in expected file exactly. Unknown segments are preserved in `unparsed_segments` and never crash the parser; a malformed amount raises `X12Error` without echoing the value. A file with more than one ST/SE transaction set yields one `Parsed835` per transaction.
 
 ### 4.3 CARC/RARC catalog
 
-`app/classify/codes.yaml` holds human-readable text for every CARC and RARC used by the rules and the synthetic generator (text from the WPC/X12 public code lists, paraphrased). Citations use these texts.
+`app/classify/codes.yaml` holds human-readable text for every CARC and RARC used by the rules and the synthetic generator (text from the WPC/X12 public code lists, paraphrased); `app/classify/codes.py` exposes `carc_text`, `rarc_text`, `describe`, `enrich_reasons`, `all_codes`. Citations use these texts.
 
 ## 5. Shared contracts — `app/schemas.py` (Pydantic v2)
 
 Written in the foundation and imported by every module. Names are final; add fields rather than renaming.
 
-- `Parsed835`, `ParsedPayer`, `ParsedPayee`, `ParsedPayment`, `ParsedClaimPayment`, `ParsedServicePayment`, `ParsedAdjustment`, `ParsedProviderAdjustment`
-- `ClaimExportRow` (one CSV row, validated types), `NoteRow`, `PayerDocumentRow`
-- `DenialReason` `{level, group_code, carc, carc_text, rarcs, rarc_texts, amount, line_number, procedure_code}`
-- `DenialContext` — everything the classifier, playbooks and drafter need for one denied claim: claim facts, lines, patient token + identifiers (for redaction only), payer facts (timely-filing/appeal windows), remittance facts, `reasons: list[DenialReason]`, `documents: list[DocumentContext]`, `notes: list[NoteContext]`, `today: date`
-- `ClassificationResult` `{category, confidence, source, rule_id, rationale, injection_detected, secondary_categories}`
-- `Citation` `{kind: carc|rarc|claim_field|remittance_field|note_excerpt|payer_document|payer_policy, ref, text}`
-- `CorrectedClaimChange` `{path, before, after, reason, coding_change, citation_refs}`
-- `CorrectedClaim` `{before: dict, after: dict, changes: list[CorrectedClaimChange]}`
-- `ProposalDraft` `{action_type, summary, rationale, citations, corrected_claim, appeal_letter, clinic_question, coding_change, requires_note_excerpt, confidence, deadline, deadline_kind, flags}`
-- `LLMUsage`, `LLMResult` `{content (dict|str), model_id, prompt_name, prompt_version, usage, request_id, stop_reason, status}`
-- `RenderedPrompt` `{name, version, system, user, schema, max_tokens}`
-- `RedactionMap` `{tokens: dict[token, original], counts: dict[kind, int]}`
-- `InjectionFinding` `{pattern, snippet, start, end}`
-- `DashboardMetrics` (section 10)
+- `Parsed835`, `ParsedPayer`, `ParsedPayee`, `ParsedPayment`, `ParsedClaimPayment` (incl. `insured_last_name`/`insured_first_name`, `references`), `ParsedServicePayment`, `ParsedAdjustment`, `ParsedProviderAdjustment`
+- `ClaimExportRow` (one CSV row, validated types), `NoteRow`, `PayerDocumentRow`; `CLAIM_EXPORT_COLUMNS`
+- `DenialReason` `{level, group_code, carc, carc_text, rarcs, rarc_texts, amount, line_number, procedure_code, modifiers}`
+- `DenialContext` — everything the classifier, playbooks and drafter need for one denied claim: `claim: ClaimContext` (claim facts, `patient_token`, `patient_identifiers: PatientIdentifiers` for the redaction registry only, `lines: list[ClaimLineContext]` with `paid_amount` from the matching SVC), `payer: PayerContext` (windows), `remittance: RemittanceContext` (CLP facts, `payment_date`, `claim_received_date`, `denied_amount`, `remark_codes`, and the payer's own `patient_first_name`/`patient_last_name`/`member_id`), `reasons: list[DenialReason]`, `documents: list[DocumentContext]` and `notes: list[NoteContext]` (both with `flagged_injection` and `injection_findings`), `today: date`; properties `primary_reason`, `has_flagged_documents`
+- `ClassificationResult` `{category, confidence, source, rule_id, rationale, injection_detected, secondary_categories, model_rationale}`
+- `Citation` `{kind: CitationKind, ref, text}` (refs such as `CO-16`, `N29`, `claim.lines[1].modifiers`, `note:12`, `document:3`)
+- `CorrectedClaimChange` `{path, before, after, reason, coding_change, citation_refs}`; `CorrectedClaim` `{before: dict, after: dict, changes}`
+- `ProposalDraft` `{action_type, summary, rationale, citations, corrected_claim, appeal_letter, clinic_question, coding_change, requires_note_excerpt, confidence, deadline, deadline_kind, flags, prompt_version, model_id, generated_by}`
+- `LLMUsage`, `RenderedPrompt` `{name, version, system, user, schema (alias of schema_), max_tokens}`, `LLMResult` `{content (dict|str), model_id, prompt_name, prompt_version, usage, request_id, stop_reason, status, latency_ms, error}`
+- `RedactionMap` `{tokens: dict[token, original], counts: dict[kind, int]}`, `Identifier` `{kind, value}`, `RedactionFinding` `{kind, value_preview (masked), location}`, `InjectionFinding` `{pattern, snippet, start, end}`
+- `CategoryMetric`, `DeadlineBucket`, `DashboardMetrics` (section 10)
 
 ## 6. Ingestion (M3) — `app/ingest/`
 
-- `x12.py`: `tokenize(text) -> list[Segment]` where `Segment(id, elements: list[str], raw)`; handles composite separator by leaving composites as strings and exposing `split_composite()`.
-- `parse_835.py`: `parse_835(text: str) -> list[Parsed835]`.
-- `claims_import.py`: `import_claims_csv(session, path | text, clinic_id, created_by) -> ImportBatch`; `import_notes_csv`, `import_payer_documents_csv`. Creates/updates patients (by clinic + account_number), payers (by payer_id), claims, lines. Computes `claims.status` = submitted on import.
-- `remit_import.py`: `import_835(session, path | text, file_name, created_by) -> ImportBatch`. Dedup by sha256. Stores remittance, claims, lines, adjustments. Calls `matching.match_remittance_claim()` and `denials.detect()` for each CLP. For CLPs matched to claims with `submitted` work items it calls `outcomes.matching.record_outcome()`.
-- `matching.py`: `match_remittance_claim(session, rc) -> Claim | None`. Order: exact `patient_control_number` == `claim_control_number`; then CLP01 == `submitted_claim_control_number` of a work item (corrected claims); then (payer_claim_control_number previously seen); then (member_id + service date + total charge) fuzzy; records match method in `match_method`. Unmatched CLPs stay with `claim_id=None` and are listed on the imports page.
-- `denials.py`: `detect(rc, adjustments) -> (is_denial, denied_amount, reasons: list[DenialReason])`. Denial = CLP02 in {4} OR any adjustment with group in {CO, PI, OA, PR} whose CARC is not in `informational_carcs` and amount > 0. Informational CARCs (never a denial by themselves): 1, 2, 3, 45, 66, 94, 104, 118, 137, 144, 187, 237, 253. Reasons are sorted by amount desc; `denied_amount` = sum of denial adjustment amounts.
-- M3 done-when test: the 200-claim synthetic batch imports with zero unmatched remittance claims, re-import is a no-op.
+- `x12.py`: `tokenize(text) -> list[Segment]` where `Segment(id, elements: list[str], raw)`; composites stay strings and `split_composite()` splits them; `X12Error` for malformed input.
+- `parse_835.py`: `parse_835(text: str) -> list[Parsed835]` (section 4.2).
+- `claims_import.py`: `import_claims_csv(session, source: str | Path, clinic_id: int, created_by: str = "system") -> ImportBatch`; `import_notes_csv(...)` and `import_payer_documents_csv(...)` with the same signature. Creates/updates patients (by clinic + account_number; `token = "PT-" + sha256(f"{clinic_id}:{account_number}")[:6].upper()`, lengthened on a collision), payers (by payer_id, windows from `DEFAULT_*_DAYS`, never overwritten afterwards), claims and lines (section 4.1 re-import rules; `relink_remittance_lines` afterwards). `claims.status` is `submitted` on import. Nothing commits; the caller does. Notes and documents are scanned on import (section 4.1).
+- `payers.py`: `list_payers(session) -> list[dict]`; `set_payer_windows(session, payer_id, *, timely_filing_days=None, corrected_claim_days=None, appeal_days=None, actor_id="system", actor_type=ActorType.USER) -> Payer` (1..3650 days, at least one window, audit event `payer_windows_set` with before/after counts; `UnknownPayerError` for an unknown payer id). Behind `denial-agent list-payers` / `set-payer`.
+- `remit_import.py`: `import_835(session, source: str | Path, file_name: str | None = None, created_by: str = "system") -> ImportBatch`. Dedup by sha256 (a completed batch or an existing remittance with that hash yields a `duplicate` batch); one `Remittance` per transaction set (`transaction_index`). Stores remittance claims, lines, adjustments (`is_denial` per row); links remittance lines to claim lines by REF*6R, then (procedure code, service date), then position (`link_remittance_lines`); calls `matching.match_remittance_claim()` and `denials.detect()` for each CLP; sets `claims.status` from CLP02 (`claim_status_for`); then `app.outcomes.matching.record_outcomes_for_remittance` for the stored remittance. Batch counts: `transactions, claims, matched, unmatched, denials, lines, adjustments, outcomes`. `rematch_unmatched(session) -> int` retries unmatched CLPs after a later claims import and records outcomes for the affected remittances (also behind `POST /imports/rematch`).
+- `matching.py`: `match_remittance_claim(session, rc, *, remittance=None) -> Claim | None`. Order: exact `patient_control_number` == `claim_control_number` (`ccn`); then CLP01 == `submitted_claim_control_number` of a work item (`submitted_ccn`, corrected claims); then a `payer_claim_control_number` seen before from the same payer (`payer_ccn`); then (member_id + service date + total charge within `FUZZY_CHARGE_TOLERANCE` 0.01, preferring the remittance's payer and refusing an ambiguous match) (`fuzzy`). The method is stored in `match_method`. Unmatched CLPs stay with `claim_id=None` and are listed on the imports page.
+- `denials.py`: `detect(rc, adjustments) -> (is_denial, denied_amount, reasons: list[DenialReason])`. A denial adjustment is group CO/PI/OA/PR with a CARC not in `INFORMATIONAL_CARCS` (1, 2, 3, 45, 66, 94, 104, 118, 137, 144, 187, 237, 253) and amount > 0. The claim is a denial when CLP02 is `4` or at least one denial adjustment is not a PR-group patient-responsibility code (`PATIENT_RESPONSIBILITY_CARCS` = 96, 204, 49, 119: the patient owes it, the clinic has nothing to fix, so such adjustments alone are **not** a denial and create no work item). `denied_amount` = sum of the denial adjustment amounts (the full charge for a CLP02 `4` without any); reasons are sorted by amount desc, claim level before line level, then line number. `denial_reasons_for(rc)` rebuilds the reasons from stored rows for the pipeline.
+- M3 done-when: the 200-claim synthetic batch imports with zero unmatched remittance claims, re-import is a no-op (`tests/test_pipeline.py::test_m3_import_done_when`, `tests/test_end_to_end_synthetic.py::test_1_imports_through_the_ui`).
 
 ## 7. Classification (M4) — `app/classify/`
 
-- `rules.yaml`: ordered rules. Each: `id, category, confidence, match: {carc: [..], rarc_any: [..] (optional), group: [..] (optional), level: claim|line|any}, rationale`. First match wins per reason; the work item category is the category of the highest-amount reason unless a higher-priority category outranks it (priority order: timely_filing > eligibility > coordination_of_benefits > authorization > duplicate > bundling > modifier > medical_necessity > missing_information > other). Starting rule map (extend with the coder session):
+- `rules.yaml`: ordered rules (48 today). Each: `id, category, confidence, match: {carc: [..], rarc_any: [..] (optional), group: [..] (optional), level: claim|line|any}, rationale`. First match wins per reason; the work item category is the category of the highest-amount reason unless a higher-priority category outranks it (`CATEGORY_PRIORITY`, section 3). Starting rule map (the file is the source of truth; extend it with the coder session):
   - eligibility: CARC 26, 27, 31, 32, 33, 140, 177, 200; 109 (wrong payer) with RARC N4/N418 → coordination_of_benefits, otherwise eligibility
   - authorization: CARC 197, 198, 15, 62, 39; CARC 16 with RARC M62 / N54
   - modifier: CARC 4, 182; CARC 16 with RARC M78 / N519
@@ -184,102 +195,147 @@ Written in the foundation and imported by every module. Names are final; add fie
   - coordination_of_benefits: CARC 22, 23 (when denial amount > 0 and claim not paid), 109 with N4
   - missing_information: CARC 16 (default when no more specific RARC rule), 125, 226, 227, 252, 206; RARCs M119 (NDC), N29, N56, MA130, M127, N179, N225
   - contractual: 45, 94, 253 ... (informational; no work item is created for these alone)
-  - patient_responsibility: 1, 2, 3, PR group with 96/204 (plan exclusions) → `patient_responsibility` unless CO
+  - patient_responsibility: 1, 2, 3, PR group with 96/204 (plan exclusions) → `patient_responsibility` unless CO (and never a work item on their own, section 6)
   - other: anything unmatched → confidence 0.3
-- `engine.py`: `classify_rules(ctx: DenialContext) -> ClassificationResult`.
-- `model_classifier.py`: `classify_with_model(ctx, guard_call) -> ClassificationResult` using prompt `classify_denial` with a JSON schema; invoked when rules confidence < `CLASSIFY_MODEL_THRESHOLD` (0.75), category is `other`, or a payer document is attached. Final result: model result if its confidence > rules confidence, else rules; source recorded accordingly. With `LLM_PROVIDER=stub` the stub returns a deterministic result from the CARC in the variables (so tests are hermetic).
-- `classify(ctx, llm_guard) -> ClassificationResult` is the single entry point used by the pipeline.
-- M4 done-when: >= 90% category accuracy on the labeled synthetic set (`synthetic/fixtures/labeled_set_v1/labels.json`) using rules alone with stub model.
+- `engine.py`: `classify_rules(ctx: DenialContext) -> ClassificationResult` (source `rules`, `rule_id` of the winning rule, a rationale citing the codes, `injection_detected` mirroring `ctx.has_flagged_documents`); `load_rules()`, `classify_reason()`.
+- `model_classifier.py`: `classify_with_model(ctx, guard_call, *, rules_result=None) -> ClassificationResult` using prompt `classify_denial` with `CLASSIFY_SCHEMA` (`category`, `confidence`, `rationale`, `injection_detected`, `secondary_categories`). `query_model` builds identifier-free variables (control numbers, dates and the prior-authorization number are left out; a presence marker stands in) and returns `None` on any failure or invalid content. **Merge policy** (`merge_results(rules, model, *, flagged_context=False)`): the model's category stands only when its confidence is strictly higher **and** no injection is suspected; when any document in the context is flagged or the model's answer reports `injection_detected`, the rules category always stands, `source` is `rules+model`, `injection_detected` is true, the model's text is kept in `model_rationale` and the rationale notes the suggestion that was not applied. A model that obeys planted instructions therefore cannot change a classification. When the model cannot answer the rules result is returned unchanged.
+- `classify(ctx, guard_call=None, *, threshold=None) -> ClassificationResult` (`app/classify/__init__.py`) is the single entry point used by the pipeline: the rules always run; the model is consulted only when `guard_call` is given and `should_consult_model` holds (rules confidence < `CLASSIFY_MODEL_THRESHOLD` (0.75), category `other`, or any payer document attached).
+- With `LLM_PROVIDER=stub` the stub maps the first CARC on the `reason_codes:` line to a category at confidence 0.6 and reports `injection_detected` only when an `<untrusted_document>` block carries a detector hit, so tests are hermetic; the injection suite additionally uses an obedient fake guard that answers with the planted category at 0.99.
+- M4 done-when: >= 0.90 category agreement and >= 0.80 expected-action agreement on the labeled synthetic set (`synthetic/fixtures/labeled_set_v1/labels.json`) using rules alone with the stub model (`tests/test_classifier_set.py`; both bars are asserted and are never lowered).
 
 ## 8. Redaction (M5) and model calls — `app/redact/`, `app/llm/`
 
-- `redact/registry.py`: `IdentifierRegistry.from_context(ctx)` collects: patient first/last/full names (and reversed "Last, First"), member id, address line, city+zip, DOB in formats `YYYY-MM-DD`, `MM/DD/YYYY`, `MMDDYYYY`, `Month D, YYYY`; patient account number; claim control numbers; provider names; service dates (`YYYY-MM-DD`, `MM/DD/YYYY`, `CCYYMMDD`). Each identifier has a `kind`: `PATIENT_NAME, MEMBER_ID, DOB, ADDRESS, ACCOUNT, CLAIM_ID, PROVIDER_NAME, DATE`.
-- `redact/tokenizer.py`: `redact(value: str | dict | list, registry) -> (redacted, RedactionMap)`; tokens look like `[[PATIENT_NAME_1]]`, same original → same token within a call; longest identifiers replaced first; case-insensitive for names. `restore(value, map)` reverses it in strings nested in dicts/lists.
-- `redact/scanner.py`: `scan(value, registry) -> list[Finding]` finds any registry identifier still present plus generic patterns (SSN `\d{3}-\d{2}-\d{4}`, email, US phone, `DOB:`-adjacent dates). Used by the guard (raise `RedactionError`) and by tests.
-- `redact/injection.py`: `detect_injection(text) -> list[InjectionFinding]` — patterns such as "ignore (all|any)? (previous|prior|above|earlier) instructions", "disregard .* instructions", "you are now", "system prompt", "approve (this|the) (claim|appeal|payment)", "mark .* as (paid|approved)", "do not flag", "assistant:", "<\|im_start\|>", "###\s*(system|instruction)", "output the following", base64 blobs > 80 chars. Documents with findings are stored with `flagged_injection=True`.
-- `llm/base.py`: `LLMClient` protocol: `complete(rendered: RenderedPrompt) -> LLMResult`. Implementations: `AnthropicClient` (pinned `LLM_MODEL`, `thinking={"type":"adaptive"}`, `output_config={"effort": LLM_EFFORT, "format": {json_schema}}` when a schema is present, streaming with `get_final_message()` for `max_tokens > 8000`, handles `stop_reason == "refusal"` by returning status `refusal`, never logs payload content, records `_request_id`), `StubClient` (deterministic, offline), `ReplayClient` (fixtures in `tests/fixtures/llm/`), `RecordingClient` (wraps a client and writes fixtures when `LLM_RECORD=1`).
-- `llm/prompts.py`: prompt files `app/llm/prompts/<name>.v<N>.md` with YAML front matter `{name, version, schema (optional), max_tokens}`, body split by a `--- user ---` marker into system and user Jinja templates. `render(name, variables) -> RenderedPrompt`; `prompt_version` is `f"{name}.v{N}@{sha256(file)[:8]}"`.
-- `llm/guard.py`: `guarded_call(session, client, prompt_name, variables, registry, *, purpose, work_item_id=None) -> GuardedResult(content, llm_result, redaction_map, model_call_id)`. Steps: redact variables → render → scan system+user (raise `RedactionError` on any finding) → wrap untrusted documents (variables ending in `_documents` are rendered inside `<untrusted_document>` tags by the templates) → call client → restore tokens in output → write `model_calls` row and audit event `model_call` with counts only. The guard is the only path to a model; nothing else may import the Anthropic SDK.
-- M5 done-when test: for every model call made during the end-to-end synthetic run, the captured payload contains zero names, member IDs, addresses or DOBs from the synthetic patient set (test monkeypatches the client to capture rendered prompts).
+- `redact/registry.py`: `IdentifierRegistry.from_context(ctx)` collects: patient first/last/full names (and reversed "Last, First") from the clinic record **and** from the remittance's own spelling (`RemittanceContext.patient_first_name/last_name/member_id`), member ids, address line, city+zip, DOB in the formats `YYYY-MM-DD`, `MM/DD/YYYY`, `MMDDYYYY`, `Month D, YYYY` (and two-digit years); the patient account number; claim control numbers, the payer claim control number and line item control numbers; the rendering provider's and note authors' names; service, submission, payment, received, note and document dates (`YYYY-MM-DD`, `MM/DD/YYYY`, `CCYYMMDD`). `IdentifierRegistry.from_patient(patient, claims=None, *, remittance_claims=None)` does the same from ORM rows (the JSON API uses it). Each identifier has a `kind` (`IdentifierKind`).
+- `redact/tokenizer.py`: `redact(value: str | dict | list | pydantic model, registry) -> (redacted, RedactionMap)`; tokens look like `[[PATIENT_NAME_1]]`, same original → same token within a call; longest identifiers replaced first; names case-insensitive on word boundaries, ids also inside other text. `restore(value, map)` reverses it in strings nested in dicts/lists.
+- `redact/scanner.py`: `scan(value, registry, *, generic=True, root="$") -> list[RedactionFinding]` (and `scan_text`) finds any registry identifier still present plus generic patterns (SSN, e-mail, US phone, `DOB:`-adjacent dates); previews are masked. `mask_generic(text) -> (text, counts)` replaces generic matches with unrestorable `[[MASKED_<KIND>_n]]` masks for values the registry cannot know (another person's phone number quoted in a letter). `RedactionError` carries counts and kinds only.
+- `redact/injection.py`: `detect_injection(text) -> list[InjectionFinding]` with named patterns (`ignore_instructions`, `disregard_instructions`, `you_are_now`, `system_prompt`, `as_an_ai`, `approve_claim`, `mark_as_paid`, `do_not_flag`, `assistant_role`, `chatml_marker`, `markdown_system_header`, `output_the_following`, `respond_with`, `new_instructions`, `override`, `base64_blob` of 80+ characters); `is_suspicious(text)`; `wrap_untrusted(text, source, doc_id)` escapes the fence tags and renders `<untrusted_document source=... id=...>`; `neutralize_section_markers(text)` spaces out `---` runs so a note cannot carry a prompt-section marker. Documents and notes with findings are stored with `flagged_injection=True`.
+- `llm/base.py`: `LLMClient` protocol: `name`, `model_id`, `complete(rendered: RenderedPrompt) -> LLMResult`. Implementations in `llm/clients.py`: `AnthropicClient` (pinned `LLM_MODEL`; system block with `cache_control: ephemeral`; `thinking={"type": "adaptive"}`; `output_config={"effort": LLM_EFFORT}` plus `format: {type: json_schema, schema}` when a schema is present; streaming with `get_final_message()` when `max_tokens > 8000`; the beta API with `fallbacks: "default"` only when `LLM_SERVER_FALLBACKS=true`; `stop_reason == "refusal"` → status `refusal`, `max_tokens` or invalid JSON → status `error`, transport errors → `LLMTransportError(class name, status code)`; never logs payload content; records `_request_id`), `StubClient` (deterministic, offline), `ReplayClient` (fixtures `tests/fixtures/llm/<name>.<16-hex key>.json`), `RecordingClient` (wraps a client and writes fixtures when `LLM_RECORD=true`). `llm/factory.py`: `get_client(settings=None)`; `anthropic` needs `ANTHROPIC_API_KEY` in the environment (read by the SDK) or `.env` (passed explicitly), else `ConfigurationError`.
+- `llm/prompts.py`: prompt files `app/llm/prompts/<name>.v<N>.md` (`classify_denial.v1.md`, `draft_appeal.v1.md`) with YAML front matter `{name, version, schema (optional), max_tokens}`, body split by a `--- user ---` marker into system and user Jinja templates (filters `money`, `tojson`, `wrap_untrusted`). `render(name, variables, *, version=None, directory=None) -> RenderedPrompt`; `prompt_version` is `f"{name}.v{N}@{sha256(file)[:8]}"`; `list_prompts()`, `get_prompt()`.
+- `llm/guard.py`: `guarded_call(session, client, prompt_name, variables, registry, *, purpose, work_item_id=None, restore_tokens=True, schema=None) -> GuardedResult(content, llm_result, redaction_map, model_call_id)`. Steps: redact variables → render (schema override) → mask generic values in system and user text → scan both (any finding: audit `model_call_blocked`, raise `RedactionError`) → untrusted documents are rendered inside `<untrusted_document>` tags by the templates (variables ending in `_documents`) → call the client → restore tokens in the output (unless `restore_tokens=False`) → write the `model_calls` row and audit event `model_call` with counts only; a refusal or error status is recorded as `model_call_failed`. `make_guard_call(session, client, registry, *, work_item_id=None, purpose="") -> call(prompt_name, variables, schema=None) -> dict | str` raises `LLMRefusedError` / `LLMFailedError` (status and error code only). The guard is the only path to a model; nothing else may import the Anthropic SDK.
+- M5 done-when test: for every model call made during the end-to-end synthetic run, the captured payload contains zero names (either spelling), member IDs, account numbers, addresses or DOBs from the synthetic patient set (`tests/test_redaction_e2e.py`, `tests/test_end_to_end_synthetic.py::test_9_...`).
 
 ## 9. Playbooks and drafting (M6) — `app/playbooks/`, `app/drafting/`
 
-- `playbooks/base.py`: `Playbook.propose(ctx, classification) -> ProposalDraft`; `playbooks/registry.py` maps category → playbook. Every proposal cites the CARC/RARC it relies on and any claim field or note excerpt it uses (`citations`), and sets `deadline`/`deadline_kind`.
+- `playbooks/base.py`: `Playbook.propose(ctx, classification) -> ProposalDraft`; `Playbook.build(...)` adds the invariants; `playbooks/registry.py` maps category → playbook (`get_playbook`, `register`, `reset`). `app.playbooks.propose(ctx, classification)` dispatches and runs `finalize`: every proposal has non-empty `citations` (the CARC/RARC it relies on and any claim field, payer window, remittance field, document or note sentence it uses), a `deadline` with its `deadline_kind`, `requires_note_excerpt=True` and the `coding_change` flag for a coding change, and the `flagged_notes_skipped` flag when a note was left out. `citation_resolves(ctx, citation)` checks a citation against the context (code in the reasons/remark codes, note id of that claim with the quoted text inside it, an existing claim field or line). Notes flagged for planted instructions are invisible to the playbooks (`usable_notes`, `find_supporting_notes`).
+- **Deadlines** (`playbooks/deadlines.py`): both windows count from the denial, not from the date of service. `denial_date(ctx)` = `remittance.payment_date`, else `remittance.claim_received_date`, else today; `corrected_claim_deadline = denial_date + payer.corrected_claim_days`; `appeal_deadline = denial_date + payer.appeal_days`; `deadline_for(action_type, ctx)` gives the appeal deadline to appeals and the corrected-claim deadline to everything else (clinic questions and no-action items show how much of the resubmission window is left). The payer's timely-filing window, counted from the first date of service (`first_service_date`), is not a deadline: it is the test the timely-filing playbook applies to `original_submission_date`. A denial adjudicated months after the visit is therefore not overdue on the day it arrives.
+- **Priority** (`playbooks/__init__.py`): `priority_score = dollar_value × urgency_weight(days to deadline) × action weight` (urgency 1.0 with 90+ days, rising to 4.0 on the deadline day, 0.5 once past; action weights corrected_claim/appeal 1.0, clinic_question 0.8, no_action 0.25). `dollar_value` = denied amount, else the sum of the reasons, else the claim total.
 - Category behaviours:
-  - `eligibility`: `clinic_question` (verify coverage on DOS, obtain correct payer/member id); if the payer document names the correct payer, propose `corrected_claim` to that payer (flagged, not a coding change).
-  - `authorization`: if `prior_auth_number` exists on the claim but was not on the remittance context → `corrected_claim` adding REF*G1; else `appeal` (retro-authorization) with note excerpts for medical necessity; `clinic_question` if no note excerpt exists.
-  - `modifier`: `corrected_claim` with the modifier fix derived from `playbooks/modifier_rules.yaml` (e.g. E/M on same day as procedure → 25; distinct procedural service → 59/XS/XU; bilateral → 50; professional/technical → 26/TC). **Always `coding_change=True`, `requires_note_excerpt=True`.**
-  - `duplicate`: `no_action` when the remittance shows the same service already paid; `appeal` with modifier 76/77/91 only when notes show a distinct service (coding change).
-  - `timely_filing`: `appeal` with proof of timely submission when `original_submission_date` is within the payer's window; otherwise `no_action` with reason `timely_filing_expired` (reviewer sees it in the missed-money review).
-  - `medical_necessity`: `appeal` quoting note excerpts tied to the diagnosis; `corrected_claim` when a documented diagnosis is missing from the claim (coding change).
+  - `eligibility`: `clinic_question` (verify coverage on the DOS, obtain the correct payer/member id); if a payer document names a different responsible payer, `corrected_claim` to that payer (flagged, not a coding change; the document's instructions are otherwise ignored).
+  - `authorization`: `prior_auth_number` on the claim but not in the denial → `corrected_claim` carrying it (REF*G1); else `appeal` (retro-authorization) quoting medical-necessity note excerpts; `clinic_question` when no usable note exists.
+  - `modifier`: `corrected_claim` with the modifier fix derived from `playbooks/modifier_rules.yaml` (E/M on the same day as a procedure → 25; distinct procedural service → 59/XS/XU, dropping a redundant 59; bilateral → 50; professional/technical → 26/TC; invalid or duplicate modifiers removed). **Always `coding_change=True`, `requires_note_excerpt=True`**; without note support the proposal is flagged and its confidence capped; when no situation matches, a `clinic_question` for the coder.
+  - `duplicate`: `no_action` when the remittance shows the same service already paid and nothing in the notes says otherwise; `appeal` with modifier 76/77/91 only when notes show a distinct repeat service (coding change).
+  - `timely_filing`: `appeal` with proof of timely submission (flag `proof_of_timely_filing_required`) when `original_submission_date` is within the payer's window from the first date of service; otherwise `no_action` with flags `timely_filing_expired` and `missed_money_review`; `clinic_question` for the clearinghouse acceptance report when the submission date or DOS is unknown.
+  - `medical_necessity`: `appeal` quoting note sentences tied to the diagnosis; `corrected_claim` when a documented diagnosis is missing from the claim (coding change); `clinic_question` without notes.
   - `bundling`: `appeal` with note excerpts supporting a distinct service and modifier 59/XS (coding change); `no_action` (contractual) when nothing in the notes supports it.
-  - `coordination_of_benefits`: `clinic_question` to obtain other-coverage info; `corrected_claim` to the primary payer when the document names it.
-  - `missing_information`: `corrected_claim` filling the field named by the RARC when it exists in the claim record (NDC, referring NPI, auth number, diagnosis pointer, dates); else `clinic_question` naming the field.
-  - `contractual` / `patient_responsibility`: `no_action`.
-  - `other`: `clinic_question` with the raw reasons.
-- `drafting/corrected_claim.py`: `build_corrected_claim(ctx, changes) -> CorrectedClaim` (before/after dicts in the claim-export shape, frequency code `7`, `original_claim_control_number` set, new control number `<orig>-R<n>`); `diff()` output is the `changes` list rendered in the UI.
-- `drafting/appeal.py`: `draft_appeal(ctx, classification, proposal_facts, llm_guard | None) -> str`. The letter is built from `templates/letters/appeal_<category>.html` with only facts from `ctx` and quoted note excerpts; when the model is enabled, prompt `draft_appeal` may rewrite the narrative paragraph only, and `drafting/factcheck.py` verifies every number, code and date in the output exists in the inputs (otherwise the template version is used and the proposal gets flag `model_draft_rejected`).
-- `drafting/pdf.py`: `render_pdf(html) -> bytes | None` (WeasyPrint optional).
-- M6 done-when: every proposal's `citations` is non-empty and each citation resolves to a code text, claim field or note excerpt.
+  - `coordination_of_benefits`: `clinic_question` to obtain other-coverage info; `corrected_claim` to the primary payer when a document names it.
+  - `missing_information`: `corrected_claim` filling the field named by the RARC when it exists in the claim record (NDC, referring/rendering NPI, auth number, diagnosis pointer, dates); modifier RARCs delegate to the modifier playbook; else `clinic_question` naming the field and quoting the RARC.
+  - `contractual` / `patient_responsibility`: `no_action` (and such adjustments alone never create a work item, section 6).
+  - `other`: `clinic_question` listing the raw reasons.
+- `drafting/corrected_claim.py`: `build_corrected_claim(ctx, changes: list[CorrectedClaimChange]) -> CorrectedClaim` (before/after dicts in the claim-export shape, frequency code `7`, `original_claim_control_number` set, new control number `<orig>-R<n>` via `next_control_number`); `render_diff(corrected)` / `diff()` give the rows the UI shows; `corrected_claim_to_csv_rows(corrected, patient_fields)` the export CSV; `parse_path`/`resolve_path`/`set_path` handle reviewer edits (`lines[2].modifiers`, `prior_auth_number`, ...).
+- `drafting/letters.py` and `app/templates/letters/`: plain-text Jinja templates. `base.txt.j2` is the letter frame (header with the facts, the narrative, quoted note excerpts, the request); `narrative_<category>.txt.j2` exists for authorization, bundling, coordination_of_benefits, duplicate, eligibility, medical_necessity, missing_information, modifier and timely_filing, with `narrative_generic.txt.j2` for the rest; each has a `narrative` and a `request` block rendered separately (`render_block`).
+- `drafting/appeal.py`: `draft_appeal(ctx, classification, draft: ProposalDraft, guard_call=None) -> tuple[str, list[str]]`. The letter is built from the templates with only facts from `ctx` (`build_letter_facts`) and the note excerpts the draft cites (`select_note_excerpts`; flagged notes are skipped and the `flagged_notes_skipped` flag added). When `MODEL_ENABLED_FOR_DRAFTING` is true and a guard is given, prompt `draft_appeal` may rewrite the narrative paragraph only (`rewrite_narrative`); `drafting/factcheck.py` `verify(output, inputs) -> list[str]` must find no number, code or date in the rewrite that is absent from the narrative and facts (note text does not count as a fact of the claim), otherwise the template narrative is kept and the flag `model_draft_rejected` set; `model_narrative` marks an accepted rewrite, `model_unavailable` a guard that could not answer. HTML (`letter_html`, escaped) and the PDF are produced only at export (`drafting/pdf.py`: `render_pdf(html) -> bytes | None`, WeasyPrint optional).
+- M6 done-when: every proposal's `citations` is non-empty and each citation resolves (`citation_resolves`) on the 150-item batch; a coding change cites the note text it relies on (`tests/test_pipeline.py`, `tests/test_playbooks.py`).
 
 ## 10. Review queue (M7), outcomes and audit (M8)
 
-Routes (all behind login + MFA unless `AUTH_REQUIRED=false`):
+Routes (`app/auth/routes.py`, `app/review/routes.py`, `app/api/routes.py`). Every route except the login pages and `/api/health` depends on `require_user` (303 to `/login` for pages, 401 under `/api`; with `AUTH_REQUIRED=false` a local admin `user:local` stands in). Every POST also depends on `csrf_protect`: the Origin or Referer header, when present, must name this host, and the request must carry the `HX-Request` header or the per-session `_csrf` form token. Every action writes one `actions` row and one audit event; a refused action (`ValueError` from the service, e.g. `invalid_transition`, `reason_required`, `note_excerpt_required`, `suspicious_text`, `nothing_changed`) re-renders the page with status 400 and commits nothing. Allowed statuses per action live in `service.ALLOWED_STATUSES`.
 
 | Route | Purpose |
 |---|---|
-| `GET /login`, `POST /login`, `GET/POST /login/mfa`, `POST /logout` | password then TOTP |
-| `GET /` → `/queue` | work list: default sort by deadline asc (nulls last), then dollar_value desc, then confidence desc; filters: status, category, payer, flagged; deadline badges at <=30 and <=14 days |
-| `GET /items/{id}` | claim facts, remittance adjustments with code text, documents (with injection warning), notes, current proposal, citations, corrected-claim diff, appeal letter preview; records `first_viewed_at` and a `view` action |
-| `POST /items/{id}/approve`, `/edit`, `/reject`, `/mark-submitted`, `/reopen`, `/attach-note` | HTMX forms; reject/edit require a reason; approve of a coding change requires a note excerpt; each writes an `actions` row and an audit event; `review_seconds` = decided_at - first_viewed_at |
-| `GET /items/{id}/export` | zip: `summary.json`, `corrected_claim.json`, `corrected_claim.csv`, `appeal_letter.html`, `appeal_letter.pdf` (if available), `audit_excerpt.json`; sets status `exported` |
-| `GET /imports`, `POST /imports/835`, `POST /imports/claims`, `POST /imports/notes`, `POST /imports/documents` | upload files → job → results with unmatched list |
-| `GET /dashboard` | `DashboardMetrics`: recovered dollars, overturn rate, items by status, by category and payer, avg review minutes, deadline buckets |
-| `GET /audit` | paginated audit log, chain verification status |
-| `GET /api/health`, `GET /api/metrics` | JSON |
+| `GET /login`, `POST /login`, `GET/POST /login/mfa`, `POST /logout` | password then TOTP; the login POSTs are origin-checked, logout needs the CSRF token; the session is cleared and re-issued after the second factor |
+| `GET /` → `/queue` | redirect |
+| `GET /queue?status&category&payer_id&flagged&sort&page&per_page` | work list: default order deadline asc (NULLs last), dollar_value desc, confidence desc, id; sorts `default`, `dollars`, `priority`, `newest`, `deadline`; without `status` closed and rejected items are hidden, `status=all` shows every status; `flagged` = any / none / one flag name; 100 rows per page (max 500) with the exact total and previous/next links; deadline badges `overdue`, `<=14d`, `<=30d` (`DEADLINE_WARN_DAYS`); `HX-Request` returns the table partial |
+| `GET /items/{id}` | claim facts, remittance adjustments with code text, documents (with an injection warning), notes (flagged ones marked; reviewer-typed ones labelled), the current proposal, citations, corrected-claim diff, appeal letter preview, actions, outcomes; records `first_viewed_at` once, moves `proposed` → `in_review`, stores one `view` action per user, audit `work_item_viewed` |
+| `POST /items/{id}/approve` (`note_excerpt`, `edited_letter`) | from `proposed`/`in_review` → `approved`; a proposal with `coding_change` or `requires_note_excerpt` needs a note excerpt (given now, or attached before); an edited letter first becomes a new proposal version; `review_seconds` = `decided_at` − `first_viewed_at` |
+| `POST /items/{id}/edit` (`reason`, `summary`, `rationale`, `appeal_letter`, `clinic_question`, `cc:<path>` ...) | reason required; a new proposal version (`generated_by=reviewer`) with the changed fields; editing `procedure_code`, `modifiers`, `diagnosis_codes` or `diagnosis_pointers` makes it a coding change; status unchanged |
+| `POST /items/{id}/reject` (`reason`) | reason required → `rejected` |
+| `POST /items/{id}/attach-note` (`text`) | stores a `NoteExcerpt` with source `reviewer` (refused when `is_suspicious`); any status but `closed` |
+| `POST /items/{id}/regenerate` | `app.pipeline.regenerate_proposal`: a new version from a fresh classification; category, flags, deadline and priority follow it; from `proposed`/`in_review` |
+| `POST /items/{id}/mark-submitted` (`submitted_on`, `submitted_claim_control_number`) | from `approved` or `exported` → `submitted`; default control number `<ccn>-R1` for a corrected claim, else the claim's; the claim becomes `corrected` or `appealed` |
+| `POST /items/{id}/reopen` (`reason`) | from `rejected`, `approved` or `closed` (closed requires a reason) → `proposed`; clears `decided_at`, `closed_at` **and** `first_viewed_at` so the next decision's `review_seconds` measures the new review (the stored `view` action stays) |
+| `POST /items/{id}/close` (`reason` optional) | any status but `closed` → `closed` |
+| `GET /items/{id}/export` | from `approved`, `exported` or `submitted`: builds the zip (members below), writes it under `EXPORT_DIR` as `work_item_<id>_<ccn>_v<version>_<stamp>.zip`, the first export moves `approved` → `exported`, later downloads are allowed and audited again (`package_exported`). Accepted as a GET with a recorded mitigation: the session cookie is `SameSite=Strict`, so a cross-site link never carries it, and every template autoescapes, so no same-site injected link exists; a request without the cookie gets 303 (`tests/test_review_queue.py::test_export_without_the_session_cookie_is_refused`) |
+| `GET /imports` | the last 100 batches, the last 200 unmatched CLPs with the total, pending denials, the clinic |
+| `POST /imports/835`, `/claims`, `/notes`, `/documents` (multipart `file`) | `require_user` runs before `csrf_protect` so an anonymous request is refused before a byte of the body is read; a declared size over 20 MB → 413 before `csrf_protect` parses the body, an actual size over 20 MB → 413 while it is read; the file is stored under `DATA_DIR/uploads/<kind>/<sha16>_<name>` and the import task is enqueued (`app.jobs.enqueue`); audit `import_requested` and `import_job_finished` with counts; the result (batch, counts, pipeline status, unmatched) is rendered |
+| `POST /imports/process`, `POST /imports/rematch` | run the pipeline over pending denials / re-match unmatched CLPs (audit `process_requested`, `remittance_rematched`) |
+| `GET /dashboard` | `DashboardMetrics` without walking the audit chain (`verify_audit=False`; it links to `/audit`) |
+| `GET /audit?page&claim_id&action` | 100 rows per page newest first, filters, full `verify_chain` on every request |
+| `GET /api/health` | public: `select 1` plus the audit chain verdict from a per-process cache refreshed at most every 60 s (`audit_chain_verified_at`); 200 `ok` or 503 `degraded` |
+| `GET /api/metrics` | `DashboardMetrics` JSON (login required) |
+| `GET /api/items/{id}` | identifier-free JSON: no names, DOB, member id, address, account number, letter, note text or document text; free text (classification rationale, summary, rationale, clinic question, citation texts, diff rows, reviewers' reasons) passes through the claim's identifier tokenizer so a restored name leaves as `[[PATIENT_NAME_1]]` |
 
-Outcomes (`app/outcomes/matching.py`): when an imported CLP matches a claim (directly or via `submitted_claim_control_number`) whose work item is `submitted`, create an `outcomes` row: `paid` if paid_amount >= 0.95 × denied dollar_value, `partial` if 0 < paid < that, `denied_again` if paid == 0 with denial adjustments, `reversed` for CLP02 22; set work item `closed`, claim status accordingly, audit event `outcome_recorded`.
+Export package members: `summary.json` (work item, claim, payer, category, action, summary, rationale, deadline, dollar value, citations, flags, `coding_change`, the attached note excerpts with their source and `typed_by_reviewer`, proposal version, reviewer, timestamps, `"submitted_by_software": false`); for a corrected claim `corrected_claim.json` and `corrected_claim.csv` (claim-export columns, patient block from the patient record); for an appeal `appeal_letter.txt`, `appeal_letter.html` and `appeal_letter.pdf` (or `README.txt` when WeasyPrint is unavailable); for a question `clinic_question.txt`; always `audit_excerpt.json` (the claim's audit rows with their hashes).
 
-Metrics (`app/outcomes/metrics.py`): `compute_dashboard(session) -> DashboardMetrics`. Definitions from the plan: overturn rate = paid (full or partial) / submitted; recovered dollars = sum of outcome `paid_amount` for agent-assisted items; review time = mean `review_seconds` / 60.
+**Outcomes** (`app/outcomes/matching.py`, `record_outcomes_for_remittance(session, remittance)` called by the 835 import and by rematch): for every CLP, the candidate work items are those in status **`submitted`** on the same claim or whose `submitted_claim_control_number` equals CLP01 (`exported` items are not submitted fixes). A candidate is skipped (and logged by id) when the remittance is dated before the submission (`payment_date`, else `production_date`, else the day it was received, compared with `submitted_at`) or comes from another payer than the claim's, unless the CLP names the corrected claim's own control number (it may have been redirected to the payer a letter named); a work item's originating CLP never counts; re-runs are idempotent (one outcome per work item and CLP). `classify_outcome(rc, dollar_value, *, reasons)`:
+
+- `reversed` for CLP02 `22`;
+- `denied_again` when nothing is paid (reason `denial` or `zero_paid`);
+- `paid` when no denial adjustment remains on the claim or on the lines the work item disputed (only contractual/informational CARCs such as CO-45 or PR-1/2/3, or the patient-responsibility CARCs PR-96/204/49/119 that section 6 does not count as denials, are left: an overturned denial paid at the contracted rate is a win), **or** the payment reaches 95% of the work item's dollar value (the threshold is rounded to the cent once and the same value is compared and recorded); a line-level adjustment belongs to a disputed line by procedure code when both sides know one, by SVC line number only as the fallback;
+- `partial` otherwise (something paid, but a denial adjustment remains on a disputed line or on the claim). A new denial on a line the fix never touched does not make the fix partial; the pipeline turns it into a work item of its own.
+
+`paid`, `partial` and `denied_again` close the work item and set the claim status (`paid`/`partial`/`denied`); **`reversed` leaves it `submitted`** and leaves the claim status as the submission left it (`corrected`/`appealed`), so the re-adjudication a later 835 brings is recorded too (within one remittance, reversals are evaluated last). An unlinked CLP matched through the submitted control number is linked to the claim, and audit event `outcome_recorded` carries the result, amounts, ids, match method and remaining denial codes. Known limit: a take-back that arrives after a closing outcome (paid, then CLP02 `22` in a later 835) is not matched, because closed items are not candidates; the reviewer reopens the item with a reason and the next remittance closes it again. A wrongly closed item is reopened the same way.
+
+**Metrics** (`app/outcomes/metrics.py`): `compute_dashboard(session, *, today=None, verify_audit=True) -> DashboardMetrics`, counted per work item (a work item with several outcomes stands for its latest, by payment date then id): submitted fixes = work items with `submitted_at` set that are `submitted` or `closed`; overturn rate = fixes whose latest outcome is paid or partial / submitted fixes; recovered dollars = the latest outcome's `paid_amount` over those; review time = mean `review_seconds` / 60; items by status, dollars at stake (open items), by category and by payer, deadline buckets (`overdue`, `<=14 days`, `<=30 days`, `>30 days`, `none`), model calls and tokens, `audit_chain_ok`. `category_agreement(session, labels) -> (share, compared)` for Phase 2; `labels_from_json`.
 
 ## 11. Pipeline — `app/pipeline.py`
 
-`process_remittance_claim(session, rc, *, llm_guard, actor="agent") -> WorkItem | None` builds `DenialContext`, runs `classify`, picks the playbook, drafts, writes `work_items` + `proposals` (status `proposed`), records audit events `work_item_created`, `classified`, `proposal_created`. `process_pending(session)` processes every denied remittance claim without a work item. Jobs call these.
+- `build_context(session, rc, *, today=None) -> DenialContext | None`: claim, lines with the paid amount from the matching SVC, patient identifiers (for the registry only) and the payer's spelling from the CLP, payer windows, remittance facts, enriched reasons, documents and notes with their stored injection findings (re-scanned when none were stored).
+- `process_remittance_claim(session, rc, *, llm_client=None, today=None, actor_id="pipeline", resolve_client=True) -> WorkItem | None`: returns `None` for a non-denial or an unmatched CLP, the existing work item when one exists (idempotent); otherwise creates the work item (`dollar_value` = denied amount), builds the registry and `make_guard_call` when a client is available (`get_client(settings)` unless one is passed; a misconfigured provider logs the class name and continues rules-only), runs `classify`, `propose`, `draft_appeal` for appeals, persists proposal version 1 (status `proposed`), computes flags (`injection_flagged` when a document or note is flagged or the model reported injection, the draft's flags, `coding_change`), deadline, `deadline_kind`, `priority_score`. Audit events: `work_item_created`, `classified`, `proposal_created` (actor type `agent`).
+- `process_pending(session, *, llm_client=None, today=None, limit=None, actor_id="pipeline") -> PipelineRun` processes every denied, matched remittance claim without a work item. **Each claim runs inside `session.begin_nested()` (a savepoint)**: a failing claim is rolled back to its savepoint, recorded as audit event `pipeline_failed` with the remittance claim id and the exception class name (never the message), and the loop continues; the result lists the created work items and, under `.failed`, `PipelineFailure(remittance_claim_id, claim_id, error)` for the claims to retry on the next run. Nothing is committed here; the caller commits. (On SQLite, pysqlite's legacy transaction control opens no transaction before the first `SAVEPOINT`, so the first claim's `RELEASE` commits on its own, while on PostgreSQL the savepoints nest inside the caller's transaction; the failure handling is the same on both. SQLAlchemy's documented pysqlite workaround is not applied because it conflicts with the `AUTOCOMMIT` connection `purge-clinic` uses for `VACUUM`.)
+- `regenerate_proposal(session, work_item, *, llm_client=None, today=None, actor_id="pipeline") -> Proposal`: a new version from a fresh context (a letter attached later is scanned and flagged here); audit `proposal_regenerated`.
+- Jobs (`app/jobs/tasks.py`): `import_835_file`, `import_claims_file`, `import_notes_file`, `import_documents_file` commit the import first and then run the pipeline in a second transaction; `process_pending` runs it alone. Results are plain dicts: batch id, status, counts, `pipeline` (`ok` | `partial` | `failed`), `work_items_created`, `work_item_ids`, `pipeline_failures`, `failed_remittance_claim_ids`, `pipeline_error` (first exception class name). `denial-agent process` and the import commands exit 1 when the pipeline failed or skipped denials (`partial`: stderr names the skipped remittance claim ids, which the next `denial-agent process` picks up).
 
 ## 12. Synthetic data — `synthetic/`
 
-- `synthetic/profiles/dermatology.yaml`: example specialty profile (procedures, E/M codes, modifiers, diagnoses, payers with filing/appeal windows, denial scenarios with weights, each scenario listing the CARC/RARC/group/level to emit, the ground-truth category and expected action, note templates, payer letter templates). Phase 0 replaces this with the chosen specialty.
-- `synthetic/generate.py`: `generate(seed, n_claims, out_dir, profile, denial_rate=0.75, injection_rate=0.20) -> Manifest` (defaults chosen so the committed 200-claim set carries 150+ labeled denials and 10+ planted letters; pass a lower `denial_rate` for demo batches). Writes `claims_export.csv`, `notes.csv`, `payer_documents.csv`, one or more `remit_*.835`, `labels.json` (every denied claim: control number, category, expected action, scenario id), `manifest.json`. Deterministic for a seed. Names/addresses come from word lists in `synthetic/names.py` (no third-party faker).
-- `synthetic/followup.py`: `generate_followup_835(session, work_items, outcome_plan) -> str` builds a later 835 paying/denying submitted fixes for the full-loop test.
-- `synthetic/fixtures/labeled_set_v1/`: committed output of `generate(seed=20261028, n_claims=200)` with 150+ labeled denials, plus `REVIEW.md` explaining that labels are generator ground truth to be hand-checked.
+- `synthetic/profiles/dermatology.yaml`: example specialty profile (four payers with filing/corrected-claim/appeal windows, fee schedule, modifiers, diagnoses, encounter templates, 22 denial scenarios with weights, each listing the CARC/RARC/group/level to emit, the ground-truth category and expected action, note templates, payer letter templates). Phase 0 replaces this with the chosen specialty.
+- `synthetic/generate.py`: `generate(seed, n_claims, out_dir, *, profile="dermatology", denial_rate=0.75, injection_rate=0.20, as_of=date(2026, 10, 28)) -> dict` (the manifest, also saved as `manifest.json`). The defaults are chosen so the committed 200-claim set carries 150 labeled denials covering every actionable category at least six times and at least ten planted letters; pass a lower `denial_rate` for demo batches. Writes `claims_export.csv`, `notes.csv`, `payer_documents.csv`, one `remit_<payer_id>.835` per payer, `labels.json` (every denied claim: control number, scenario id, category, expected action, codes, level, line, denied amount, payer, `injection_planted`, `has_notes`, `has_letter`), `manifest.json`. Deterministic for a seed; names and addresses come from the word lists in `synthetic/names.py` (no third-party faker). Planted instructions (six styles, `INJECTION_PAYLOADS`) go into payer letters only; the tests plant note-borne instructions by hand. `denial-agent generate-synthetic --out DIR [--seed 20261028] [--claims 200]` wraps it.
+- `synthetic/followup.py`: `generate_followup_files(session, work_items, outcome_plan, payment_date) -> dict[payer_id, str]` builds one later 835 per payer from an `outcome_plan` `{work_item_id: "paid" | "partial" | "denied_again" | "reversed"}`; `generate_followup_835(session, work_items, outcome_plan, payment_date=None, *, as_of=None) -> str` wraps the same transactions into one interchange. Amounts follow the section 10 rule: `paid` pays every line at the contracted rate (20% CO-45, no denial adjustment, whatever the dollar value); `partial` pays half the dollar value with the work item's first denial reason as the CAS on the unpaid part; `denied_again` is CLP02 `4` with that reason; `reversed` is CLP02 `22` with negative amounts. CLP01 is the work item's `submitted_claim_control_number` when set.
+- `synthetic/x12_writer.py`: `build_835(...)` / `build_835_multi(...)` write a 005010X221A1 file from plain dicts.
+- `synthetic/fixtures/labeled_set_v1/`: committed output of `generate(seed=20261028, n_claims=200)` (200 claims, 150 labeled denials, 14 planted letters), plus `REVIEW.md` explaining that labels are generator ground truth to be hand-checked.
 
-## 13. Tests — `tests/` (maps to the plan's testing table)
+## 13. Tests — `tests/` (maps to the plan's testing table; see `docs/TESTING.md` for counts)
 
 | Plan test | File | Pass when |
 |---|---|---|
-| Parser golden files | `test_parser_golden.py`, `test_claims_import_golden.py` | exact match on every field |
-| Classifier test set | `test_classifier_set.py` | >= 90% on labeled synthetic set |
-| Prompt regression | `test_prompt_regression.py` | fixed inputs → schema-valid output; every fact in output exists in inputs |
-| Redaction | `test_redaction.py` | zero identifiers in any captured model payload |
-| PHI in logs | `test_phi_in_logs.py` | zero identifiers in captured log output during a full run |
-| Injection | `test_injection.py` | planted instructions ignored; document flagged; classification unchanged |
-| End-to-end synthetic | `test_end_to_end_synthetic.py` | 200-claim batch: import → proposals → approvals → export → follow-up 835 → outcomes; every step in the audit log; chain verifies |
-| Audit append-only | `test_audit.py` | update/delete raise; chain tamper detected |
-| Review queue | `test_review_queue.py` | ordering, actions, export package; 20 synthetic items cleared through HTTP only |
-| Auth/MFA | `test_auth.py` | wrong password/TOTP rejected; session required |
-| Migrations | `test_migrations.py` | `alembic upgrade head` on a fresh SQLite file; tables match models |
+| Parser golden files | `test_parser_golden.py`, `test_claims_import_golden.py`, `test_remit_import.py` | exact match on every field; member-id qualifiers; duplicate-safe re-imports |
+| Classifier test set | `test_classifier_set.py`, `test_classifier_rules.py`, `test_codes.py` | >= 0.90 category and >= 0.80 action agreement on the labeled set (asserted, never lowered) |
+| Prompt regression | `test_prompt_regression.py`, `test_llm_clients.py` | fixed inputs → schema-valid output; replayed drafts pass `factcheck.verify`; `live_llm` opt-in |
+| Redaction | `test_redaction.py`, `test_redaction_e2e.py` | zero identifiers in any captured model payload |
+| PHI in logs | `test_phi_in_logs.py` (+ `test_jobs.py`, `test_cli.py`) | zero identifiers and zero `MASK_HITS` from `app.*` loggers during a full run; uvicorn and worker tracebacks folded |
+| Injection | `test_injection_unit.py`, `test_injection.py` | planted instructions ignored, also against an obedient fake model; document flagged; classification unchanged; nothing planted in proposals or audit |
+| End-to-end synthetic | `test_end_to_end_synthetic.py` | 200-claim batch over HTTP: imports → proposals → review → export → mark submitted → follow-up 835 → outcomes → dashboard; every step in the audit log; chain verifies |
+| Audit append-only | `test_audit.py` | update/delete raise or are detected; chain tamper detected |
+| Review queue | `test_review_queue.py` | ordering, pagination, every action, export package, API tokenization, health cache; 20 synthetic items cleared through HTTP only |
+| Auth/MFA | `test_auth.py` | wrong password/TOTP rejected; replayed code rejected; lockout; session, CSRF and upload gates |
+| Migrations | `test_migrations.py` | `alembic upgrade head` on a fresh SQLite file; the full `compare_metadata` diff against the models is empty; Postgres-only trigger in the offline SQL |
+| Outcomes, metrics | `test_outcomes.py`, `test_metrics.py` | the section 10 rule and gates; per-item counting |
+| Pipeline, jobs, matching, playbooks, drafting, synthetic, CLI | `test_pipeline.py`, `test_jobs.py`, `test_matching.py`, `test_playbooks.py`, `test_drafting.py`, `test_synthetic.py`, `test_cli.py` | sections 6, 9, 11, 12 and the CLI |
 
-`tests/conftest.py` provides `settings` (SQLite temp DB, `LLM_PROVIDER=stub`, `JOB_BACKEND=inline`, `AUTH_REQUIRED` toggle), `session`, `client` (FastAPI TestClient logged in through the real MFA flow), `synthetic_batch` (generated into tmp_path) and `captured_llm_payloads`.
+`tests/conftest.py` clears every `Settings` variable, sets `APP_ENV=test` (no `.env`), `LLM_PROVIDER=stub`, `JOB_BACKEND=inline`, a temp SQLite `DATABASE_URL`, `DATA_DIR`/`EXPORT_DIR` under the temp path, and provides `settings`, `engine`, `session`, `clinic`, `app`, `client` (FastAPI TestClient logged in through the real password + TOTP flow), `anon_client`, `reviewer`, `synthetic_batch` (generated once per session) and `captured_llm_payloads`. `tests/helpers.py` runs the whole batch once per module for the heavier suites.
 
 ## 14. Configuration — `app/config.py` (`Settings`, env prefix none, `.env` file)
 
-`APP_ENV` (local|test|docker), `SECRET_KEY`, `DATABASE_URL` (default `sqlite:///./data/denial_agent.db`; docker: postgres), `REDIS_URL`, `JOB_BACKEND` (inline|rq), `LLM_PROVIDER` (stub|anthropic|replay), `LLM_MODEL` (default `claude-opus-5-5`, pinned), `LLM_EFFORT` (default `medium`), `LLM_MAX_RETRIES`, `LLM_TIMEOUT_SECONDS`, `LLM_SERVER_FALLBACKS` (default false — pinned model; opt-in), `ANTHROPIC_API_KEY` (read by the SDK from the environment, never logged), `CLASSIFY_MODEL_THRESHOLD` (0.75), `AUTH_REQUIRED` (true), `SESSION_COOKIE_SECURE`, `DATA_DIR` (`./data`), `EXPORT_DIR`, `LOG_LEVEL`, `DEADLINE_WARN_DAYS` (`30,14`), `CLINIC_ID` (default clinic for imports).
+The `.env` file is `<project root>/.env` whatever the current directory; process environment variables override it; `get_settings()` skips the file under `APP_ENV=test`. Fields and defaults:
+
+- `APP_ENV` (`local` | `test` | `docker`; `local`), `SECRET_KEY` (a placeholder default that `create_app` refuses outside tests: empty, shorter than 24 characters, or `change-me`/`changeme`/`secret`; `is_placeholder_secret`), `DATABASE_URL` (`sqlite:///./data/denial_agent.db`, relative SQLite paths resolved against the project root; docker: postgres), `REDIS_URL` (`redis://127.0.0.1:6379/0`), `JOB_BACKEND` (`inline` | `rq`; `inline`)
+- `LLM_PROVIDER` (`stub` | `anthropic` | `replay`; `stub`), `LLM_MODEL` (`claude-opus-5-5`, pinned), `LLM_EFFORT` (`low` | `medium` | `high` | `xhigh` | `max`; `medium`), `LLM_MAX_RETRIES` (2), `LLM_TIMEOUT_SECONDS` (120.0), `LLM_SERVER_FALLBACKS` (false — opt-in; a fallback would break the pinned-model rule), `LLM_RECORD` (false; development only), `LLM_REPLAY_DIR` (`tests/fixtures/llm`), `ANTHROPIC_API_KEY` (read by the SDK from the environment or passed from `.env`; never logged), `CLASSIFY_MODEL_THRESHOLD` (0.75), `MODEL_ENABLED_FOR_DRAFTING` (true)
+- `AUTH_REQUIRED` (true), `SESSION_COOKIE_SECURE` (false), `SESSION_MAX_AGE_SECONDS` (28800), `LOGIN_MAX_FAILURES` (5), `LOGIN_LOCKOUT_MINUTES` (15)
+- `DATA_DIR` (`./data`), `EXPORT_DIR` (`./data/exports`), `LOG_LEVEL` (`INFO`), `DEADLINE_WARN_DAYS` (`30,14`, sorted descending), `CLINIC_ID` (default clinic for the clinic imports; unset = the only clinic), `DEFAULT_TIMELY_FILING_DAYS` (90), `DEFAULT_CORRECTED_CLAIM_DAYS` (90), `DEFAULT_APPEAL_DAYS` (180)
+- Docker Compose only (not a `Settings` field): `POSTGRES_PASSWORD`, required by `docker compose up`.
+
+`.env.example` lists every key with these defaults and an empty `SECRET_KEY`; `scripts/env-notes.md` explains each.
 
 ## 15. Security controls in code
 
-- Postgres and Redis bound to `127.0.0.1` in `docker-compose.yml`; app on `127.0.0.1:8000`.
-- Session cookie `HttpOnly`, `SameSite=Strict`; state-changing routes require the session and reject cross-origin requests (Origin/`HX-Request` check).
-- Argon2id password hashes; TOTP (pyotp) with 30-second window ±1 step; failed logins audited; 5 failures lock the account for 15 minutes.
-- Logs carry ids and counts only; `PHIMaskingFilter` masks DOB-like dates, member-id-like tokens, emails and SSNs as defence in depth; the PHI-in-logs test fails the build on any synthetic identifier.
-- `.gitleaks.toml` + pre-commit + CI; `data/` ignored; no real data in fixtures.
-- `denial-agent purge-clinic` for pilot termination.
+- A placeholder `SECRET_KEY` is refused: `denial-agent serve` checks it before uvicorn starts and exits 1 with the instruction to generate one, and `create_app` raises outside `APP_ENV=test` as the backstop (the app container exits instead of signing cookies with a known value). The bootstrap scripts generate a key.
+- Postgres and Redis published on `127.0.0.1` only, the app on `127.0.0.1:8000` (`docker-compose.yml`; `serve` defaults to `127.0.0.1`); Postgres data in the named volume `pgdata`, uploads and exports under `./data`; the worker container runs `python -m app.jobs.worker`; the app container has a healthcheck on `/api/health` and the worker waits for it.
+- Session cookie `denial_session`: `HttpOnly`, `SameSite=Strict`, `max_age` = `SESSION_MAX_AGE_SECONDS`, `Secure` when `SESSION_COOKIE_SECURE`; the session is a signed cookie that counts as a login only after both factors and is re-issued after the second factor.
+- State-changing routes require the session and `csrf_protect` (Origin/Referer same-host check plus `HX-Request` or the `_csrf` token); upload routes authenticate before reading the body and cap uploads at 20 MB.
+- Argon2id password hashes; TOTP (pyotp) with a 30-second step, one step either side, each code accepted once (`users.totp_last_step`, RFC 6238 §5.2, consumed by one conditional `UPDATE` on the row so two overlapping submissions of a code cannot both pass); failed logins audited with reason codes; `LOGIN_MAX_FAILURES` failures (password or code) lock the account for `LOGIN_LOCKOUT_MINUTES`; unknown emails cost the same time as wrong passwords.
+- Logs carry ids, counts and codes only. `PHIMaskingFilter` masks DOB-like dates, member-id-like tokens, emails, phones and SSNs as defence in depth and folds exception tracebacks to frames plus the class name; `MASK_HITS` records every substitution and the PHI-in-logs test fails when any `app.*` logger needed one. The CLI, inline jobs, the rq worker (`app/jobs/worker.py`: masked loggers, failures logged and stored as frames plus class name, no job arguments) and uvicorn (`serve` passes `log_config=None` so uvicorn's loggers propagate to the masked root handler) all follow it.
+- Only `app/llm/guard.py` reaches a model; payer documents and note excerpts are untrusted (section 8), a flagged document never lets the model override the rules (section 7), a flagged note is never quoted (section 9).
+- The audit log is append-only and hash-chained (section 2); `denial-agent verify-audit` prints `OK` or exits 1; `/audit` verifies fully on every request; `/api/health` from a 60-second cache; `/dashboard` does not verify.
+- `GET /api/items/{id}` tokenizes free text and omits letters, notes and the patient block (section 10).
+- `.gitleaks.toml` + pre-commit + CI (`ruff check`, `ruff format --check`, pytest); the allowlist covers only `synthetic/fixtures/`, `tests/fixtures/835/` and `tests/fixtures/claims/`, so recorded model fixtures are scanned; `data/` ignored; no real data in fixtures.
+- `denial-agent purge-clinic <id> --confirm` deletes every uploaded file under `DATA_DIR/uploads` and every export package under `EXPORT_DIR` (a single-clinic pilot: all of them), exports the clinic's rows to one zip, deletes the rows (remittances stay as the payment ledger: matched CLPs are unlinked, and every CLP, matched or not, loses the patient name and member id the payer echoed back; the unmatched ones are handed over as `remittance_claims_unmatched.json`), records `clinic_purged` with counts and the deleted file names, and refuses to report destruction when a file could not be removed. On SQLite it then runs `VACUUM` so the freed pages are rewritten (`vacuumed` in the report; a failed `VACUUM` exits 1 with `vacuum_error`), and every SQLite connection sets `PRAGMA secure_delete=ON` so routine deletes overwrite their bytes too; on PostgreSQL the DBA runs `VACUUM FULL` after a purge. The zip is the hand-over copy and is kept on purpose; delete it once delivered.
+- Patient pseudonym: `patients.token` is `PT-` plus six hex characters of `sha256("<clinic_id>:<account_number>")` (unkeyed). It is a display label inside the clinic's own system, used where the patient block is left out (queue, letters without the header, the JSON API, corrected-claim JSON); it is not a security boundary and is not meant to resist a brute-force search by someone who already has the database.

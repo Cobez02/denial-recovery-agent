@@ -3,6 +3,13 @@
 The variables live in tests/fixtures/llm/<name>.variables.json. The replay fixtures are keyed by
 sha256(name, version, rendered user text)[:16], so editing a prompt file changes the key: the
 `test_replay_client_serves_committed_fixtures` failure message tells you the new fixture name.
+
+The plan's row for this test is "no structure breaks; no fact absent from the inputs": the recorded
+model outputs are checked against the classify schema and run through `app.drafting.factcheck.verify`
+against their inputs (the narrative and claim facts for the draft, the whole variable set for the
+classification rationale). `test_live_model_outputs_are_schema_valid_and_faithful` repeats that against
+the real model; it is marked `live_llm` and skipped unless ANTHROPIC_API_KEY is set (the one test in
+the suite allowed to skip, since it needs a key and the network).
 """
 
 from __future__ import annotations
@@ -10,25 +17,59 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from app.classify.model_classifier import CLASSIFY_SCHEMA, parse_model_result
+from app.config import Settings
+from app.drafting.factcheck import verify
 from app.enums import DenialCategory, ModelCallStatus
 from app.llm import prompts
-from app.llm.clients import ReplayClient, StubClient, fixture_filename
+from app.llm.clients import RecordingClient, ReplayClient, StubClient, fixture_filename
+from app.llm.factory import get_client
 from app.llm.prompts import PromptNotFoundError, PromptRenderError, list_prompts, money, render
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "llm"
 VERSION_RE = re.compile(r"^(?P<name>[a-z][a-z0-9_]*)\.v(?P<n>\d+)@(?P<sha>[0-9a-f]{8})$")
 CATEGORY_VALUES = {c.value for c in DenialCategory}
 CLASSIFY_REQUIRED = {"category", "confidence", "rationale", "injection_detected", "secondary_categories"}
+# Read at collection time: the test environment removes the key from the process environment later.
+LIVE_API_KEY = os.environ.get("ANTHROPIC_API_KEY") or None
 
 
 def load_variables(name: str) -> dict[str, Any]:
     return json.loads((FIXTURE_DIR / f"{name}.variables.json").read_text(encoding="utf-8"))
+
+
+def draft_inputs(variables: dict[str, Any]) -> str:
+    """The fact-check inputs of a draft_appeal call: the template narrative and the claim facts. The
+    quoted note excerpts are untrusted context and are deliberately not inputs."""
+    return "\n".join(
+        [variables["narrative"], json.dumps(variables["facts"], default=str, ensure_ascii=False)]
+    )
+
+
+def assert_classify_content_is_schema_valid(content: Any) -> None:
+    """Explicit checks of the structured-output contract (no jsonschema dependency)."""
+    assert isinstance(content, dict)
+    assert set(content) == CLASSIFY_REQUIRED
+    assert content["category"] in CATEGORY_VALUES
+    assert isinstance(content["confidence"], int | float) and not isinstance(content["confidence"], bool)
+    assert 0 <= content["confidence"] <= 1
+    assert isinstance(content["rationale"], str) and content["rationale"].strip()
+    assert isinstance(content["injection_detected"], bool)
+    assert isinstance(content["secondary_categories"], list)
+    assert set(content["secondary_categories"]) <= CATEGORY_VALUES
+    assert content["category"] not in content["secondary_categories"]
+    for key, prop in CLASSIFY_SCHEMA["properties"].items():
+        value = content[key]
+        expected = {"string": str, "number": int | float, "boolean": bool, "array": list}[prop["type"]]
+        assert isinstance(value, expected), key
+    assert parse_model_result(content) is not None
 
 
 @pytest.fixture()
@@ -205,13 +246,10 @@ def test_classify_prompt_renders_adapter_shaped_variables():
     assert '<untrusted_document source="payer_document" id="1">' in user
     content = StubClient().complete(rendered).content
     assert content["category"] == DenialCategory.AUTHORIZATION.value
-
-    try:  # the classifier adapter is another module; check its schema only when it imports cleanly
-        from app.classify.model_classifier import CLASSIFY_SCHEMA as adapter_schema
-    except Exception:  # noqa: BLE001 - absent or mid-edit module must not fail this test
-        return
-    if isinstance(adapter_schema, dict):
-        assert set(adapter_schema["required"]) <= CLASSIFY_REQUIRED
+    assert_classify_content_is_schema_valid(content)
+    # The classifier adapter's schema is the prompt file's schema minus nothing required.
+    assert set(CLASSIFY_SCHEMA["required"]) <= CLASSIFY_REQUIRED
+    assert set(CLASSIFY_SCHEMA["properties"]) == set(rendered.schema_["properties"]) == CLASSIFY_REQUIRED
 
 
 def test_draft_prompt_renders_adapter_shaped_notes():
@@ -289,9 +327,14 @@ def test_stub_draft_returns_narrative_unchanged(draft_variables):
     result = StubClient().complete(rendered)
     assert result.status == ModelCallStatus.OK
     assert result.content == draft_variables["narrative"]
-    facts_in_output = re.findall(r"[A-Z]{2,}-\d+|\b\d+(?:\.\d+)?\b|\[\[[A-Z_]+_\d+\]\]", result.content)
-    for fact in facts_in_output:
-        assert fact in draft_variables["narrative"]
+    assert verify(result.content, draft_inputs(draft_variables)) == []
+    # The fact check is not a tautology: a rewrite that invents an amount, a code or a date is caught,
+    # and so is a number lifted from the quoted note (a note is not a fact of the claim).
+    invented = result.content.replace("CPT 11102", "CPT 11104").replace("AUTH-5521", "AUTH-5522 for $275.00")
+    assert {"11104", "275"} <= set(verify(invented, draft_inputs(draft_variables)))
+    note_text = draft_variables["note_excerpts"][0]["text"]
+    assert "0.8 cm" in note_text
+    assert verify(result.content + " The lesion measured 0.8 cm.", draft_inputs(draft_variables)) == ["0.8"]
 
 
 def test_replay_client_serves_committed_fixtures(classify_variables, draft_variables):
@@ -314,13 +357,64 @@ def test_replay_client_serves_committed_fixtures(classify_variables, draft_varia
         assert result.model_id == "claude-opus-5-5"
         assert result.usage.input_tokens > 0
 
+    # Structure: the recorded classification matches the schema, enums and ranges.
     classify_content = client.complete(render("classify_denial", classify_variables)).content
     assert classify_content["category"] == "authorization"
-    assert set(classify_content) == CLASSIFY_REQUIRED
+    assert_classify_content_is_schema_valid(classify_content)
+    assert classify_content["injection_detected"] is False  # the fixture letter is benign
+    # Facts: nothing in the recorded outputs is absent from their inputs.
+    assert verify(classify_content["rationale"], json.dumps(classify_variables, ensure_ascii=False)) == []
     draft_content = client.complete(render("draft_appeal", draft_variables)).content
     assert "[[CLAIM_ID_1]]" in draft_content and "AUTH-5521" in draft_content and "11102" in draft_content
+    assert verify(draft_content, draft_inputs(draft_variables)) == []
+    assert "[[" not in draft_content.replace("[[CLAIM_ID_1]]", "").replace("[[DATE_1]]", "")  # no new tokens
+    assert len(draft_content) < 2 * len(draft_variables["narrative"])  # a rewrite, not an essay
 
     with pytest.raises(LookupError) as excinfo:
         client.complete(render("classify_denial", {"reason_codes": "CO-999"}))
     assert "classify_denial" in str(excinfo.value)
     assert "reason_codes" not in str(excinfo.value)  # key and prompt name only
+
+
+@pytest.mark.live_llm
+def test_live_model_outputs_are_schema_valid_and_faithful(classify_variables, draft_variables, tmp_path):
+    """Opt-in regression against the real, pinned model: the same fixed inputs must still produce a
+    schema-valid classification and a faithful narrative rewrite. Runs only with ANTHROPIC_API_KEY set
+    (`pytest -m live_llm`); the fixtures it records in tmp_path carry the committed fixture names, so
+    they can be reviewed and copied over tests/fixtures/llm after a prompt change."""
+    if not LIVE_API_KEY:
+        pytest.skip("ANTHROPIC_API_KEY is not set: the live model regression is opt-in")
+    settings = Settings(
+        _env_file=None,
+        llm_provider="anthropic",
+        llm_record=True,
+        llm_replay_dir=str(tmp_path),
+        anthropic_api_key=LIVE_API_KEY,
+    )
+    client = get_client(settings)
+    assert isinstance(client, RecordingClient)
+
+    classify_rendered = render("classify_denial", classify_variables)
+    classify_result = client.complete(classify_rendered)
+    assert classify_result.status == ModelCallStatus.OK, classify_result.error
+    assert classify_result.model_id.startswith(settings.llm_model)
+    assert_classify_content_is_schema_valid(classify_result.content)
+    assert classify_result.content["category"] == "authorization"
+    assert classify_result.content["injection_detected"] is False
+    assert (
+        verify(classify_result.content["rationale"], json.dumps(classify_variables, ensure_ascii=False)) == []
+    )
+
+    draft_rendered = render("draft_appeal", draft_variables)
+    draft_result = client.complete(draft_rendered)
+    assert draft_result.status == ModelCallStatus.OK, draft_result.error
+    assert isinstance(draft_result.content, str) and draft_result.content.strip()
+    assert verify(draft_result.content, draft_inputs(draft_variables)) == []
+    for token in ("[[CLAIM_ID_1]]", "[[DATE_1]]", "AUTH-5521", "11102", "197"):
+        assert token in draft_result.content, token
+
+    recorded = sorted(p.name for p in tmp_path.glob("*.json"))
+    assert recorded == sorted([fixture_filename(classify_rendered), fixture_filename(draft_rendered)])
+    assert {p.name for p in FIXTURE_DIR.glob("*.json")} >= set(recorded), (
+        "the prompt files changed: review the recorded fixtures and copy them over tests/fixtures/llm"
+    )

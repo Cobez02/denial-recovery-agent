@@ -6,18 +6,21 @@ builds one 835 per payer from the work items and an outcome plan; `generate_foll
 same transactions into a single interchange when one file is more convenient.
 
 The amounts are chosen so that `app.outcomes.matching` records exactly the planned result under the
-SPEC section 10 rule (paid when CLP04 >= 95% of the work item's dollar value, partial when
-0 < CLP04 < that, denied_again when nothing is paid, reversed for CLP02 22):
+SPEC section 10 rule (paid when no denial adjustment remains on the disputed lines/claim or CLP04
+reaches 95% of the work item's dollar value, partial when something is paid but a denial
+adjustment remains below that, denied_again when nothing is paid, reversed for CLP02 22):
 
-    paid          every line paid; a CO-45 contractual write-off of up to 20% of the charge is
-                  taken, but the total paid never drops below the work item's dollar value
+    paid          every line paid at the contracted rate: a CO-45 contractual write-off of 20% of
+                  the charge and nothing else, whatever the work item's dollar value (an
+                  overturned full-charge denial is paid below 95% of it, as a real payer pays)
     partial       half of the dollar value paid (half the charge when the work item has none),
-                  spread over the lines in proportion to their charges, CO-45 for the rest
+                  spread over the lines in proportion to their charges; the unpaid part of every
+                  line carries a denial CAS (the work item's first stored reason, CO-16 when none)
     denied_again  CLP02 4, nothing paid, the work item's first stored reason as the CAS
     reversed      CLP02 22 with negative charge, paid and CO-45 (a prior payment taken back)
 
-Only `app.models` and `synthetic.x12_writer` are imported, so this module works as soon as the
-foundation exists. Nothing is logged but counts.
+A partial payment is therefore itself a denial the pipeline turns into a new work item (SPEC 11),
+exactly like a claim denied again. Nothing is logged but counts.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.ingest.denials import is_denial_adjustment
 from app.models import Claim, Clinic, Payer, WorkItem
 from synthetic.x12_writer import build_835, build_835_multi
 
@@ -41,11 +45,12 @@ PLAN_DENIED_AGAIN = "denied_again"
 PLAN_REVERSED = "reversed"
 PLAN_VALUES: tuple[str, ...] = (PLAN_PAID, PLAN_PARTIAL, PLAN_DENIED_AGAIN, PLAN_REVERSED)
 
-CONTRACTUAL_RATE = Decimal("0.20")  # 'paid': up to 20% CO-45 contractual, the rest paid
-PARTIAL_RATE = Decimal("0.50")  # 'partial': half the dollar value paid, CO-45 for the rest
+CONTRACTUAL_RATE = Decimal("0.20")  # 'paid': 20% CO-45 contractual on every line, the rest paid
+PARTIAL_RATE = Decimal("0.50")  # 'partial': half the dollar value paid, a denial CAS for the rest
 RECEIVED_LAG_DAYS = 14
 CENT = Decimal("0.01")
 ZERO = Decimal("0.00")
+CONTRACTUAL_CAS: tuple[str, str] = ("CO", "45")
 DEFAULT_REASON: dict[str, Any] = {"level": "claim", "group_code": "CO", "carc": "16", "rarcs": []}
 FOLLOWUP_SENDER_ID = "FOLLOWUP835"
 
@@ -112,23 +117,32 @@ def _primary_reason(work_item: WorkItem) -> dict[str, Any]:
     return reasons[0] if reasons else dict(DEFAULT_REASON)
 
 
-def _pay_lines(
-    lines: list[dict[str, Any]], charge_total: Decimal, paid_total: Decimal, *, never_below: bool
-) -> None:
-    """Pay `paid_total` across the lines in proportion to their charges; the rest of each charge is CO-45.
+def _denial_cas(work_item: WorkItem) -> tuple[str, str]:
+    """(group, CARC) of a real denial for the unpaid part of a partial payment.
 
-    Cent rounding goes in the payee's favour when `never_below` (the lines add up to at least
-    `paid_total`) and against it otherwise (at most `paid_total`).
+    The work item's first stored reason when it is a denial code (never a contractual or
+    patient-responsibility split), otherwise the default CO-16.
     """
+    reason = _primary_reason(work_item)
+    group = str(reason.get("group_code") or "CO")
+    carc = str(reason.get("carc") or "16")
+    if is_denial_adjustment(group, carc, Decimal("1")):
+        return group, carc
+    return str(DEFAULT_REASON["group_code"]), str(DEFAULT_REASON["carc"])
+
+
+def _pay_lines(
+    lines: list[dict[str, Any]], charge_total: Decimal, paid_total: Decimal, remainder: tuple[str, str]
+) -> None:
+    """Pay `paid_total` across the lines in proportion to their charges, rounded down to the cent per
+    line (so the lines never add up to more than `paid_total`); the rest of each charge is one CAS
+    with the `remainder` (group, CARC)."""
+    group, carc = remainder
     for line in lines:
-        if never_below:
-            contractual = _share(charge_total - paid_total, line["charge"], charge_total)
-            paid = (line["charge"] - contractual).quantize(CENT)
-        else:
-            paid = _share(paid_total, line["charge"], charge_total)
-            contractual = (line["charge"] - paid).quantize(CENT)
+        paid = _share(paid_total, line["charge"], charge_total)
+        rest = (line["charge"] - paid).quantize(CENT)
         line["allowed"], line["paid"] = paid, paid
-        line["adjustments"] = [("CO", "45", contractual)] if contractual > 0 else []
+        line["adjustments"] = [(group, carc, rest)] if rest > 0 else []
 
 
 def build_followup_claim(work_item: WorkItem, claim: Claim, plan: str, payment_date: date) -> dict[str, Any]:
@@ -169,17 +183,20 @@ def build_followup_claim(work_item: WorkItem, claim: Claim, plan: str, payment_d
     }
 
     if plan == PLAN_PAID:
-        # Up to 20% contractual, but the total paid never drops below the dollar value, so the
-        # SPEC 10 rule (paid >= 95% of the dollar value) records `paid` whatever share was denied.
-        budget = min(
-            _share(charge_total, CONTRACTUAL_RATE, Decimal(1)), charge_total - min(value, charge_total)
+        # Paid at the contracted rate: 20% CO-45 on every line and no denial adjustment, so the
+        # SPEC 10 rule records `paid` even when that is below 95% of a full-charge dollar value.
+        _pay_lines(
+            lines,
+            charge_total,
+            _share(charge_total, Decimal(1) - CONTRACTUAL_RATE, Decimal(1)),
+            CONTRACTUAL_CAS,
         )
-        _pay_lines(lines, charge_total, charge_total - max(budget, ZERO), never_below=True)
     elif plan == PLAN_PARTIAL:
         # Something, but less than 95% of the dollar value: half of it (half the charge when the
-        # work item carries no usable dollar value), so the rule records `partial`.
+        # work item carries no usable dollar value), and a denial CAS on the unpaid part of every
+        # line, so the rule records `partial` (a denial remains on whatever line was disputed).
         basis = value if 0 < value <= charge_total else charge_total
-        _pay_lines(lines, charge_total, _share(basis, PARTIAL_RATE, Decimal(1)), never_below=False)
+        _pay_lines(lines, charge_total, _share(basis, PARTIAL_RATE, Decimal(1)), _denial_cas(work_item))
     elif plan == PLAN_DENIED_AGAIN:
         reason = _primary_reason(work_item)
         group = str(reason.get("group_code") or "CO")

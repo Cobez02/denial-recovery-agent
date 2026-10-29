@@ -1,15 +1,24 @@
 """JSON API: health (no login), dashboard metrics and a work item without patient identifiers.
 
 The item view leaves out everything that names the patient: names, DOB, member id, address,
-account number, the appeal letter (its header carries them), note text and payer-letter text.
+account number, the appeal letter (its header carries them), note text and the payer letters
+themselves (a citation's short quote from a letter is tokenized like the rest).
+Free text that could still quote them (the model's classification rationale, the proposal's
+summary, rationale and clinic question, citation texts, corrected-claim diff rows and the
+reviewers' reasons) is passed through the claim's identifier tokenizer first, so a name, DOB or
+member id a model restored into its rationale leaves as ``[[PATIENT_NAME_1]]``-style tokens.
+
+The health route reports the audit chain from a short-lived cache: the chain is re-verified at
+most once per ``CHAIN_VERIFY_INTERVAL_SECONDS`` per process (the audit page always verifies fully).
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,13 +26,19 @@ from sqlalchemy.orm import Session
 from app import audit
 from app.auth.deps import require_user
 from app.db import get_session
+from app.enums import IdentifierKind
 from app.outcomes.metrics import compute_dashboard
+from app.redact.registry import IdentifierRegistry
+from app.redact.tokenizer import redact
 from app.review import service
 from app.schemas import DashboardMetrics
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+CHAIN_VERIFY_INTERVAL_SECONDS = 60
+CHAIN_STATE_ATTR = "audit_chain_status"
 
 
 def metrics_json(metrics: DashboardMetrics) -> dict[str, Any]:
@@ -39,14 +54,51 @@ def _money(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
-def _citations_without_note_text(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def patient_registry(detail: service.ItemDetail) -> IdentifierRegistry:
+    """Every spelling that names the patient: the clinic's record plus the payer's own (NM1*QC)."""
+    registry = IdentifierRegistry()
+    patient = detail.patient
+    if patient is not None:
+        registry.add_name(patient.first_name, patient.last_name)
+        registry.add(IdentifierKind.MEMBER_ID, patient.member_id)
+        registry.add(IdentifierKind.ACCOUNT, patient.account_number)
+        registry.add_address(patient.address_line1, patient.city, patient.state, patient.zip)
+        registry.add_date(IdentifierKind.DOB, patient.dob)
+    rc = detail.remittance_claim
+    if rc is not None:
+        registry.add_name(rc.patient_first_name, rc.patient_last_name)
+        registry.add(IdentifierKind.MEMBER_ID, rc.member_id)
+    return registry
+
+
+class _Tokenizer:
+    """Replaces the patient's identifiers in free text with ``[[KIND_n]]`` tokens (never restored)."""
+
+    def __init__(self, registry: IdentifierRegistry) -> None:
+        self._registry = registry
+
+    def text(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        redacted, _map = redact(str(value), self._registry)
+        return redacted
+
+    def row(self, row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+        out = dict(row)
+        for key in keys:
+            if isinstance(out.get(key), str):
+                out[key] = self.text(out[key])
+        return out
+
+
+def _citations_without_note_text(citations: list[dict[str, Any]], tokens: _Tokenizer) -> list[dict[str, Any]]:
     """Note-excerpt citations quote clinical text; the API keeps the reference, not the quote."""
     out: list[dict[str, Any]] = []
     for citation in citations:
         if str(citation.get("kind")) == "note_excerpt":
             out.append({**citation, "text": None})
         else:
-            out.append(dict(citation))
+            out.append(tokens.row(citation, ("text",)))
     return out
 
 
@@ -55,6 +107,7 @@ def item_json(detail: service.ItemDetail) -> dict[str, Any]:
     claim = detail.claim
     rc = detail.remittance_claim
     proposal = detail.proposal
+    tokens = _Tokenizer(patient_registry(detail))
     return {
         "work_item": {
             "id": wi.id,
@@ -62,7 +115,7 @@ def item_json(detail: service.ItemDetail) -> dict[str, Any]:
             "category": str(wi.category),
             "category_confidence": float(wi.category_confidence or 0),
             "classification_source": wi.classification_source,
-            "classification_rationale": wi.classification_rationale,
+            "classification_rationale": tokens.text(wi.classification_rationale),
             "dollar_value": _money(wi.dollar_value),
             "deadline": wi.deadline.isoformat() if wi.deadline else None,
             "deadline_kind": wi.deadline_kind,
@@ -146,17 +199,19 @@ def item_json(detail: service.ItemDetail) -> dict[str, Any]:
             }
             for d in detail.documents
         ],
-        "notes": {"count": len(detail.notes)},
+        "notes": {"count": len(detail.notes), "flagged_injection": detail.flagged_notes},
         "proposal": (
             {
                 "id": proposal.id,
                 "version": proposal.version,
                 "action_type": str(proposal.action_type),
-                "summary": proposal.summary,
-                "rationale": proposal.rationale,
-                "citations": _citations_without_note_text(detail.citations),
-                "corrected_claim_diff": detail.diff_rows,
-                "clinic_question": proposal.clinic_question,
+                "summary": tokens.text(proposal.summary),
+                "rationale": tokens.text(proposal.rationale),
+                "citations": _citations_without_note_text(detail.citations, tokens),
+                "corrected_claim_diff": [
+                    tokens.row(row, ("before", "after", "reason")) for row in detail.diff_rows
+                ],
+                "clinic_question": tokens.text(proposal.clinic_question),
                 "has_appeal_letter": bool(proposal.appeal_letter),
                 "coding_change": bool(proposal.coding_change),
                 "requires_note_excerpt": bool(proposal.requires_note_excerpt),
@@ -175,7 +230,7 @@ def item_json(detail: service.ItemDetail) -> dict[str, Any]:
                 "id": a.id,
                 "action": str(a.action),
                 "user_id": a.user_id,
-                "reason": a.reason,
+                "reason": tokens.text(a.reason),
                 "review_seconds": a.review_seconds,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             }
@@ -194,10 +249,30 @@ def item_json(detail: service.ItemDetail) -> dict[str, Any]:
     }
 
 
+def chain_status(request: Request, session: Session, *, now: datetime | None = None) -> dict[str, Any]:
+    """``{"ok": bool, "verified_at": datetime}`` from the per-app cache, re-verified when it is stale.
+
+    The cache lives on ``app.state`` (one per process); a verification that raises is not cached.
+    """
+    now = now or datetime.now(UTC)
+    cached = getattr(request.app.state, CHAIN_STATE_ATTR, None)
+    if isinstance(cached, dict):
+        age = (now - cached["verified_at"]).total_seconds()
+        if 0 <= age < CHAIN_VERIFY_INTERVAL_SECONDS:
+            return cached
+    broken = audit.verify_chain(session)
+    if broken is not None:
+        log.warning("health check: audit chain broken at row %s", broken)
+    fresh = {"ok": broken is None, "verified_at": now}
+    setattr(request.app.state, CHAIN_STATE_ATTR, fresh)
+    return fresh
+
+
 @router.get("/health")
-def health(session: Session = Depends(get_session)) -> JSONResponse:
+def health(request: Request, session: Session = Depends(get_session)) -> JSONResponse:
     db_ok = True
     chain_ok: bool | None = None
+    verified_at: datetime | None = None
     try:
         session.execute(select(1))
     except Exception as exc:  # the database is down or unreachable
@@ -205,13 +280,19 @@ def health(session: Session = Depends(get_session)) -> JSONResponse:
         db_ok = False
     if db_ok:
         try:
-            chain_ok = audit.verify_chain(session) is None
+            verdict = chain_status(request, session)
+            chain_ok, verified_at = bool(verdict["ok"]), verdict["verified_at"]
         except Exception as exc:
             log.warning("health check: audit verification failed (%s)", type(exc).__name__)
             chain_ok = False
     status = "ok" if db_ok and chain_ok else "degraded"
     return JSONResponse(
-        {"status": status, "db_ok": db_ok, "audit_chain_ok": chain_ok},
+        {
+            "status": status,
+            "db_ok": db_ok,
+            "audit_chain_ok": chain_ok,
+            "audit_chain_verified_at": verified_at.isoformat() if verified_at else None,
+        },
         status_code=200 if status == "ok" else 503,
     )
 
@@ -231,4 +312,11 @@ def item(
     return item_json(detail)
 
 
-__all__ = ["item_json", "metrics_json", "router"]
+__all__ = [
+    "CHAIN_VERIFY_INTERVAL_SECONDS",
+    "chain_status",
+    "item_json",
+    "metrics_json",
+    "patient_registry",
+    "router",
+]

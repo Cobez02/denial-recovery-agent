@@ -23,6 +23,8 @@
     {% if job.work_items_created is not none %}· {{ job.work_items_created }} work item(s) created{% endif %}</p>
   {% if job.pipeline == 'failed' %}
   <div class="alert alert-warn">The import is committed but its denials are still pending. Use <em>Process pending denials</em> below to try again.</div>
+  {% elif job.pipeline == 'partial' %}
+  <div class="alert alert-warn">{{ job.pipeline_failures or job.failed_remittance_claim_ids|length }} denial(s) failed in the pipeline and are still pending{% if job.failed_remittance_claim_ids %} (remittance claim ids {{ job.failed_remittance_claim_ids|join_list }}){% endif %}; the others are done. Use <em>Process pending denials</em> below to try again.</div>
   {% endif %}
   {% if job.work_item_ids %}
   <p class="muted">New items: {% for id in job.work_item_ids %}<a href="/items/{{ id }}">{{ id }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>

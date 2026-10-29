@@ -11,7 +11,13 @@ import logging
 from decimal import Decimal
 
 from app.enums import ActionType
-from app.playbooks.base import FLAG_CODING_CHANGE, Playbook, citation_resolves
+from app.playbooks.base import (
+    FLAG_CODING_CHANGE,
+    FLAG_FLAGGED_NOTES_SKIPPED,
+    Playbook,
+    citation_resolves,
+    has_flagged_notes,
+)
 from app.playbooks.deadlines import appeal_deadline, corrected_claim_deadline, days_until, deadline_for
 from app.playbooks.registry import all_playbooks, get_playbook, register
 from app.schemas import ClassificationResult, DenialContext, ProposalDraft
@@ -51,14 +57,17 @@ def finalize(draft: ProposalDraft, ctx: DenialContext, playbook: Playbook | None
         draft.requires_note_excerpt = True
         if FLAG_CODING_CHANGE not in draft.flags:
             draft.flags = [FLAG_CODING_CHANGE, *draft.flags]
+    if has_flagged_notes(ctx) and FLAG_FLAGGED_NOTES_SKIPPED not in draft.flags:
+        draft.flags = [*draft.flags, FLAG_FLAGGED_NOTES_SKIPPED]
+    # Counts and ids only: the deadline is logged as days from today, never as a date.
     log.info(
-        "playbook %s proposed %s for claim_id=%s (citations=%d, coding_change=%s, deadline=%s)",
+        "playbook %s proposed %s for claim_id=%s (citations=%d, coding_change=%s, days_to_deadline=%s)",
         playbook.category,
         draft.action_type,
         ctx.claim.claim_id,
         len(draft.citations),
         draft.coding_change,
-        draft.deadline.isoformat() if draft.deadline else None,
+        days_until(draft.deadline, ctx.today),
     )
     return draft
 

@@ -8,13 +8,14 @@ the status transition (``ValueError("invalid_transition")``) and never commits: 
 
 Rules enforced here, not in the templates: a coding change (or a proposal that asks for one) needs
 a quoted note excerpt before approval; edits and rejections need a reason; note text that looks
-like planted instructions is refused.
+like planted instructions is refused; reopening a closed item needs a reason.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -59,7 +60,8 @@ from app.schemas import CorrectedClaim, CorrectedClaimChange
 log = logging.getLogger(__name__)
 
 STATUS_ALL = "all"
-DEFAULT_LIMIT = 200
+DEFAULT_PER_PAGE = 100  # queue rows per page; the page says "showing a-b of N" and links the rest
+MAX_PER_PAGE = 500
 SORTS: tuple[str, ...] = ("default", "dollars", "priority", "newest", "deadline")
 NOTE_SOURCE_REVIEWER = "reviewer"
 EDITABLE_TEXT_FIELDS: tuple[str, ...] = ("summary", "rationale", "appeal_letter", "clinic_question")
@@ -78,7 +80,8 @@ ALLOWED_STATUSES: dict[str, frozenset[str]] = {
     "regenerate": _OPEN_FOR_DECISION,
     "export": frozenset({str(_S.APPROVED), str(_S.EXPORTED), str(_S.SUBMITTED)}),
     "mark_submitted": frozenset({str(_S.APPROVED), str(_S.EXPORTED)}),
-    "reopen": frozenset({str(_S.REJECTED), str(_S.APPROVED)}),
+    # A closed item can be reopened too (a wrong close, a payer reversal), with a reason.
+    "reopen": frozenset({str(_S.REJECTED), str(_S.APPROVED), str(_S.CLOSED)}),
     "close": _ALL_STATUSES - {str(_S.CLOSED)},
     "attach_note": _ALL_STATUSES - {str(_S.CLOSED)},
 }
@@ -129,26 +132,8 @@ def _flag_matches(work_item: WorkItem, flagged: bool | str) -> bool:
     return str(flagged) in flags
 
 
-def queue(
-    session: Session,
-    *,
-    status: str | None = None,
-    category: str | None = None,
-    payer_id: int | None = None,
-    flagged: bool | str | None = None,
-    sort: str = "default",
-    limit: int = DEFAULT_LIMIT,
-) -> list[WorkItem]:
-    """Work items in review order: deadline asc (NULLs last), dollars desc, confidence desc.
-
-    Without a status filter the closed and rejected items are left out; ``status="all"`` lists
-    every status. ``flagged`` is True (any flag), False (no flags) or one flag name.
-    """
-    stmt = select(WorkItem).options(
-        selectinload(WorkItem.claim).selectinload(Claim.payer),
-        selectinload(WorkItem.claim).selectinload(Claim.patient),
-        selectinload(WorkItem.proposals),
-    )
+def _queue_filters(stmt: Any, *, status: str | None, category: str | None, payer_id: int | None) -> Any:
+    """The status / category / payer conditions shared by the list and the count."""
     if status and status != STATUS_ALL:
         stmt = stmt.where(WorkItem.status == str(status))
     elif not status:
@@ -157,11 +142,137 @@ def queue(
         stmt = stmt.where(WorkItem.category == str(category))
     if payer_id is not None:
         stmt = stmt.join(Claim, Claim.id == WorkItem.claim_id).where(Claim.payer_id == int(payer_id))
+    return stmt
+
+
+def queue(
+    session: Session,
+    *,
+    status: str | None = None,
+    category: str | None = None,
+    payer_id: int | None = None,
+    flagged: bool | str | None = None,
+    sort: str = "default",
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[WorkItem]:
+    """Work items in review order: deadline asc (NULLs last), dollars desc, confidence desc.
+
+    Without a status filter the closed and rejected items are left out; ``status="all"`` lists
+    every status. ``flagged`` is True (any flag), False (no flags) or one flag name. ``limit`` and
+    ``offset`` select one page of the ordered list (no limit: every matching item); the flag
+    filter reads the JSON flags, so with it the page is cut after loading the ordered list.
+    """
+    stmt = select(WorkItem).options(
+        selectinload(WorkItem.claim).selectinload(Claim.payer),
+        selectinload(WorkItem.claim).selectinload(Claim.patient),
+        selectinload(WorkItem.proposals),
+    )
+    stmt = _queue_filters(stmt, status=status, category=category, payer_id=payer_id)
     stmt = stmt.order_by(*_order_for(sort if sort in SORTS else "default"))
-    items = list(session.execute(stmt).scalars().unique())
-    if flagged is not None:
-        items = [wi for wi in items if _flag_matches(wi, flagged)]
-    return items[: max(int(limit), 0)] if limit is not None else items
+    start = max(int(offset), 0)
+    size = max(int(limit), 0) if limit is not None else None
+    if flagged is None:
+        if start:
+            stmt = stmt.offset(start)
+        if size is not None:
+            stmt = stmt.limit(size)
+        return list(session.execute(stmt).scalars().unique())
+    items = [wi for wi in session.execute(stmt).scalars().unique() if _flag_matches(wi, flagged)]
+    return items[start : start + size] if size is not None else items[start:]
+
+
+def queue_total(
+    session: Session,
+    *,
+    status: str | None = None,
+    category: str | None = None,
+    payer_id: int | None = None,
+    flagged: bool | str | None = None,
+) -> int:
+    """How many work items the queue filters match (the exact count behind "showing a-b of N")."""
+    if flagged is None:
+        stmt = _queue_filters(
+            select(func.count(WorkItem.id)), status=status, category=category, payer_id=payer_id
+        )
+        return int(session.execute(stmt).scalar_one() or 0)
+    stmt = _queue_filters(select(WorkItem.flags), status=status, category=category, payer_id=payer_id)
+    total = 0
+    for (flags,) in session.execute(stmt):
+        names = [str(f) for f in (flags or [])]
+        if flagged is True:
+            total += bool(names)
+        elif flagged is False:
+            total += not names
+        else:
+            total += str(flagged) in names
+    return total
+
+
+@dataclass
+class QueuePage:
+    """One page of the queue plus the exact total, so nothing is cut off silently."""
+
+    items: list[WorkItem]
+    total: int
+    page: int
+    per_page: int
+
+    @property
+    def pages(self) -> int:
+        return max(1, math.ceil(self.total / self.per_page)) if self.per_page else 1
+
+    @property
+    def start(self) -> int:
+        """1-based position of the first row shown (0 when the page is empty)."""
+        return (self.page - 1) * self.per_page + 1 if self.items else 0
+
+    @property
+    def end(self) -> int:
+        return (self.page - 1) * self.per_page + len(self.items)
+
+    @property
+    def has_previous(self) -> bool:
+        return self.page > 1
+
+    @property
+    def has_next(self) -> bool:
+        return self.page < self.pages
+
+
+def clamp_per_page(value: int | None) -> int:
+    if value is None or int(value) < 1:
+        return DEFAULT_PER_PAGE
+    return min(int(value), MAX_PER_PAGE)
+
+
+def queue_page(
+    session: Session,
+    *,
+    status: str | None = None,
+    category: str | None = None,
+    payer_id: int | None = None,
+    flagged: bool | str | None = None,
+    sort: str = "default",
+    page: int | None = 1,
+    per_page: int | None = DEFAULT_PER_PAGE,
+) -> QueuePage:
+    """Page ``page`` (1-based, clamped to the last page) of the filtered queue with its exact total."""
+    size = clamp_per_page(per_page)
+    total = queue_total(session, status=status, category=category, payer_id=payer_id, flagged=flagged)
+    pages = max(1, math.ceil(total / size))
+    number = min(max(int(page or 1), 1), pages)
+    items = queue(
+        session,
+        status=status,
+        category=category,
+        payer_id=payer_id,
+        flagged=flagged,
+        sort=sort,
+        limit=size,
+        offset=(number - 1) * size,
+    )
+    return QueuePage(items=items, total=total, page=number, per_page=size)
 
 
 def status_counts(session: Session) -> dict[str, int]:
@@ -209,6 +320,23 @@ class DocumentView:
 
 
 @dataclass
+class NoteView:
+    """A note excerpt as the item page shows it: untrusted text plus the scanner's verdict on it."""
+
+    id: int
+    note_date: date | None
+    author: str | None
+    source: str | None
+    text: str
+    flagged: bool
+    findings: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def typed_by_reviewer(self) -> bool:
+        return str(self.source or "") == NOTE_SOURCE_REVIEWER
+
+
+@dataclass
 class ItemDetail:
     """Everything the item page and the JSON API show for one work item."""
 
@@ -222,7 +350,7 @@ class ItemDetail:
     remark_codes: list[dict[str, Any]]
     reasons: list[dict[str, Any]]
     documents: list[DocumentView]
-    notes: list[NoteExcerpt]
+    notes: list[NoteView]
     proposal: Proposal | None
     proposals: list[Proposal]
     citations: list[dict[str, Any]]
@@ -246,6 +374,14 @@ class ItemDetail:
         """Which actions the current status allows (drives the forms on the page)."""
         status = self.status
         return {name: status in allowed for name, allowed in ALLOWED_STATUSES.items()}
+
+    @property
+    def flagged_notes(self) -> int:
+        return sum(1 for note in self.notes if note.flagged)
+
+    @property
+    def reopen_needs_reason(self) -> bool:
+        return self.status == str(_S.CLOSED)
 
 
 def _adjustment_views(rc: RemittanceClaim) -> list[dict[str, Any]]:
@@ -317,6 +453,43 @@ def _document_views(session: Session, claim: Claim, rc: RemittanceClaim) -> list
     return views
 
 
+def _note_views(claim: Claim) -> list[NoteView]:
+    """Notes in date order; each carries the import-time injection verdict (or a scan made here)."""
+    views: list[NoteView] = []
+    for note in sorted(claim.notes, key=lambda n: (n.note_date or date.min, n.id or 0)):
+        findings = [dict(f) for f in (note.injection_findings or []) if isinstance(f, dict)]
+        if not findings and not note.flagged_injection:
+            # Defence in depth: notes stored before the scanner covered them are scanned here.
+            findings = [f.model_dump() for f in detect_injection(note.text or "")]
+        views.append(
+            NoteView(
+                id=note.id,
+                note_date=note.note_date,
+                author=note.author,
+                source=note.source,
+                text=note.text or "",
+                flagged=bool(note.flagged_injection or findings),
+                findings=findings,
+            )
+        )
+    return views
+
+
+def attached_notes(session: Session, work_item: WorkItem) -> list[NoteExcerpt]:
+    """The note excerpts attached through ``attach_note`` (the reviewer's typed evidence), oldest first."""
+    ids: list[int] = []
+    for action in sorted(work_item.actions, key=lambda a: a.id or 0):
+        if str(action.action) != str(ReviewActionType.ATTACH_NOTE):
+            continue
+        note_id = (action.edited_payload or {}).get("note_id")
+        if isinstance(note_id, int) and note_id not in ids:
+            ids.append(note_id)
+    if not ids:
+        return []
+    rows = {n.id: n for n in session.execute(select(NoteExcerpt).where(NoteExcerpt.id.in_(ids))).scalars()}
+    return [rows[i] for i in ids if i in rows]
+
+
 def load_corrected_claim(proposal: Proposal | None) -> CorrectedClaim | None:
     if proposal is None or not proposal.corrected_claim:
         return None
@@ -379,7 +552,7 @@ def item_detail(session: Session, work_item_id: int, *, today: date | None = Non
         remark_codes=_remark_views(rc) if rc is not None else [],
         reasons=_reason_views(work_item),
         documents=_document_views(session, claim, rc) if rc is not None else [],
-        notes=sorted(claim.notes, key=lambda n: (n.note_date or date.min, n.id or 0)),
+        notes=_note_views(claim),
         proposal=proposal,
         proposals=sorted(work_item.proposals, key=lambda p: p.version),
         citations=[c for c in (proposal.citations or []) if isinstance(c, dict)] if proposal else [],
@@ -875,11 +1048,21 @@ def mark_submitted(
 
 
 def reopen(session: Session, work_item: WorkItem, user: Any, *, reason: str | None = None) -> ReviewAction:
+    """Back to ``proposed`` from rejected, approved or closed (closed needs a reason).
+
+    The decision timestamps are cleared, ``first_viewed_at`` included: the next view stamps it
+    again, so ``review_seconds`` of the next decision measures the new review, not the gap since
+    the first one. The stored ``view`` action stays (one per reviewer).
+    """
     _require_status(work_item, "reopen")
     previous = str(work_item.status)
-    reason_text = (reason or "").strip()[:2000] or None
+    reason_text = (
+        _clean_reason(reason) if previous == str(_S.CLOSED) else (reason or "").strip()[:2000] or None
+    )
     work_item.status = str(_S.PROPOSED)
     work_item.decided_at = None
+    work_item.first_viewed_at = None
+    work_item.closed_at = None
     action = _add_action(
         session,
         work_item,
@@ -963,10 +1146,16 @@ def regenerate(
 __all__ = [
     "ALLOWED_STATUSES",
     "CODING_FIELDS",
+    "DEFAULT_PER_PAGE",
+    "MAX_PER_PAGE",
     "DocumentView",
     "ItemDetail",
+    "NoteView",
+    "QueuePage",
     "approve",
     "attach_note",
+    "attached_notes",
+    "clamp_per_page",
     "close",
     "days_left",
     "deadline_badge",
@@ -979,6 +1168,8 @@ __all__ = [
     "mark_submitted",
     "needs_note_excerpt",
     "queue",
+    "queue_page",
+    "queue_total",
     "record_view",
     "regenerate",
     "reject",

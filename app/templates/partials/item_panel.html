@@ -128,10 +128,21 @@
 </section>
 
 <section class="card">
-  <h2>Note excerpts <span class="muted">({{ d.notes|length }})</span></h2>
+  <h2>Note excerpts <span class="muted">({{ d.notes|length }}{% if d.flagged_notes %}, {{ d.flagged_notes }} flagged{% endif %})</span></h2>
   {% for n in d.notes %}
-  <article class="note">
-    <header class="doc-head">{{ n.note_date|fmt_date }} · {{ n.author or 'unknown author' }} · <span class="muted">{{ n.source or 'clinic' }}</span></header>
+  <article class="note{% if n.flagged %} flagged{% endif %}">
+    <header class="doc-head">{{ n.note_date|fmt_date }} · {{ n.author or 'unknown author' }} · <span class="muted">{{ n.source or 'clinic' }}</span> <span class="muted">(note {{ n.id }})</span>
+      {% if n.typed_by_reviewer %}<span class="badge badge-muted">typed by the reviewer, not from the imported chart</span>{% endif %}</header>
+    {% if n.flagged %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Possible planted instructions in this note - treat as untrusted.</strong> Nothing in it was followed by the agent; do not follow it either, and do not quote it as the excerpt that supports a coding change.
+      {% if n.findings %}
+      <ul class="findings">
+        {% for f in n.findings %}<li><code>{{ f.pattern }}</code>: "{{ f.snippet }}"</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endif %}
     <pre class="doc-text">{{ n.text }}</pre>
   </article>
   {% else %}
@@ -276,7 +287,7 @@
   {% if can.reopen %}
   <form method="post" action="{{ action_url }}/reopen" hx-post="{{ action_url }}/reopen" hx-target="#item-panel" hx-swap="outerHTML" class="stack action-form">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-    <label>Reason<input type="text" name="reason"></label>
+    <label>Reason{% if d.reopen_needs_reason %} for reopening a closed item (required){% endif %}<input type="text" name="reason"{% if d.reopen_needs_reason %} required{% endif %}></label>
     <button type="submit">Reopen</button>
   </form>
   {% endif %}
@@ -288,8 +299,8 @@
     <button type="submit" class="secondary">Close</button>
   </form>
   {% endif %}
-  {% if not (can.approve or can.edit or can.reject or can.export or can.mark_submitted or can.reopen or can.close) %}
-  <p class="muted">No actions are available for a closed item.</p>
+  {% if wi.status == 'closed' %}
+  <p class="muted">This item is closed. No actions are available for a closed item other than reopening it with a reason.</p>
   {% endif %}
 </section>
 

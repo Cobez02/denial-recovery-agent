@@ -2,12 +2,14 @@
 
 Each task opens its own database sessions (jobs run in a worker process or inline). An import
 task commits the import first, then runs the pipeline over every denied, matched remittance claim
-that has no work item yet in a second transaction, so a pipeline failure (a model transport error,
-a bug in one playbook) never discards a finished import: the result then carries
-`pipeline: "failed"` with the exception class name and `denial-agent process` picks the denials
-up later. Results are plain dicts (ids, statuses and counts) so they serialise through rq.
-The ingest and pipeline modules are imported inside the tasks because they are built by other
-milestones; when the pipeline is not importable the import counts are still returned.
+that has no work item yet in a second transaction, so a pipeline failure never discards a finished
+import. The pipeline itself handles each claim in its own savepoint: a claim that fails (a model
+transport error, a bug in one playbook) is rolled back and audited while the others complete, and
+the result lists it under `failed_remittance_claim_ids` with `pipeline: "partial"` (or `"failed"`
+when nothing could be processed, or when the run itself raised) and the first exception class
+name as `pipeline_error`; `denial-agent process` picks the failed denials up later. Results are
+plain dicts (ids, statuses and counts) so they serialise through rq. The ingest and pipeline
+modules are imported inside the tasks to keep the worker's import cheap.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ log = logging.getLogger(__name__)
 DEFAULT_ACTOR = "system"
 
 PIPELINE_OK = "ok"
-PIPELINE_UNAVAILABLE = "unavailable"
+PIPELINE_PARTIAL = "partial"
 PIPELINE_FAILED = "failed"
 
 
@@ -43,21 +45,22 @@ def _batch_result(batch: ImportBatch) -> dict[str, Any]:
 def _run_pipeline() -> dict[str, Any]:
     """Create work items for every pending denial in its own transaction.
 
-    Result keys: `pipeline` ("ok" | "unavailable" | "failed"), `work_items_created`,
-    `work_item_ids` and, when failed, `pipeline_error` (exception class name only). A failure rolls
-    the pipeline transaction back as a whole so no half-built work item (created, never proposed)
-    is left behind; the next run starts over from the same pending denials.
+    Result keys: `pipeline` ("ok" | "partial" | "failed"), `work_items_created`, `work_item_ids`,
+    `pipeline_failures` (count), `failed_remittance_claim_ids` and, when anything failed,
+    `pipeline_error` (the first exception class name, never a message). The pipeline rolls a failing
+    claim back to its own savepoint and continues, so the committed transaction holds every claim
+    that succeeded; `partial` means some did, `failed` means none did or the run itself raised. The
+    failed denials stay pending for the next run.
     """
-    try:
-        from app.pipeline import process_pending as pipeline_process_pending
-    except ImportError as exc:
-        missing = getattr(exc, "name", None) or type(exc).__name__
-        log.warning("pipeline unavailable (%s); returning import counts only", missing)
-        return {"pipeline": PIPELINE_UNAVAILABLE, "work_items_created": 0, "work_item_ids": []}
+    from app.pipeline import process_pending as pipeline_process_pending
+
     try:
         with session_scope() as session:
-            created = pipeline_process_pending(session)
-            work_item_ids = [wi.id for wi in created]
+            run = pipeline_process_pending(session)
+            work_item_ids = [wi.id for wi in run]
+            failures = list(getattr(run, "failed", []))
+            failed_ids = [failure.remittance_claim_id for failure in failures]
+            first_error = failures[0].error if failures else None
     except Exception as exc:
         log.warning("pipeline failed (%s); pending denials stay queued for `process`", type(exc).__name__)
         log.debug("pipeline traceback (frames only):\n%s", format_frames(exc))
@@ -66,8 +69,30 @@ def _run_pipeline() -> dict[str, Any]:
             "pipeline_error": type(exc).__name__,
             "work_items_created": 0,
             "work_item_ids": [],
+            "pipeline_failures": 0,
+            "failed_remittance_claim_ids": [],
         }
-    return {"pipeline": PIPELINE_OK, "work_items_created": len(work_item_ids), "work_item_ids": work_item_ids}
+    if not failures:
+        status = PIPELINE_OK
+    elif work_item_ids:
+        status = PIPELINE_PARTIAL
+    else:
+        status = PIPELINE_FAILED
+    result: dict[str, Any] = {
+        "pipeline": status,
+        "work_items_created": len(work_item_ids),
+        "work_item_ids": work_item_ids,
+        "pipeline_failures": len(failures),
+        "failed_remittance_claim_ids": failed_ids,
+    }
+    if first_error is not None:
+        result["pipeline_error"] = first_error
+        log.warning(
+            "pipeline skipped %d remittance claim(s) (first error %s); they stay queued for `process`",
+            len(failures),
+            first_error,
+        )
+    return result
 
 
 def _finish(result: dict[str, Any], kind: str) -> dict[str, Any]:
@@ -142,7 +167,7 @@ def process_pending(created_by: str = DEFAULT_ACTOR) -> dict[str, Any]:
 __all__ = [
     "PIPELINE_FAILED",
     "PIPELINE_OK",
-    "PIPELINE_UNAVAILABLE",
+    "PIPELINE_PARTIAL",
     "import_835_file",
     "import_claims_file",
     "import_documents_file",

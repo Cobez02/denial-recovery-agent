@@ -1,21 +1,26 @@
-"""Alembic migrations (milestone M2): `alembic upgrade head` on a fresh SQLite file matches the models."""
+"""Alembic migrations (milestone M2): `alembic upgrade head` on a fresh SQLite file matches the models.
+
+The Postgres schema the pilot runs on comes from Alembic alone, so the migrated schema must match
+``app.models`` in every respect compare_metadata can see: tables, columns, types, nullability,
+indexes, unique constraints and foreign keys. A migration that silently dropped
+``uq_remittance_file_transaction`` (835 dedup) or a foreign key would fail here.
+"""
 
 from __future__ import annotations
 
 import argparse
 import io
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import UniqueConstraint, create_engine, inspect, text
 
 from app.config import PROJECT_ROOT, get_settings, reset_settings_cache
 from app.models import Base
-
-STRUCTURAL_OPS = {"add_table", "remove_table", "add_column", "remove_column"}
 
 
 def _config(output_buffer: io.StringIO | None = None) -> Config:
@@ -24,14 +29,39 @@ def _config(output_buffer: io.StringIO | None = None) -> Config:
     return cfg
 
 
-def _op_names(diffs) -> list[str]:
-    names: list[str] = []
+def _flatten(diffs: list[Any]) -> list[tuple[Any, ...]]:
+    """compare_metadata groups some column operations in nested lists; one flat list of ops."""
+    flat: list[tuple[Any, ...]] = []
     for diff in diffs:
         if isinstance(diff, list):
-            names.extend(d[0] for d in diff)
+            flat.extend(tuple(d) for d in diff)
         else:
-            names.append(diff[0])
-    return names
+            flat.append(tuple(diff))
+    return flat
+
+
+def _describe(op: tuple[Any, ...]) -> str:
+    """`op_name table[.column]: detail` for a failure message a reader can act on."""
+    name, *rest = op
+    parts: list[str] = []
+    for item in rest:
+        if hasattr(item, "name") and getattr(item, "name", None):
+            parts.append(str(item.name))
+        elif isinstance(item, str | int | bool) or item is None:
+            parts.append(repr(item))
+        else:
+            parts.append(type(item).__name__)
+    return f"{name} {' '.join(parts)}"
+
+
+def _model_unique_sets(table: Any) -> set[tuple[str, ...]]:
+    sets = {
+        tuple(c.name for c in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    sets |= {(column.name,) for column in table.columns if column.unique}
+    return sets
 
 
 @pytest.fixture()
@@ -61,11 +91,27 @@ def test_upgrade_head_matches_models(fresh_db_url):
                     f"{name}.{column.name}"
                 )
             assert {i["name"] for i in inspector.get_indexes(name)} == {i.name for i in table.indexes}, name
+            # Unique constraints (as column sets) and foreign keys (referred table + columns) by hand too:
+            # the dialect reports them even where compare_metadata has no name to match on.
+            migrated_unique = {tuple(c["column_names"]) for c in inspector.get_unique_constraints(name)}
+            assert migrated_unique == _model_unique_sets(table), f"{name}: unique constraints"
+            migrated_fks = {
+                (fk["referred_table"], tuple(fk["constrained_columns"]), tuple(fk["referred_columns"]))
+                for fk in inspector.get_foreign_keys(name)
+            }
+            model_fks = {
+                (fk.column.table.name, (fk.parent.name,), (fk.column.name,)) for fk in table.foreign_keys
+            }
+            assert migrated_fks == model_fks, f"{name}: foreign keys"
         with engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001"
             ctx = MigrationContext.configure(conn, opts={"compare_type": True, "render_as_batch": True})
-            diffs = compare_metadata(ctx, Base.metadata)
-        assert [op for op in _op_names(diffs) if op in STRUCTURAL_OPS] == []
+            diffs = _flatten(compare_metadata(ctx, Base.metadata))
+        # Every operation autogenerate would emit counts: a type change, a dropped constraint or
+        # foreign key, a nullability change - not only added/removed tables and columns.
+        assert diffs == [], "alembic upgrade head differs from app.models:\n" + "\n".join(
+            _describe(op) for op in diffs
+        )
     finally:
         engine.dispose()
 

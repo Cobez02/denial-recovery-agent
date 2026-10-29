@@ -1,7 +1,8 @@
 """`denial-agent` command line (milestone M1 operations).
 
 Subcommands: init-db, create-clinic, create-user, import-835, import-claims, import-notes,
-import-documents, process, generate-synthetic, verify-audit, purge-clinic, serve.
+import-documents, process, generate-synthetic, verify-audit, list-payers, set-payer, purge-clinic,
+serve.
 
 Output policy: stdout carries ids, counts, statuses and file names only. Passwords are never
 printed. The TOTP provisioning URI (which embeds the shared secret) is printed exactly once, on
@@ -9,8 +10,16 @@ purpose, so the operator can enrol an authenticator app; the ASCII QR code is th
 An unexpected exception ends the command with exit code 2, its class name and the traceback
 frames only: exception messages can quote imported data and are never written to stderr or logs.
 
-Exit codes: 0 success; 1 a user-facing error, a failed import batch, a failed pipeline run or a
-broken audit chain; 2 an unexpected exception; 130 interrupted.
+`purge-clinic <id> --confirm` (pilot termination) removes every uploaded file under DATA_DIR/uploads
+and every export package under EXPORT_DIR, exports the clinic's rows to one zip, deletes the rows
+(remittances stay as the payment ledger: matched CLPs are unlinked, and every CLP, matched or not,
+loses the patient name and member id the payer echoed back), records the destruction with the file
+names and, on SQLite, runs VACUUM so the deleted rows' pages are rewritten rather than left free in
+the file; the zip is the hand-over copy and is the one PHI-bearing file left behind on purpose.
+
+Exit codes: 0 success; 1 a user-facing error, a failed import batch, a pipeline run that failed or
+skipped denials (`partial`: stderr names the skipped remittance claim ids), a broken audit chain or
+a purge whose VACUUM failed; 2 an unexpected exception; 130 interrupted.
 """
 
 from __future__ import annotations
@@ -34,10 +43,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
 from app import audit
-from app.config import PROJECT_ROOT, get_settings
-from app.db import init_db, session_scope
+from app.config import PROJECT_ROOT, Settings, get_settings, is_placeholder_secret
+from app.db import get_engine, init_db, session_scope
 from app.enums import ActorType, UserRole
 from app.jobs.runner import format_frames
+from app.jobs.tasks import PIPELINE_FAILED, PIPELINE_PARTIAL
 from app.logging_config import configure_logging
 from app.models import (
     Claim,
@@ -56,7 +66,8 @@ from app.models import (
     WorkItem,
 )
 
-log = logging.getLogger(__name__)
+# Named explicitly: `python -m app.cli` would otherwise log as `__main__`.
+log = logging.getLogger("app.cli")
 
 ISSUER_NAME = "Denial Recovery Agent"
 MIN_PASSWORD_LENGTH = 12
@@ -75,6 +86,19 @@ PURGE_TABLES: tuple[str, ...] = (
     "proposals",
     "actions",
     "outcomes",
+    "remittance_claims_unmatched",
+)
+# Files the app writes under DATA_DIR / EXPORT_DIR; purge-clinic removes them (see purge_files_on_disk).
+UPLOADS_DIR_NAME = "uploads"
+EXPORT_PACKAGE_GLOB = "*.zip"
+HANDOVER_NOTE = (
+    "the export zip is the hand-over copy for the clinic: it holds the purged rows in full; "
+    "delete it once the clinic has received it"
+)
+# The refusal app.main.create_app makes for the same key, as a user-facing error.
+PLACEHOLDER_SECRET_ERROR = (
+    "SECRET_KEY is missing or a placeholder; session cookies would be forgeable. Put a random value "
+    'in .env (python -c "import secrets; print(secrets.token_urlsafe(48))") and start again.'
 )
 
 
@@ -125,10 +149,29 @@ def _existing_file(raw: str) -> Path:
 
 
 def _task_exit_code(result: dict[str, Any]) -> int:
-    """Non-zero when the import batch failed or the pipeline run failed (the JSON says which)."""
-    if result.get("status") == "failed" or result.get("pipeline") == "failed":
-        return EXIT_ERROR
-    return EXIT_OK
+    """Non-zero when the import batch failed or the pipeline failed or skipped denials (the JSON says which).
+
+    A `partial` run rolled some denials back to their savepoints and a `failed` run processed none:
+    either way denials stay pending, so the exit code is 1 and stderr says how many and which
+    remittance claims (ids only), for scripted runs that never read the JSON.
+    """
+    code = EXIT_ERROR if result.get("status") == "failed" else EXIT_OK
+    pipeline_status = result.get("pipeline")
+    if pipeline_status in (PIPELINE_PARTIAL, PIPELINE_FAILED):
+        skipped = [int(rc_id) for rc_id in result.get("failed_remittance_claim_ids") or []]
+        failures = int(result.get("pipeline_failures") or len(skipped))
+        what = (
+            f"{failures} denial(s) skipped (remittance claim ids {skipped})"
+            if pipeline_status == PIPELINE_PARTIAL
+            else "no denial was processed"
+        )
+        print(
+            f"error: pipeline {pipeline_status} ({result.get('pipeline_error') or 'no exception'}): {what}; "
+            "the pending denials wait for `denial-agent process`",
+            file=sys.stderr,
+        )
+        code = EXIT_ERROR
+    return code
 
 
 def _resolve_clinic_id(session: Session, explicit: int | None) -> int:
@@ -354,11 +397,65 @@ def cmd_verify_audit(args: argparse.Namespace) -> int:
     return 1
 
 
+# ---- payer windows (docs/SPEC.md section 2) ------------------------------------------------
+
+
+def cmd_list_payers(args: argparse.Namespace) -> int:
+    """Print every payer with its timely-filing, corrected-claim and appeal windows (ids, names, days)."""
+    from app.ingest.payers import list_payers
+
+    with session_scope() as session:
+        rows = list_payers(session)
+    _emit({"payers": rows, "count": len(rows)})
+    return 0
+
+
+def cmd_set_payer(args: argparse.Namespace) -> int:
+    """Set one or more windows of an existing payer; app.ingest.payers records the audit event.
+
+    The claims importer creates payers with the settings defaults and never overwrites windows set
+    here. Unknown payer ids, windows outside 1..3650 days and a call without any window are
+    user-facing errors (exit 1); nothing is changed then.
+    """
+    from app.ingest.payers import UnknownPayerError, set_payer_windows
+
+    try:
+        with session_scope() as session:
+            payer = set_payer_windows(
+                session,
+                args.payer_id,
+                timely_filing_days=args.timely_filing_days,
+                corrected_claim_days=args.corrected_claim_days,
+                appeal_days=args.appeal_days,
+                actor_id=_cli_actor(),
+                actor_type=ActorType.USER,
+            )
+            result = {
+                "id": payer.id,
+                "payer_id": payer.payer_id,
+                "name": payer.name,
+                "timely_filing_days": payer.timely_filing_days,
+                "corrected_claim_days": payer.corrected_claim_days,
+                "appeal_days": payer.appeal_days,
+            }
+    except UnknownPayerError as exc:
+        raise CliError(f"{exc} (payers are created by import-claims; see list-payers)") from exc
+    except ValueError as exc:
+        raise CliError(str(exc)) from exc
+    _emit(result, compact=True)
+    return 0
+
+
 # ---- purge-clinic -------------------------------------------------------------------------
 
 
 def _clinic_selections(clinic_id: int) -> dict[str, Select[Any]]:
-    """Row selections for everything that belongs to a clinic, keyed by table name."""
+    """Row selections for everything that belongs to a clinic, keyed by table name.
+
+    ``remittance_claims_unmatched`` are the CLPs that matched no claim: they carry the payer's
+    spelling of a patient (name, member id) and have no clinic column, and the pilot serves one
+    clinic, so they are its rows (``files_on_disk`` reasons the same way about uploads).
+    """
     claim_ids = select(Claim.id).where(Claim.clinic_id == clinic_id)
     work_item_ids = select(WorkItem.id).where(WorkItem.claim_id.in_(claim_ids))
     rc_ids = select(RemittanceClaim.id).where(RemittanceClaim.claim_id.in_(claim_ids))
@@ -374,6 +471,7 @@ def _clinic_selections(clinic_id: int) -> dict[str, Select[Any]]:
         "proposals": select(Proposal).where(Proposal.work_item_id.in_(work_item_ids)),
         "actions": select(ReviewAction).where(ReviewAction.work_item_id.in_(work_item_ids)),
         "outcomes": select(Outcome).where(Outcome.work_item_id.in_(work_item_ids)),
+        "remittance_claims_unmatched": select(RemittanceClaim).where(RemittanceClaim.claim_id.is_(None)),
     }
 
 
@@ -410,7 +508,12 @@ def export_clinic(session: Session, clinic: Clinic, export_dir: Path) -> Path:
 
 
 def delete_clinic_rows(session: Session, clinic_id: int) -> dict[str, int]:
-    """Delete the clinic's rows in dependency order; remittances are unlinked, never deleted."""
+    """Delete the clinic's rows in dependency order; remittances are unlinked, never deleted.
+
+    Every remittance claim, matched or not, loses the patient name and member id the payer echoed
+    back (the matched ones are unlinked too); the unmatched ones are counted first, before the
+    matched ones join them under ``claim_id IS NULL``.
+    """
     claim_ids = select(Claim.id).where(Claim.clinic_id == clinic_id)
     line_ids = select(ClaimLine.id).where(ClaimLine.claim_id.in_(claim_ids))
     work_item_ids = select(WorkItem.id).where(WorkItem.claim_id.in_(claim_ids))
@@ -439,14 +542,22 @@ def delete_clinic_rows(session: Session, clinic_id: int) -> dict[str, int]:
         "remittance_lines_unlinked",
         update(RemittanceLine).where(RemittanceLine.claim_line_id.in_(line_ids)).values(claim_line_id=None),
     )
-    # Unlink the CLPs and drop the patient identifiers the payer echoed back in them.
+    # Drop the patient identifiers the payer echoed back in the CLPs (unmatched ones first, so their
+    # count is their own), then unlink the matched CLPs.
+    payer_spelling: dict[str, Any] = {
+        "patient_first_name": None,
+        "patient_last_name": None,
+        "member_id": None,
+    }
+    run(
+        "remittance_claims_unmatched_cleared",
+        update(RemittanceClaim).where(RemittanceClaim.claim_id.is_(None)).values(**payer_spelling),
+    )
     run(
         "remittance_claims_unlinked",
         update(RemittanceClaim)
         .where(RemittanceClaim.claim_id.in_(claim_ids))
-        .values(
-            claim_id=None, match_method=None, patient_first_name=None, patient_last_name=None, member_id=None
-        ),
+        .values(claim_id=None, match_method=None, **payer_spelling),
     )
     run("claim_lines", delete(ClaimLine).where(ClaimLine.claim_id.in_(claim_ids)))
     session.execute(update(Claim).where(Claim.clinic_id == clinic_id).values(original_claim_id=None))
@@ -454,6 +565,55 @@ def delete_clinic_rows(session: Session, clinic_id: int) -> dict[str, int]:
     run("patients", delete(Patient).where(Patient.clinic_id == clinic_id))
     session.flush()
     return deleted
+
+
+def files_on_disk(settings: Settings) -> dict[str, list[Path]]:
+    """The PHI-bearing files the app itself wrote: uploads (claims CSVs, notes, letters, 835s) under
+    DATA_DIR/uploads and export packages (corrected claims, appeal letters, earlier hand-over zips)
+    under EXPORT_DIR. The pilot serves one clinic, so every one of them belongs to it."""
+    uploads_dir = settings.data_path / UPLOADS_DIR_NAME
+    export_dir = settings.export_path
+    uploads = sorted(p for p in uploads_dir.rglob("*") if p.is_file()) if uploads_dir.is_dir() else []
+    exports = (
+        sorted(p for p in export_dir.rglob(EXPORT_PACKAGE_GLOB) if p.is_file()) if export_dir.is_dir() else []
+    )
+    return {"uploads": uploads, "exports": exports}
+
+
+def purge_files_on_disk(settings: Settings) -> dict[str, list[str]]:
+    """Delete every file :func:`files_on_disk` lists; returns their names per directory.
+
+    Raises CliError naming the first file that could not be removed: the purge then stops before
+    any row is deleted and nothing is recorded as destroyed.
+    """
+    removed: dict[str, list[str]] = {"uploads": [], "exports": []}
+    bases = {"uploads": settings.data_path / UPLOADS_DIR_NAME, "exports": settings.export_path}
+    for kind, paths in files_on_disk(settings).items():
+        for path in paths:
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise CliError(
+                    f"could not delete {path} ({type(exc).__name__}); nothing was purged from the "
+                    "database and no destruction record was written - fix the file and re-run"
+                ) from exc
+            removed[kind].append(path.relative_to(bases[kind]).as_posix())
+    return removed
+
+
+def reclaim_deleted_pages(settings: Settings) -> bool:
+    """On SQLite, VACUUM the database so the pages the purge freed are rewritten, not kept.
+
+    A DELETE only marks pages free: their bytes (names, member ids, addresses) stay readable in the
+    file until VACUUM rebuilds it, and VACUUM must run outside any transaction, so this is called
+    after the purge committed. Returns False when the database is not SQLite (on PostgreSQL the DBA
+    runs VACUUM FULL after a purge; see scripts/env-notes.md).
+    """
+    if not settings.is_sqlite:
+        return False
+    with get_engine().connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        connection.exec_driver_sql("VACUUM")
+    return True
 
 
 def cmd_purge_clinic(args: argparse.Namespace) -> int:
@@ -467,15 +627,23 @@ def cmd_purge_clinic(args: argparse.Namespace) -> int:
             raise CliError(f"clinic {clinic_id} not found")
         counts = clinic_counts(session, clinic.id)
         if not args.confirm:
+            on_disk = files_on_disk(settings)
             _emit(
                 {
                     "clinic_id": clinic.id,
                     "counts": counts,
+                    "files_on_disk": {kind: len(paths) for kind, paths in on_disk.items()},
                     "deleted": False,
-                    "hint": "re-run with --confirm to export these rows to a zip and then delete them",
+                    "hint": (
+                        "re-run with --confirm to export these rows to a zip, then delete them together "
+                        "with every uploaded file and export package on disk"
+                    ),
                 }
             )
             return 0
+        # Files first: a file that cannot be removed stops the purge before any row is touched
+        # (the transaction rolls back) and before the hand-over zip is written.
+        files_deleted = purge_files_on_disk(settings)
         export_file = export_clinic(session, clinic, settings.export_path)
         deleted = delete_clinic_rows(session, clinic.id)
         audit.record(
@@ -486,11 +654,55 @@ def cmd_purge_clinic(args: argparse.Namespace) -> int:
             entity_type="clinic",
             entity_id=clinic.id,
             reason=args.reason,
-            details={"counts": deleted, "export_file": export_file.name},
+            details={
+                "counts": deleted,
+                "files_deleted": {kind: len(names) for kind, names in files_deleted.items()},
+                "deleted_files": files_deleted,
+                "export_file": export_file.name,
+                "export_file_kept": True,
+            },
         )
         clinic_id = clinic.id
-    log.info("clinic %s purged: %s", clinic_id, {k: v for k, v in deleted.items()})
-    _emit({"clinic_id": clinic_id, "counts": deleted, "deleted": True, "export_file": str(export_file)})
+    # The transaction is committed: the file's free pages can be rewritten now (and only now).
+    vacuum_error: str | None = None
+    try:
+        vacuumed = reclaim_deleted_pages(settings)
+    except Exception as exc:  # the rows are gone and recorded; only the file rewrite is missing
+        vacuumed, vacuum_error = False, type(exc).__name__
+    log.info(
+        "clinic %s purged: %s; files deleted: %s; vacuumed: %s",
+        clinic_id,
+        {k: v for k, v in deleted.items()},
+        {kind: len(names) for kind, names in files_deleted.items()},
+        vacuumed,
+    )
+    report: dict[str, Any] = {
+        "clinic_id": clinic_id,
+        "counts": deleted,
+        "files_deleted": files_deleted,
+        "deleted": True,
+        "vacuumed": vacuumed,
+        "export_file": str(export_file),
+        "export_file_kept": True,
+        "note": HANDOVER_NOTE,
+    }
+    if vacuum_error is not None:
+        report["vacuum_error"] = vacuum_error
+    _emit(report)
+    print(f"hand-over copy kept: {export_file}\n({HANDOVER_NOTE})", file=sys.stderr)
+    if vacuum_error is not None:
+        print(
+            f"error: VACUUM failed with {vacuum_error}: the rows are deleted and the destruction is "
+            "recorded, but their pages are still in the database file; run `VACUUM` on it and re-check",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    if not vacuumed:
+        print(
+            "note: not SQLite, so nothing was vacuumed here; have the DBA run VACUUM FULL so the deleted "
+            "rows' pages are reclaimed (scripts/env-notes.md)",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -498,12 +710,22 @@ def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     settings = get_settings()
+    # The refusal create_app makes, raised here as a user-facing error: inside uvicorn's import of
+    # app.main it would reach the operator as a bare `RuntimeError` plus frames (messages are never
+    # printed by the generic handler), with no word about SECRET_KEY or .env.
+    if settings.app_env != "test" and is_placeholder_secret(settings.secret_key):
+        raise CliError(PLACEHOLDER_SECRET_ERROR)
+    # log_config=None: uvicorn must not install handlers of its own (its default dictConfig gives
+    # `uvicorn` and `uvicorn.access` unmasked handlers with propagate=False, so "Exception in ASGI
+    # application" tracebacks would carry the exception message). Its loggers then propagate to
+    # the root handler configure_logging installed, which masks and folds every record.
     uvicorn.run(
         "app.main:app",
         host=args.host,
         port=args.port,
         reload=args.reload,
         log_level=settings.log_level.lower(),
+        log_config=None,
     )
     return 0
 
@@ -563,7 +785,30 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify-audit", help="verify the audit log hash chain (exit 1 when broken)")
     p.set_defaults(func=cmd_verify_audit)
 
-    p = sub.add_parser("purge-clinic", help="export then delete a clinic's data (pilot termination)")
+    p = sub.add_parser(
+        "list-payers", help="list every payer with its filing, corrected-claim and appeal windows"
+    )
+    p.set_defaults(func=cmd_list_payers)
+
+    p = sub.add_parser(
+        "set-payer",
+        help="set a payer's timely-filing, corrected-claim and/or appeal window in days (audited)",
+    )
+    p.add_argument(
+        "--payer-id", dest="payer_id", required=True, help="X12 payer identifier (see list-payers)"
+    )
+    p.add_argument("--timely-filing-days", dest="timely_filing_days", type=int, default=None)
+    p.add_argument("--corrected-claim-days", dest="corrected_claim_days", type=int, default=None)
+    p.add_argument("--appeal-days", dest="appeal_days", type=int, default=None)
+    p.set_defaults(func=cmd_set_payer)
+
+    p = sub.add_parser(
+        "purge-clinic",
+        help=(
+            "export then delete a clinic's data (pilot termination): database rows plus every "
+            "uploaded file and export package on disk; the export zip is kept as the hand-over copy"
+        ),
+    )
     p.add_argument(
         "clinic_id_positional", metavar="CLINIC_ID", nargs="?", type=int, default=None, help="clinic id"
     )

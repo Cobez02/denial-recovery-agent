@@ -7,14 +7,16 @@ and reason codes only, never an email address, a password or a TOTP code.
 
 from __future__ import annotations
 
+import hmac
 import logging
 from datetime import UTC, datetime, timedelta
 
 import pyotp
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.orm import Session, object_session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app import audit
 from app.config import get_settings
@@ -114,12 +116,68 @@ def verify_password(user: User, password: str) -> bool:
     return True
 
 
-def verify_totp(user: User, code: str) -> bool:
-    """Accept the current 30-second code or its neighbours (valid_window=1)."""
+def totp_step(user: User, code: str, now: datetime | None = None) -> int | None:
+    """The 30-second time step (RFC 6238 counter) a code belongs to: the current one or a neighbour.
+
+    Returns None when the code is not valid in that window. Comparison is constant-time.
+    """
     digits = "".join(ch for ch in str(code or "") if ch.isdigit())
     if len(digits) != TOTP_DIGITS or not user.totp_secret:
+        return None
+    totp = pyotp.TOTP(user.totp_secret)
+    current = totp.timecode(now or utcnow())
+    for offset in (0, -1, 1):
+        step = current + offset
+        if step >= 0 and hmac.compare_digest(totp.generate_otp(step), digits):
+            return step
+    return None
+
+
+def verify_totp(
+    user: User, code: str, now: datetime | None = None, *, session: Session | None = None
+) -> bool:
+    """Accept the current 30-second code or its neighbours (valid_window=1), each code only once.
+
+    An accepted code consumes its time step: ``users.totp_last_step`` records it and any code at
+    or below that step is refused afterwards (RFC 6238 section 5.2), so a code seen over a
+    shoulder or in a screen share cannot be replayed within the window. The step is consumed with
+    one conditional UPDATE in ``session`` (or the session the user is attached to), so two requests
+    that both loaded the user before either committed cannot both be accepted: the row decides, not
+    the loaded copy. A user outside any session is checked and updated in memory. The caller commits.
+    """
+    step = totp_step(user, code, now)
+    if step is None:
         return False
-    return bool(pyotp.TOTP(user.totp_secret).verify(digits, valid_window=1))
+    session = session if session is not None else object_session(user)
+    if session is not None and user.id is not None:
+        accepted = _consume_totp_step(session, user, step)
+    else:
+        last = user.totp_last_step
+        accepted = last is None or step > int(last)
+        if accepted:
+            user.totp_last_step = step
+    if not accepted:
+        log.warning("user %s: replayed TOTP code refused", user.id)
+    return accepted
+
+
+def _consume_totp_step(session: Session, user: User, step: int) -> bool:
+    """Record ``step`` on the user's row unless it already holds a step at or above it (one statement).
+
+    ``UPDATE users SET totp_last_step = :step WHERE id = :id AND (totp_last_step IS NULL OR
+    totp_last_step < :step)``: a concurrent request with the same code waits on the row and then
+    matches nothing. Dialect-neutral (``with_for_update`` is a no-op on SQLite).
+    """
+    result = session.execute(
+        update(User)
+        .where(User.id == user.id, or_(User.totp_last_step.is_(None), User.totp_last_step < step))
+        .values(totp_last_step=step)
+        .execution_options(synchronize_session=False)
+    )
+    if int(result.rowcount or 0) != 1:
+        return False
+    set_committed_value(user, "totp_last_step", step)  # mirror the row; nothing is left to flush
+    return True
 
 
 def provisioning_uri(user: User) -> str:
@@ -225,7 +283,11 @@ def record_mfa_failure(session: Session, user: User) -> None:
 
 
 def complete_login(session: Session, user: User) -> None:
-    """Both factors passed: stamp the login, clear the failure counter and audit it."""
+    """Both factors passed: stamp the login, clear the failure counter and audit it.
+
+    The accepted TOTP step was consumed on the row by ``verify_totp`` in this transaction; the
+    caller's commit persists it with the login stamp.
+    """
     user.last_login_at = utcnow()
     user.failed_logins = 0
     user.locked_until = None
@@ -255,6 +317,7 @@ __all__ = [
     "normalize_email",
     "provisioning_uri",
     "record_mfa_failure",
+    "totp_step",
     "utcnow",
     "validate_password",
     "verify_password",

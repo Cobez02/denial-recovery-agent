@@ -3,7 +3,8 @@
 {% block content %}
 <div class="page-head">
   <h1>Dashboard</h1>
-  <p class="muted">Generated {{ m.generated_at|fmt_datetime }} · audit chain {% if m.audit_chain_ok %}intact{% else %}<strong class="danger-text">BROKEN</strong>{% endif %}</p>
+  <p class="muted">Generated {{ m.generated_at|fmt_datetime }} ·
+    {% if m.audit_chain_ok is none %}audit chain: <a href="/audit">verify on the audit page</a>{% elif m.audit_chain_ok %}audit chain intact (<a href="/audit">audit page</a>){% else %}audit chain <strong class="danger-text">BROKEN</strong> (<a href="/audit">audit page</a>){% endif %}</p>
 </div>
 
 <div class="tiles">

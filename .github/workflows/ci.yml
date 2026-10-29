@@ -17,6 +17,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
+          # A repository owned by a GitHub *organization* also needs a (free) license key in the
+          # GITLEAKS_LICENSE secret, or this step fails on its first run; personal accounts do not:
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
       - uses: astral-sh/setup-uv@v3
         with:
@@ -27,6 +30,9 @@ jobs:
 
       - name: Lint
         run: uv run ruff check .
+
+      - name: Format check (the same ruff the pre-commit hook runs)
+        run: uv run ruff format --check .
 
       - name: Test (SQLite, stub model, inline jobs - no services needed)
         run: uv run pytest -q

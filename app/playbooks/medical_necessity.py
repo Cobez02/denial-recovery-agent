@@ -13,7 +13,14 @@ import re
 
 from app.drafting.corrected_claim import build_corrected_claim
 from app.enums import ActionType, DenialCategory
-from app.playbooks.base import FLAG_NO_NOTES, Playbook, dedupe_citations, latest_note, split_sentences
+from app.playbooks.base import (
+    FLAG_NO_NOTES,
+    Playbook,
+    dedupe_citations,
+    latest_note,
+    split_sentences,
+    usable_notes,
+)
 from app.schemas import ClassificationResult, CorrectedClaimChange, DenialContext, NoteContext, ProposalDraft
 
 FLAG_DIAGNOSIS_FROM_NOTES = "diagnosis_added_from_notes"
@@ -172,11 +179,11 @@ class MedicalNecessityPlaybook(Playbook):
         return list(dict.fromkeys(k for k in keywords if k))
 
     def documented_codes_missing(self, ctx: DenialContext) -> list[tuple[str, NoteContext, str]]:
-        """(code, note, sentence) for every dotted ICD-10 code in the notes that the claim lacks."""
+        """(code, note, sentence) for every dotted ICD-10 code in the usable notes that the claim lacks."""
         on_claim = {_code_key(c) for c in ctx.claim.diagnosis_codes if c}
         found: list[tuple[str, NoteContext, str]] = []
         seen: set[str] = set()
-        for note in ctx.notes:
+        for note in usable_notes(ctx):
             for sentence in split_sentences(note.text):
                 for code in ICD10_IN_TEXT.findall(sentence):
                     code = code.upper()
@@ -190,7 +197,7 @@ class MedicalNecessityPlaybook(Playbook):
 
     def propose(self, ctx: DenialContext, classification: ClassificationResult) -> ProposalDraft:
         dx = ", ".join(ctx.claim.diagnosis_codes) or "the billed diagnosis"
-        if not ctx.notes:
+        if not usable_notes(ctx):  # a note flagged for planted instructions counts as absent
             question = (
                 f"Claim {ctx.claim.claim_control_number} (DOS {self.dos_label(ctx)}) was denied for medical necessity "
                 f"({self.reasons_summary(ctx)}). No note excerpt is on file. Please supply the note sentences that "
@@ -249,7 +256,7 @@ class MedicalNecessityPlaybook(Playbook):
             # Nothing matched the diagnosis keywords: quote the opening of the most recent note so the
             # reviewer can judge it, and say so.
             latest = latest_note(ctx)
-            assert latest is not None  # ctx.notes is non-empty here
+            assert latest is not None  # usable_notes(ctx) is non-empty here
             opening = split_sentences(latest.text)[:2]
             support = [(latest, sentence) for sentence in opening]
             flags.append(FLAG_WEAK_NOTE_SUPPORT)

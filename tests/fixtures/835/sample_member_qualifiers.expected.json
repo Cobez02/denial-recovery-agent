@@ -1,0 +1,291 @@
+{
+  "interchange_control_number": "000000104",
+  "group_control_number": "104",
+  "transaction_control_number": "0001",
+  "interchange_date": "2026-10-20",
+  "sender_id": "SMP001",
+  "receiver_id": "1234567893",
+  "payment": {
+    "transaction_handling_code": "I",
+    "amount": "300.00",
+    "credit_debit": "C",
+    "method": "ACH",
+    "payment_date": "2026-10-21",
+    "trace_number": "SMP2026102000777",
+    "payer_identifier": "1123456790",
+    "production_date": "2026-10-20"
+  },
+  "payer": {
+    "name": "STATE MEDICAID PROGRAM",
+    "payer_id": "SMP001",
+    "address_line1": "1 CAPITOL SQUARE",
+    "city": "SPRINGFIELD",
+    "state": "IL",
+    "zip": "62701",
+    "contact": null
+  },
+  "payee": {
+    "name": "TEST DERMATOLOGY CLINIC",
+    "npi": "1234567893",
+    "tax_id": "123456789",
+    "address_line1": "100 CLINIC WAY",
+    "city": "SPRINGFIELD",
+    "state": "IL",
+    "zip": "62702"
+  },
+  "claims": [
+    {
+      "sequence": 1,
+      "patient_control_number": "MQ-0001",
+      "claim_status_code": "1",
+      "charge_amount": "150.00",
+      "paid_amount": "120.00",
+      "patient_responsibility": "0.00",
+      "filing_indicator": "MC",
+      "payer_claim_control_number": "SMP-ICN-0001",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "BRIGHTWATER",
+      "patient_first_name": "AVERY",
+      "member_id": "MCD12345678",
+      "insured_last_name": null,
+      "insured_first_name": null,
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-10",
+      "statement_from": "2026-09-01",
+      "statement_to": "2026-09-01",
+      "coverage_amount": null,
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "99213",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "150.00",
+          "paid_amount": "120.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-01",
+          "line_item_control_number": null,
+          "allowed_amount": null,
+          "adjustments": [
+            {
+              "group_code": "CO",
+              "carc": "45",
+              "amount": "30.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    },
+    {
+      "sequence": 2,
+      "patient_control_number": "MQ-0002",
+      "claim_status_code": "1",
+      "charge_amount": "210.00",
+      "paid_amount": "180.00",
+      "patient_responsibility": "0.00",
+      "filing_indicator": "MB",
+      "payer_claim_control_number": "SMP-ICN-0002",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "PINECREST",
+      "patient_first_name": "JORDAN",
+      "member_id": "123456789A",
+      "insured_last_name": null,
+      "insured_first_name": null,
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-10",
+      "statement_from": "2026-09-02",
+      "statement_to": "2026-09-02",
+      "coverage_amount": null,
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "99214",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "210.00",
+          "paid_amount": "180.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-02",
+          "line_item_control_number": null,
+          "allowed_amount": null,
+          "adjustments": [
+            {
+              "group_code": "CO",
+              "carc": "45",
+              "amount": "30.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    },
+    {
+      "sequence": 3,
+      "patient_control_number": "MQ-0003",
+      "claim_status_code": "4",
+      "charge_amount": "180.00",
+      "paid_amount": "0.00",
+      "patient_responsibility": "0.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "SMP-ICN-0003",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "RIVERMOOR",
+      "patient_first_name": "CASEY",
+      "member_id": "SUB778899",
+      "insured_last_name": "RIVERMOOR",
+      "insured_first_name": "TAYLOR",
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-11",
+      "statement_from": "2026-09-03",
+      "statement_to": "2026-09-03",
+      "coverage_amount": null,
+      "adjustments": [
+        {
+          "group_code": "CO",
+          "carc": "197",
+          "amount": "180.00",
+          "quantity": null
+        }
+      ],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "11102",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "180.00",
+          "paid_amount": "0.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-03",
+          "line_item_control_number": null,
+          "allowed_amount": null,
+          "adjustments": [],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    },
+    {
+      "sequence": 4,
+      "patient_control_number": "MQ-0004",
+      "claim_status_code": "1",
+      "charge_amount": "60.00",
+      "paid_amount": "0.00",
+      "patient_responsibility": "60.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "SMP-ICN-0004",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "FALLOWFIELD",
+      "patient_first_name": "MORGAN",
+      "member_id": "IIX445566",
+      "insured_last_name": "FALLOWFIELD",
+      "insured_first_name": "MORGAN",
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-11",
+      "statement_from": "2026-09-04",
+      "statement_to": "2026-09-04",
+      "coverage_amount": null,
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "96372",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "60.00",
+          "paid_amount": "0.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-04",
+          "line_item_control_number": null,
+          "allowed_amount": null,
+          "adjustments": [
+            {
+              "group_code": "PR",
+              "carc": "1",
+              "amount": "60.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    },
+    {
+      "sequence": 5,
+      "patient_control_number": "MQ-0005",
+      "claim_status_code": "1",
+      "charge_amount": "90.00",
+      "paid_amount": "0.00",
+      "patient_responsibility": "90.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "SMP-ICN-0005",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "OAKRIDGE",
+      "patient_first_name": "SAM",
+      "member_id": "987654321",
+      "insured_last_name": "OAKRIDGE",
+      "insured_first_name": "SAM",
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-12",
+      "statement_from": "2026-09-05",
+      "statement_to": "2026-09-05",
+      "coverage_amount": null,
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "17110",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "90.00",
+          "paid_amount": "0.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-05",
+          "line_item_control_number": null,
+          "allowed_amount": null,
+          "adjustments": [
+            {
+              "group_code": "PR",
+              "carc": "3",
+              "amount": "90.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    }
+  ],
+  "provider_adjustments": [],
+  "unparsed_segments": [],
+  "segment_count": 57
+}

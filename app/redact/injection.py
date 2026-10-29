@@ -2,7 +2,11 @@
 
 Documents are data, never instructions. `detect_injection` flags phrases that address an
 assistant, ask for an action or try to change the task; `wrap_untrusted` fences a document in
-`<untrusted_document>` tags so the prompt templates can present it as quoted data.
+`<untrusted_document>` tags so the prompt templates can present it as quoted data, with any tag
+that could close the fence early escaped and any prompt-section marker (`--- user ---`,
+`--- narrative ---`, `--- end narrative ---`: a run of three or more hyphens) neutralised by
+`neutralize_section_markers`, so untrusted text can never forge a section boundary of the prompt
+or of the letter it is quoted in.
 
 The patterns are deliberately conservative: a normal denial letter quoting CARC/RARC codes,
 policy language, deadlines and contact details must produce no findings, because a false
@@ -77,6 +81,9 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 _CLOSE_TAG = re.compile(r"</\s*untrusted_document", re.IGNORECASE)
 _OPEN_TAG = re.compile(r"<\s*untrusted_document", re.IGNORECASE)
+# A prompt-section marker is a line (or line end) made of three or more hyphens around a label.
+# Every such run is spaced out ("- - -") so the marker token no longer exists in the text.
+_SECTION_MARKER = re.compile(r"-{3,}")
 
 
 def detect_injection(text: str | None) -> list[InjectionFinding]:
@@ -101,9 +108,23 @@ def is_suspicious(text: str | None) -> bool:
     return bool(detect_injection(text))
 
 
+def neutralize_section_markers(text: str | None) -> str:
+    """Space out every run of three or more hyphens (``---`` -> ``- - -``).
+
+    Prompt files and the draft_appeal prompt delimit their sections with ``--- <label> ---`` lines,
+    and the stub client reads the narrative back from between such markers. A note or letter that
+    carries the same token could therefore end a section early or plant its own "narrative"; after
+    this rewrite the text still reads the same but no longer contains the marker token. Idempotent.
+    """
+    if not text:
+        return ""
+    return _SECTION_MARKER.sub(lambda m: " ".join("-" * len(m.group(0))), str(text))
+
+
 def wrap_untrusted(text: str | None, source: str, doc_id: str | int | None) -> str:
-    """Fence untrusted text as data. Any tag that could close the fence early is escaped."""
-    body = "" if text is None else str(text)
+    """Fence untrusted text as data. Any tag that could close the fence early is escaped and every
+    prompt-section marker is neutralised (see `neutralize_section_markers`)."""
+    body = neutralize_section_markers(text)
     body = _CLOSE_TAG.sub("&lt;/untrusted_document", body)
     body = _OPEN_TAG.sub("&lt;untrusted_document", body)
     source_attr = escape(str(source), quote=True)
@@ -111,4 +132,4 @@ def wrap_untrusted(text: str | None, source: str, doc_id: str | int | None) -> s
     return f'<untrusted_document source="{source_attr}" id="{id_attr}">\n{body}\n</untrusted_document>'
 
 
-__all__ = ["PATTERNS", "detect_injection", "is_suspicious", "wrap_untrusted"]
+__all__ = ["PATTERNS", "detect_injection", "is_suspicious", "neutralize_section_markers", "wrap_untrusted"]

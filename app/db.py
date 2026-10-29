@@ -23,6 +23,9 @@ _SessionLocal: sessionmaker[Session] | None = None
 def _sqlite_pragmas(dbapi_connection, _record) -> None:  # pragma: no cover - trivial
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    # Overwrite freed bytes on every DELETE so a removed row (a patient, a note) is not left
+    # readable in the file; `purge-clinic` additionally runs VACUUM once the rows are gone.
+    cursor.execute("PRAGMA secure_delete=ON")
     cursor.close()
 
 

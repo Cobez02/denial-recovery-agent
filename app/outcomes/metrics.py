@@ -1,8 +1,10 @@
 """Dashboard metrics (milestone M8) and the Phase 2 shadow-mode comparison helper.
 
-Definitions from the plan:
-    overturn rate      = (paid + partial fixes) / submitted fixes
-    recovered dollars  = sum of outcome paid_amount for paid/partial outcomes of agent-assisted items
+Definitions from the plan, counted per work item (a work item with several outcomes stands for its
+latest one, so a reversal followed by a re-adjudication counts once):
+    submitted fixes    = work items the reviewer marked submitted (submitted_at), open or closed since
+    overturn rate      = (fixes whose latest outcome is paid or partial) / submitted fixes
+    recovered dollars  = sum of the latest outcome's paid_amount over fixes paid or partially paid
     review time        = mean ReviewAction.review_seconds / 60
     category agreement = share of work items whose category equals the biller's label
 """
@@ -20,7 +22,7 @@ from sqlalchemy.orm import Session, selectinload
 from app import audit
 from app.config import get_settings
 from app.enums import OutcomeResult, WorkItemStatus
-from app.models import Claim, ModelCall, ReviewAction, WorkItem
+from app.models import Claim, ModelCall, Outcome, ReviewAction, WorkItem
 from app.schemas import CategoryMetric, DashboardMetrics, DeadlineBucket
 
 ZERO = Decimal("0")
@@ -28,6 +30,7 @@ CLOSED_STATUSES: frozenset[str] = frozenset({str(WorkItemStatus.CLOSED), str(Wor
 SUBMITTED_STATUSES: frozenset[str] = frozenset({str(WorkItemStatus.SUBMITTED), str(WorkItemStatus.CLOSED)})
 RECOVERED_RESULTS: frozenset[str] = frozenset({str(OutcomeResult.PAID), str(OutcomeResult.PARTIAL)})
 UNKNOWN_KEY = "unknown"
+TOTAL_KEY = "all"
 
 
 def is_open(work_item: WorkItem) -> bool:
@@ -36,14 +39,24 @@ def is_open(work_item: WorkItem) -> bool:
 
 
 def is_submitted_fix(work_item: WorkItem) -> bool:
-    """A fix the clinic sent to the payer: submitted/closed with a submitted_at stamp or an outcome."""
-    return str(work_item.status) in SUBMITTED_STATUSES and (
-        work_item.submitted_at is not None or bool(work_item.outcomes)
-    )
+    """A fix the clinic sent to the payer: marked submitted, whether still submitted or closed since.
+
+    An exported package the clinic never marked submitted is not a fix, whatever happened to the
+    claim later; neither is an item the reviewer closed by hand without submitting it.
+    """
+    return str(work_item.status) in SUBMITTED_STATUSES and work_item.submitted_at is not None
+
+
+def latest_outcome(work_item: WorkItem) -> Outcome | None:
+    """The outcome that stands for the work item: the latest payment date, then the last recorded."""
+    outcomes = list(work_item.outcomes)
+    if not outcomes:
+        return None
+    return max(outcomes, key=lambda outcome: (outcome.payment_date or date.min, outcome.id or 0))
 
 
 class _Group:
-    """Accumulator behind one CategoryMetric (per category or per payer)."""
+    """Accumulator behind one CategoryMetric (per category, per payer, or everything)."""
 
     def __init__(self, key: str) -> None:
         self.key = key
@@ -59,18 +72,25 @@ class _Group:
         self.items += 1
         if is_open(work_item):
             self.dollars_at_stake += Decimal(work_item.dollar_value or 0)
-        if is_submitted_fix(work_item):
-            self.submitted += 1
-        for outcome in work_item.outcomes:
-            result = str(outcome.result)
-            if result == OutcomeResult.PAID:
-                self.paid += 1
-            elif result == OutcomeResult.PARTIAL:
-                self.partial += 1
-            elif result == OutcomeResult.DENIED_AGAIN:
-                self.denied_again += 1
-            if result in RECOVERED_RESULTS:
-                self.recovered_dollars += Decimal(outcome.paid_amount or 0)
+        if not is_submitted_fix(work_item):
+            return
+        self.submitted += 1
+        outcome = latest_outcome(work_item)
+        if outcome is None:
+            return
+        result = str(outcome.result)
+        if result == OutcomeResult.PAID:
+            self.paid += 1
+        elif result == OutcomeResult.PARTIAL:
+            self.partial += 1
+        elif result == OutcomeResult.DENIED_AGAIN:
+            self.denied_again += 1
+        if result in RECOVERED_RESULTS:
+            self.recovered_dollars += Decimal(outcome.paid_amount or 0)
+
+    @property
+    def overturn_rate(self) -> float | None:
+        return round((self.paid + self.partial) / self.submitted, 4) if self.submitted else None
 
     def to_metric(self) -> CategoryMetric:
         return CategoryMetric(
@@ -121,8 +141,14 @@ def deadline_label(deadline: date | None, today: date, warn_days: list[int]) -> 
     return f">{thresholds[-1]} days"
 
 
-def compute_dashboard(session: Session, *, today: date | None = None) -> DashboardMetrics:
-    """Everything the dashboard page and GET /api/metrics show (docs/SPEC.md section 10)."""
+def compute_dashboard(
+    session: Session, *, today: date | None = None, verify_audit: bool = True
+) -> DashboardMetrics:
+    """Everything the dashboard page and GET /api/metrics show (docs/SPEC.md section 10).
+
+    `verify_audit=False` leaves `audit_chain_ok` as None instead of walking the whole audit log
+    (the audit page does the full verification).
+    """
     settings = get_settings()
     warn_days = settings.warn_days
     today = today or datetime.now(UTC).date()
@@ -135,10 +161,7 @@ def compute_dashboard(session: Session, *, today: date | None = None) -> Dashboa
     items: list[WorkItem] = list(session.execute(stmt).scalars().unique())
 
     items_by_status: dict[str, int] = {str(s): 0 for s in WorkItemStatus}
-    dollars_at_stake = ZERO
-    submitted_fixes = 0
-    paid_fixes = partial_fixes = denied_again = 0
-    recovered = ZERO
+    totals = _Group(TOTAL_KEY)
     reviewed_items = 0
     labels = deadline_labels(warn_days)
     bucket_items: dict[str, int] = {label: 0 for label in labels}
@@ -147,28 +170,13 @@ def compute_dashboard(session: Session, *, today: date | None = None) -> Dashboa
     for work_item in items:
         status = str(work_item.status)
         items_by_status[status] = items_by_status.get(status, 0) + 1
-        value = Decimal(work_item.dollar_value or 0)
+        totals.add(work_item)
         if is_open(work_item):
-            dollars_at_stake += value
             label = deadline_label(work_item.deadline, today, warn_days)
             bucket_items[label] += 1
-            bucket_dollars[label] += value
-        if is_submitted_fix(work_item):
-            submitted_fixes += 1
+            bucket_dollars[label] += Decimal(work_item.dollar_value or 0)
         if work_item.decided_at is not None:
             reviewed_items += 1
-        for outcome in work_item.outcomes:
-            result = str(outcome.result)
-            if result == OutcomeResult.PAID:
-                paid_fixes += 1
-            elif result == OutcomeResult.PARTIAL:
-                partial_fixes += 1
-            elif result == OutcomeResult.DENIED_AGAIN:
-                denied_again += 1
-            if result in RECOVERED_RESULTS:
-                recovered += Decimal(outcome.paid_amount or 0)
-
-    overturn_rate = round((paid_fixes + partial_fixes) / submitted_fixes, 4) if submitted_fixes else None
 
     avg_seconds = session.execute(
         select(func.avg(ReviewAction.review_seconds)).where(ReviewAction.review_seconds.is_not(None))
@@ -187,13 +195,13 @@ def compute_dashboard(session: Session, *, today: date | None = None) -> Dashboa
         generated_at=datetime.now(UTC),
         total_work_items=len(items),
         items_by_status=items_by_status,
-        dollars_at_stake=dollars_at_stake,
-        submitted_fixes=submitted_fixes,
-        paid_fixes=paid_fixes,
-        partial_fixes=partial_fixes,
-        denied_again=denied_again,
-        overturn_rate=overturn_rate,
-        recovered_dollars=recovered,
+        dollars_at_stake=totals.dollars_at_stake,
+        submitted_fixes=totals.submitted,
+        paid_fixes=totals.paid,
+        partial_fixes=totals.partial,
+        denied_again=totals.denied_again,
+        overturn_rate=totals.overturn_rate,
+        recovered_dollars=totals.recovered_dollars,
         avg_review_minutes=avg_review_minutes,
         reviewed_items=reviewed_items,
         by_category=_grouped(items, lambda wi: str(wi.category) if wi.category else None),
@@ -205,7 +213,7 @@ def compute_dashboard(session: Session, *, today: date | None = None) -> Dashboa
         model_calls=int(calls or 0),
         model_input_tokens=int(input_tokens or 0),
         model_output_tokens=int(output_tokens or 0),
-        audit_chain_ok=audit.verify_chain(session) is None,
+        audit_chain_ok=(audit.verify_chain(session) is None) if verify_audit else None,
     )
 
 
@@ -276,4 +284,5 @@ __all__ = [
     "is_open",
     "is_submitted_fix",
     "labels_from_json",
+    "latest_outcome",
 ]

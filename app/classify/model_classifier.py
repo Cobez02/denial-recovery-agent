@@ -12,6 +12,12 @@ answer: ``merge_results`` keeps the model's category only when it is strictly mo
 than the rules (source ``rules+model`` either way), and the plain rules result is returned when
 the model could not answer. Model content is never logged.
 
+Injection policy: payer documents are untrusted data. When any document in the context is flagged,
+or the model's own answer reports ``injection_detected``, the model may never override the rules
+category: the rules result stands (source ``rules+model``, ``injection_detected`` true), the model's
+rationale is kept in ``model_rationale`` and the rationale notes the suggestion that was not applied.
+A model that obeys planted instructions therefore cannot change a classification.
+
 Prompt variables are plain JSON types and carry no identifiers: control numbers, dates and the
 prior-authorization number are left out on purpose (the template shows a presence marker), and
 payer documents are untrusted, so the guard renders every ``*_documents`` variable inside
@@ -333,17 +339,30 @@ def _merge_secondary(winner: ClassificationResult, other: ClassificationResult) 
     return merged
 
 
-def merge_results(rules: ClassificationResult, model: ClassificationResult) -> ClassificationResult:
+def injection_suspected(
+    rules: ClassificationResult, model: ClassificationResult, *, flagged_context: bool = False
+) -> bool:
+    """True when planted instructions were found by the scanner (a flagged document, mirrored by the
+    rules result) or reported by the model itself."""
+    return bool(flagged_context or rules.injection_detected or model.injection_detected)
+
+
+def merge_results(
+    rules: ClassificationResult, model: ClassificationResult, *, flagged_context: bool = False
+) -> ClassificationResult:
     """Combine a rules result and a model result into the final ``rules+model`` answer.
 
-    The model wins only when strictly more confident. The final rationale always keeps the
-    rules' code citations; ``rule_id`` is the winning rule even when the model overrode it so
-    reviewers can see what the rules said. ``injection_detected`` is true when either side
-    flagged it.
+    The model wins only when strictly more confident and no injection is suspected: with a flagged
+    document in the context (``flagged_context``, mirrored by ``rules.injection_detected``) or a
+    model answer that reports ``injection_detected``, the rules category always stands and the
+    rationale notes the model's suggestion that was not applied (its text stays in
+    ``model_rationale``). The final rationale always keeps the rules' code citations; ``rule_id``
+    is the winning rule even when the model overrode it so reviewers can see what the rules said.
+    ``injection_detected`` is true when either side flagged it.
     """
-    injection = rules.injection_detected or model.injection_detected
+    injection = injection_suspected(rules, model, flagged_context=flagged_context)
     model_rationale = model.model_rationale or model.rationale or None
-    if model.confidence > rules.confidence:
+    if model.confidence > rules.confidence and not injection:
         winner, other = model, rules
         parts = [
             model.rationale.strip(),
@@ -353,6 +372,11 @@ def merge_results(rules: ClassificationResult, model: ClassificationResult) -> C
     else:
         winner, other = rules, model
         rationale = rules.rationale
+        if injection and model.category != rules.category:
+            rationale += (
+                f" [model suggested {model.category.value} ({model.confidence:.2f}); not applied: "
+                "planted instructions suspected in the untrusted documents]"
+            )
     return ClassificationResult(
         category=winner.category,
         confidence=winner.confidence,
@@ -374,16 +398,17 @@ def classify_with_model(
     """Classify with the rules and the model together (docs/SPEC.md section 7).
 
     The rules result (``rules_result`` or a fresh ``classify_rules``) is merged with the model's
-    answer: the model's category stands only when its confidence is strictly higher, and the
-    result carries ``source=rules+model``, the rules' rule id and the model's rationale. When the
-    model cannot answer (transport error, refusal, invalid content) the rules result is returned
-    unchanged (``source=rules``).
+    answer: the model's category stands only when its confidence is strictly higher and no
+    injection is suspected (a flagged document in ``ctx`` or ``injection_detected`` in the answer
+    keeps the rules category), and the result carries ``source=rules+model``, the rules' rule id
+    and the model's rationale. When the model cannot answer (transport error, refusal, invalid
+    content) the rules result is returned unchanged (``source=rules``).
     """
     rules = rules_result if rules_result is not None else classify_rules(ctx)
     model = query_model(ctx, guard_call, rules_result=rules)
     if model is None:
         return rules
-    return merge_results(rules, model)
+    return merge_results(rules, model, flagged_context=ctx.has_flagged_documents)
 
 
 __all__ = [
@@ -395,6 +420,7 @@ __all__ = [
     "PROMPT_NAME",
     "build_variables",
     "classify_with_model",
+    "injection_suspected",
     "merge_results",
     "parse_model_result",
     "query_model",

@@ -23,6 +23,16 @@ Hand check of tests/fixtures/835/sample_basic.expected.json against sample_basic
 - PLB (80): provider id, fiscal period 20261231, ``WO:NHP-ICN-0001`` split into reason and reference,
   amount 25.00
 - segment_count 79: ST on line 3 through SE on line 81 inclusive, equal to SE01
+
+Hand check of sample_member_qualifiers.expected.json against sample_member_qualifiers.835 (2026-10-28):
+five CLPs from a Medicaid payer (SMP001) exercising the NM1 identification qualifiers:
+- MQ-0001: NM1*QC with ``MR`` -> member_id MCD12345678; MQ-0002: ``HN`` -> 123456789A
+- MQ-0003: NM1*QC carries no id, NM1*IL (subscriber TAYLOR) ``MI`` -> member_id SUB778899; the
+  patient names stay RIVERMOOR/CASEY and the insured names RIVERMOOR/TAYLOR; CLP02 4, CO-197
+- MQ-0004: ``ZZ`` on NM1*QC is not a member-id qualifier (NOT-A-MEMBER-ID is dropped); NM1*IL ``II``
+  -> IIX445566; PR-1 60.00
+- MQ-0005: ``34`` on the patient -> 987654321, which wins over the subscriber's MI SUB990011
+- segment_count 57 == SE01, nothing unparsed
 """
 
 from __future__ import annotations
@@ -36,7 +46,7 @@ from pathlib import Path
 import pytest
 
 from app.ingest.dates import dtm_dates, parse_ccyymmdd, parse_date_range, parse_yymmdd
-from app.ingest.parse_835 import parse_835
+from app.ingest.parse_835 import MEMBER_ID_QUALIFIERS, parse_835
 from app.ingest.x12 import Delimiters, Segment, X12Error, read_delimiters, split_composite, tokenize
 
 FIXTURES = Path(__file__).parent / "fixtures" / "835"
@@ -44,6 +54,8 @@ BASIC = FIXTURES / "sample_basic.835"
 EXPECTED = FIXTURES / "sample_basic.expected.json"
 MULTI = FIXTURES / "sample_multi.835"
 CRLF_UNKNOWN = FIXTURES / "sample_crlf_unknown.835"
+MEMBER_QUALIFIERS = FIXTURES / "sample_member_qualifiers.835"
+MEMBER_QUALIFIERS_EXPECTED = FIXTURES / "sample_member_qualifiers.expected.json"
 
 
 def _read(path: Path) -> str:
@@ -175,6 +187,62 @@ def test_segment_count_matches_se01():
     start = next(i for i, s in enumerate(segments) if s.startswith("ST*"))
     end = next(i for i, s in enumerate(segments) if s.startswith("SE*"))
     assert end - start + 1 == 79
+
+
+# --------------------------------------------------------------------------------------
+# Member id qualifiers (golden file two)
+# --------------------------------------------------------------------------------------
+
+
+def test_member_qualifiers_file_matches_expected_exactly():
+    parsed = parse_835(_read(MEMBER_QUALIFIERS))
+    assert len(parsed) == 1
+    expected = json.loads(MEMBER_QUALIFIERS_EXPECTED.read_text(encoding="utf-8"))
+    assert parsed[0].model_dump(mode="json") == expected
+
+
+def test_member_id_accepted_under_every_member_qualifier_with_subscriber_fallback():
+    """Medicaid (MR), Medicare HICN (HN), II and 34 identify the member like MI; a dependent's claim
+    without an id on NM1*QC takes the subscriber's from NM1*IL."""
+    assert MEMBER_ID_QUALIFIERS == {"MI", "MR", "HN", "II", "34"}
+    tx = parse_835(_read(MEMBER_QUALIFIERS))[0]
+    assert tx.segment_count == 57 and tx.unparsed_segments == []
+    assert tx.payer.payer_id == "SMP001" and tx.payment.payment_date == date(2026, 10, 21)
+    by_pcn = {claim.patient_control_number: claim for claim in tx.claims}
+    assert list(by_pcn) == ["MQ-0001", "MQ-0002", "MQ-0003", "MQ-0004", "MQ-0005"]
+
+    assert by_pcn["MQ-0001"].member_id == "MCD12345678"  # MR
+    assert by_pcn["MQ-0001"].insured_last_name is None
+    assert by_pcn["MQ-0002"].member_id == "123456789A"  # HN
+
+    dependent = by_pcn["MQ-0003"]  # no id on the patient: the subscriber's MI id stands in
+    assert dependent.member_id == "SUB778899"
+    assert (dependent.patient_last_name, dependent.patient_first_name) == ("RIVERMOOR", "CASEY")
+    assert (dependent.insured_last_name, dependent.insured_first_name) == ("RIVERMOOR", "TAYLOR")
+    assert dependent.claim_status_code == "4" and dependent.adjustments[0].carc == "197"
+
+    unknown = by_pcn["MQ-0004"]  # an unknown qualifier on NM1*QC is not an id; NM1*IL's II is
+    assert unknown.member_id == "IIX445566"
+    assert unknown.patient_responsibility == Decimal("60.00")
+
+    assert by_pcn["MQ-0005"].member_id == "987654321"  # 34 on the patient wins over the subscriber
+    # the first golden file is unchanged: MI as before, no NM1*IL id involved
+    assert parse_835(_read(BASIC))[0].claims[0].member_id == "NHP884421001"
+
+
+def test_patient_identifier_wins_over_the_subscriber_whatever_the_segment_order():
+    body = [
+        "ST*835*0001",
+        "CLP*X1*1*100*80*0",
+        "NM1*IL*1*LAST*FIRST****MI*SUB1",
+        "NM1*QC*1*LAST*KID****MR*KID1",
+        "SE*4*0001",
+    ]
+    assert parse_835(_interchange(body))[0].claims[0].member_id == "KID1"
+    body[3] = "NM1*QC*1*LAST*KID"
+    assert parse_835(_interchange(body))[0].claims[0].member_id == "SUB1"
+    body[2] = "NM1*IL*1*LAST*FIRST****ZZ*NOT-AN-ID"
+    assert parse_835(_interchange(body))[0].claims[0].member_id is None
 
 
 # --------------------------------------------------------------------------------------

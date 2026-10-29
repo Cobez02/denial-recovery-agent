@@ -1,6 +1,8 @@
 # Local pilot stack: PostgreSQL 16, Redis, the web app and one RQ worker.
 # Every published port is bound to 127.0.0.1 only (docs/SPEC.md section 15).
 # Required .env keys: POSTGRES_PASSWORD and SECRET_KEY - see scripts/env-notes.md.
+# Postgres data lives in the named volume `pgdata` (a host bind mount fails Postgres' ownership
+# check on Docker Desktop for Windows); ./data holds uploads and export packages only.
 
 services:
   db:
@@ -12,7 +14,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U denial -d denial"]
       interval: 5s
@@ -44,6 +46,19 @@ services:
       APP_ENV: docker
     volumes:
       - ./data:/app/data
+    healthcheck:
+      # /api/health answers 200 only when the database is reachable and the audit chain verifies.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     depends_on:
       db:
         condition: service_healthy
@@ -54,7 +69,9 @@ services:
   worker:
     build: .
     image: denial-agent:local
-    command: ["rq", "worker", "--url", "redis://redis:6379/0", "default"]
+    # Not `rq worker`: app.jobs.worker configures the PHI-masking logging first and logs or stores
+    # only the exception class name and frames of a failed job (never its message or arguments).
+    command: ["python", "-m", "app.jobs.worker"]
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://denial:${POSTGRES_PASSWORD}@db:5432/denial
@@ -69,5 +86,8 @@ services:
       redis:
         condition: service_healthy
       app:
-        condition: service_started
+        condition: service_healthy # migrations have run and /api/health answers
     restart: unless-stopped
+
+volumes:
+  pgdata:

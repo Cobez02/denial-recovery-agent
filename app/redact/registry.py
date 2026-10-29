@@ -5,7 +5,10 @@ literal matching for ids and dates) live in `app.redact.tokenizer`; `app.redact.
 them so the tokenizer and the scanner never disagree about what counts as a leftover.
 
 Build one registry per claim with `IdentifierRegistry.from_context(ctx)` (pipeline) or
-`IdentifierRegistry.from_patient(patient, claims)` (CLI / re-processing).
+`IdentifierRegistry.from_patient(patient, claims, remittance_claims=...)` (CLI / re-processing).
+Both register the payer's own spelling of the patient and member id from the 835 (NM1*QC) next to
+the clinic's record: a payer letter uses the payer's spelling, and a maiden name or an alternate
+member id must be tokenized just like the one the clinic exported.
 """
 
 from __future__ import annotations
@@ -315,6 +318,10 @@ class IdentifierRegistry:
             registry.add_address(ids.address_line1, ids.city, ids.state, ids.zip)
             registry.add_date(IdentifierKind.DOB, ids.dob)
 
+        # The payer's spelling of the patient and member id (835 NM1*QC / NM1*IL), every variant.
+        registry.add_name(ctx.remittance.patient_first_name, ctx.remittance.patient_last_name)
+        registry.add(IdentifierKind.MEMBER_ID, ctx.remittance.member_id)
+
         registry.add(IdentifierKind.CLAIM_ID, claim.claim_control_number)
         registry.add(IdentifierKind.CLAIM_ID, ctx.remittance.payer_claim_control_number)
         for line in claim.lines:
@@ -336,15 +343,24 @@ class IdentifierRegistry:
 
     @classmethod
     def from_patient(
-        cls, patient: models.Patient, claims: Iterable[models.Claim] | None = None
+        cls,
+        patient: models.Patient,
+        claims: Iterable[models.Claim] | None = None,
+        *,
+        remittance_claims: Iterable[models.RemittanceClaim] | None = None,
     ) -> IdentifierRegistry:
-        """Registry for one patient row and any of their claims (ORM objects)."""
+        """Registry for one patient row, any of their claims and any of those claims' remittance
+        claims (ORM objects); the remittance rows add the payer's spelling of the patient."""
         registry = cls()
         registry.add_name(patient.first_name, patient.last_name)
         registry.add(IdentifierKind.MEMBER_ID, patient.member_id)
         registry.add(IdentifierKind.ACCOUNT, patient.account_number)
         registry.add_address(patient.address_line1, patient.city, patient.state, patient.zip)
         registry.add_date(IdentifierKind.DOB, patient.dob)
+        for rc in remittance_claims or ():
+            registry.add_name(rc.patient_first_name, rc.patient_last_name)
+            registry.add(IdentifierKind.MEMBER_ID, rc.member_id)
+            registry.add(IdentifierKind.CLAIM_ID, rc.payer_claim_control_number)
 
         for claim in claims or ():
             registry.add(IdentifierKind.CLAIM_ID, claim.claim_control_number)

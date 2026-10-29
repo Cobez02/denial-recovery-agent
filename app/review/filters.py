@@ -39,6 +39,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "no_corrected_claim": "This proposal has no corrected claim to edit.",
     "invalid_date": "Enter the date as YYYY-MM-DD.",
     "file_too_large": "The file is larger than the 20 MB upload limit.",
+    "file_required": "Choose a file to upload first.",
     "empty_file": "The uploaded file is empty.",
     "no_clinic": "No clinic is configured: set CLINIC_ID or create exactly one clinic.",
     "job_failed": "The import job failed; see the audit log for the error class.",

@@ -6,7 +6,9 @@ section 7). The rules engine always runs. The model is consulted, through the gu
 landed on ``other``, or a payer document is attached. The more confident of the two answers
 wins; when both ran the result carries ``source=rules+model``, the winning rule id and the
 model's rationale, and ``injection_detected`` is true if either side flagged it. A model that
-cannot answer leaves the rules result in place.
+cannot answer leaves the rules result in place. Payer documents are untrusted: when one is
+flagged, or the model reports ``injection_detected``, the model may never override the rules
+category (``app.classify.model_classifier.merge_results``).
 """
 
 from __future__ import annotations

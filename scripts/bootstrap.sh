@@ -47,6 +47,18 @@ fi
 
 mkdir -p data
 
+echo "== Secret scanning hook (gitleaks through pre-commit, on every commit)"
+if [ ! -d ".git" ]; then
+  echo "(not a git checkout: no hook to install)"
+elif "$PY" -c 'import pre_commit' >/dev/null 2>&1; then
+  "$PY" -m pre_commit install
+else
+  cat >&2 <<'MSG'
+WARNING: pre-commit is not installed, so commits are NOT scanned for secrets.
+         Run 'uv sync' (the dev dependencies include pre-commit), then 'uv run pre-commit install'.
+MSG
+fi
+
 echo "== Database schema (alembic upgrade head)"
 agent init-db --migrate
 

@@ -5,6 +5,9 @@ claim by control number (zero unmatched) and re-importing any file is a duplicat
 nothing. Section 11: ``process_pending`` turns every labeled denial into one proposed, cited work
 item with a deadline, records ``work_item_created`` / ``classified`` / ``proposal_created`` for each,
 is idempotent, and ``regenerate_proposal`` adds proposal versions; the audit chain verifies throughout.
+Section 9 (M6 done-when): every citation of every proposal resolves against the claim's own context,
+a CARC/RARC it was denied with, a note excerpt of that claim (by note id, text quoted from that
+note) or a claim field that exists.
 
 The batch is imported and processed once per module (``run``). The tests that change state (the
 re-import, the second run) only add rows the other tests do not count; the regeneration test, which
@@ -21,7 +24,14 @@ import pytest
 from sqlalchemy import func, select
 
 from app import audit
-from app.enums import ACTIONABLE_CATEGORIES, ActionType, ClassificationSource, DeadlineKind, WorkItemStatus
+from app.enums import (
+    ACTIONABLE_CATEGORIES,
+    ActionType,
+    CitationKind,
+    ClassificationSource,
+    DeadlineKind,
+    WorkItemStatus,
+)
 from app.ingest.matching import MATCH_CCN
 from app.models import (
     Adjustment,
@@ -40,7 +50,10 @@ from app.models import (
     RemittanceLine,
     WorkItem,
 )
-from app.pipeline import regenerate_proposal
+from app.pipeline import build_context, regenerate_proposal
+from app.playbooks import citation_resolves
+from app.playbooks.base import normalize_ws, reason_ref
+from app.schemas import Citation, DenialContext
 from tests import helpers
 
 EXPECTED_CLAIMS = 200
@@ -79,6 +92,25 @@ def _row_counts(session) -> dict[str, int]:
 
 def _audit_actions(session) -> Counter[str]:
     return Counter(session.execute(select(AuditLog.action)).scalars())
+
+
+def _assert_citation_points_into_context(ctx: DenialContext, citation: Citation, ccn: str) -> None:
+    """M6 done-when, spelled out: the ref names something of this claim and the text is quoted from it."""
+    assert citation_resolves(ctx, citation), (ccn, citation)
+    if citation.kind == CitationKind.CARC:
+        assert citation.ref in {reason_ref(r) for r in ctx.reasons} | {r.carc for r in ctx.reasons}, (
+            ccn,
+            citation,
+        )
+    elif citation.kind == CitationKind.RARC:
+        codes = {code for r in ctx.reasons for code in r.rarcs} | set(ctx.remittance.remark_codes)
+        assert citation.ref in codes, (ccn, citation)
+    elif citation.kind == CitationKind.NOTE_EXCERPT:
+        notes = {f"note:{note.note_id}": note for note in ctx.notes}
+        assert citation.ref in notes, (ccn, citation)  # a note of this claim, by id
+        note = notes[citation.ref]
+        assert normalize_ws(citation.text) in normalize_ws(note.text), (ccn, citation)
+        assert not note.flagged_injection, (ccn, citation)
 
 
 @pytest.fixture(scope="module")
@@ -187,8 +219,15 @@ def test_process_pending_creates_one_proposed_work_item_per_label(run):
         assert proposal is not None and proposal.is_current and proposal.version == 1, ccn
         assert [p.version for p in work_item.proposals] == [1], ccn
         assert proposal.citations, ccn
-        for citation in proposal.citations:
-            assert citation["kind"] and citation["ref"] and citation["text"], (ccn, citation)
+        ctx = build_context(session, work_item.remittance_claim, today=run.today)
+        assert ctx is not None, ccn
+        kinds: set[CitationKind] = set()
+        for raw in proposal.citations:
+            assert raw["kind"] and raw["ref"] and raw["text"], (ccn, raw)
+            citation = Citation(**raw)
+            kinds.add(citation.kind)
+            _assert_citation_points_into_context(ctx, citation, ccn)
+        assert kinds & {CitationKind.CARC, CitationKind.RARC}, (ccn, kinds)  # the code it was denied with
         assert proposal.summary and proposal.rationale, ccn
         # Each action type carries its artifact (an appeal may also carry a corrected claim when the
         # fix is a modifier the letter argues for, so the converse is not asserted).

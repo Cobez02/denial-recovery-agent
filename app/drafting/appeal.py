@@ -4,7 +4,14 @@ The letter is plain text built locally from `ctx` and the note sentences the pla
 addressed to the payer and therefore carries the patient's name, date of birth and member id from
 `ctx.claim.patient_identifiers`; none of that is ever sent to the model. When a guard call is
 available and drafting with the model is enabled, the model may rewrite the narrative paragraph only;
-`factcheck.verify` rejects any rewrite that introduces a number, code or date absent from the inputs.
+`factcheck.verify` rejects any rewrite that introduces a number, code or date absent from the
+template narrative and the claim/remittance facts. The quoted note excerpts are untrusted data and
+are not fact-check inputs: a number that only a note supplies is never a fact of the claim.
+
+Notes flagged for planted instructions (`NoteContext.flagged_injection`) are never quoted: a citation
+that points at one is dropped from the letter and the draft gets the flag `flagged_notes_skipped`.
+Prompt-section markers (`---` runs) in an excerpt are neutralised before the excerpt reaches a
+prompt or a letter.
 """
 
 from __future__ import annotations
@@ -20,7 +27,9 @@ from app.drafting.corrected_claim import format_money, format_units
 from app.drafting.factcheck import verify
 from app.drafting.letters import BASE_TEMPLATE, narrative_template_name, render_block, render_template
 from app.enums import CitationKind, DenialCategory
-from app.schemas import ClassificationResult, DenialContext, NoteContext, ProposalDraft
+from app.playbooks.base import FLAG_FLAGGED_NOTES_SKIPPED, normalize_ws
+from app.redact.injection import neutralize_section_markers
+from app.schemas import Citation, ClassificationResult, DenialContext, NoteContext, ProposalDraft
 
 log = logging.getLogger(__name__)
 
@@ -197,23 +206,47 @@ def _note_for_ref(ctx: DenialContext, ref: str) -> NoteContext | None:
     return None
 
 
-def note_excerpts(ctx: DenialContext, draft: ProposalDraft) -> list[dict[str, str]]:
-    """The note sentences the playbook cited, as {date, text}, in citation order (deduplicated)."""
+def _excerpt_is_flagged(ctx: DenialContext, citation: Citation, note: NoteContext | None) -> bool:
+    """True when the cited sentence comes from a note flagged for planted instructions: the note the
+    ref names is flagged, or (ref unresolved) the text is found in a flagged note and in no usable one."""
+    if note is not None:
+        return bool(note.flagged_injection)
+    quoted = normalize_ws(citation.text)
+    if not quoted:
+        return False
+    holders = [n for n in ctx.notes if quoted in normalize_ws(n.text)]
+    return bool(holders) and all(n.flagged_injection for n in holders)
+
+
+def select_note_excerpts(ctx: DenialContext, draft: ProposalDraft) -> tuple[list[dict[str, str]], int]:
+    """(excerpts, skipped): the note sentences the playbook cited, as {date, text}, in citation order
+    (deduplicated), and the number of citations dropped because their note is flagged for planted
+    instructions. Section markers in an excerpt are neutralised."""
     excerpts: list[dict[str, str]] = []
     seen: set[str] = set()
+    skipped = 0
     for citation in draft.citations:
         if CitationKind(citation.kind) != CitationKind.NOTE_EXCERPT or not citation.text.strip():
             continue
-        text = citation.text.strip()
+        text = neutralize_section_markers(citation.text.strip())
         if text in seen:
             continue
-        seen.add(text)
         note = _note_for_ref(ctx, citation.ref)
+        if _excerpt_is_flagged(ctx, citation, note):
+            skipped += 1
+            continue
+        seen.add(text)
         note_date = note.note_date.isoformat() if note and note.note_date else "undated"
         excerpts.append({"date": note_date, "text": text})
         if len(excerpts) >= MAX_EXCERPTS:
             break
-    return excerpts
+    return excerpts, skipped
+
+
+def note_excerpts(ctx: DenialContext, draft: ProposalDraft) -> list[dict[str, str]]:
+    """The note sentences the playbook cited, as {date, text}, in citation order (deduplicated);
+    flagged notes are never quoted (see `select_note_excerpts`)."""
+    return select_note_excerpts(ctx, draft)[0]
 
 
 def _header(ctx: DenialContext) -> dict[str, Any]:
@@ -289,9 +322,10 @@ def rewrite_narrative(
     if not rewritten or len(rewritten) > MAX_NARRATIVE_CHARS:
         log.info("draft_appeal model output unusable (empty, refused or too long); template kept")
         return narrative, [FLAG_MODEL_DRAFT_REJECTED]
-    inputs_text = "\n".join(
-        [narrative, json.dumps(facts, default=str, ensure_ascii=False), *[n["text"] for n in notes]]
-    )
+    # Only the template narrative and the claim/remittance facts are facts of the claim. The note
+    # excerpts are untrusted context: a number, code or date that only a note supplies must not
+    # survive into the letter's narrative.
+    inputs_text = "\n".join([narrative, json.dumps(facts, default=str, ensure_ascii=False)])
     unsupported = verify(rewritten, inputs_text)
     if unsupported:
         log.info("draft_appeal model output rejected: %d unsupported fact(s)", len(unsupported))
@@ -310,10 +344,11 @@ def draft_appeal(
     draft: ProposalDraft,
     guard_call: GuardCall | None = None,
 ) -> tuple[str, list[str]]:
-    """(letter_text, flags). Flags: model_narrative | model_draft_rejected | model_unavailable."""
+    """(letter_text, flags). Flags: model_narrative | model_draft_rejected | model_unavailable, plus
+    flagged_notes_skipped when a cited note was left out for planted instructions."""
     category = DenialCategory(classification.category)
     facts = build_letter_facts(ctx, classification, draft)
-    excerpts = note_excerpts(ctx, draft)
+    excerpts, skipped = select_note_excerpts(ctx, draft)
     variables: dict[str, Any] = {
         "f": facts,
         "excerpts": excerpts,
@@ -324,21 +359,25 @@ def draft_appeal(
     narrative = render_block(template_name, "narrative", variables).strip()
     request = render_block(template_name, "request", variables).strip()
     narrative, flags = rewrite_narrative(narrative, facts, excerpts, guard_call)
+    if skipped:
+        flags = [*flags, FLAG_FLAGGED_NOTES_SKIPPED]
     letter = render_template(
         BASE_TEMPLATE,
         {**variables, **_header(ctx), "narrative": narrative, "request": request},
     )
     log.info(
-        "appeal letter drafted for claim_id=%s category=%s excerpts=%d flags=%s",
+        "appeal letter drafted for claim_id=%s category=%s excerpts=%d skipped=%d flags=%s",
         ctx.claim.claim_id,
         category,
         len(excerpts),
+        skipped,
         ",".join(flags) or "-",
     )
     return letter, flags
 
 
 __all__ = [
+    "FLAG_FLAGGED_NOTES_SKIPPED",
     "FLAG_MODEL_DRAFT_REJECTED",
     "FLAG_MODEL_NARRATIVE",
     "FLAG_MODEL_UNAVAILABLE",
@@ -347,4 +386,5 @@ __all__ = [
     "draft_appeal",
     "note_excerpts",
     "rewrite_narrative",
+    "select_note_excerpts",
 ]

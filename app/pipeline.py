@@ -1,13 +1,24 @@
 """Pipeline: denied remittance claim -> DenialContext -> classify -> propose -> draft -> WorkItem + Proposal.
 
 Every step is recorded in the audit log. The model is only ever reached through app.llm.guard,
-with a registry of this claim's identifiers so names, member ids, addresses and dates are
-tokenized first. Nothing here submits anything; the output is a proposal for a human to review.
+with a registry of this claim's identifiers (the clinic's record and the payer's own spelling of
+the patient from the 835) so names, member ids, addresses and dates are tokenized first. Payer
+documents and note excerpts are untrusted: both are scanned for planted instructions (at import and
+again here) and a finding flags the work item. Nothing here submits anything; the output is a
+proposal for a human to review.
+
+``process_pending`` handles each denied remittance claim inside its own savepoint: a claim that
+fails (a model transport error, a playbook bug) is rolled back to the savepoint and recorded as a
+``pipeline_failed`` audit event with the exception class name, and the run continues with the next
+claim, so one bad denial never discards the batch's finished work items or re-spends their model
+calls. The failed claims stay pending for the next run.
 """
 
 from __future__ import annotations
 
 import logging
+import traceback
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -46,6 +57,23 @@ log = logging.getLogger(__name__)
 
 PIPELINE_ACTOR = "pipeline"
 FLAG_INJECTION = "injection_flagged"
+
+
+@dataclass(frozen=True)
+class PipelineFailure:
+    """One remittance claim ``process_pending`` could not turn into a work item (class name only)."""
+
+    remittance_claim_id: int
+    claim_id: int | None
+    error: str
+
+
+class PipelineRun(list[WorkItem]):
+    """The work items ``process_pending`` created, plus the claims it had to skip (``failed``)."""
+
+    def __init__(self, created: list[WorkItem] | None = None, failed: list[PipelineFailure] | None = None):
+        super().__init__(created or [])
+        self.failed: list[PipelineFailure] = list(failed or [])
 
 
 def _utcnow() -> datetime:
@@ -144,6 +172,11 @@ def build_context(
         trace_number=remittance.trace_number if remittance else None,
         denied_amount=Decimal(rc.denied_amount or 0),
         remark_codes=list(rc.remark_codes or []),
+        # The payer's spelling of the patient (NM1*QC) may differ from the clinic's record; the
+        # registry tokenizes both so a letter written in the payer's spelling is still redacted.
+        patient_first_name=rc.patient_first_name,
+        patient_last_name=rc.patient_last_name,
+        member_id=rc.member_id,
     )
 
     reasons = enrich_reasons(denial_reasons_for(rc))
@@ -169,9 +202,22 @@ def build_context(
             )
         )
 
-    notes = [
-        NoteContext(note_id=n.id, note_date=n.note_date, author=n.author, text=n.text) for n in claim.notes
-    ]
+    notes: list[NoteContext] = []
+    for note in claim.notes:
+        note_findings = [InjectionFinding(**f) for f in (note.injection_findings or [])]
+        if not note_findings and not note.flagged_injection:
+            # Defence in depth: notes imported before the scanner existed are re-scanned here.
+            note_findings = detect_injection(note.text)
+        notes.append(
+            NoteContext(
+                note_id=note.id,
+                note_date=note.note_date,
+                author=note.author,
+                text=note.text,
+                flagged_injection=bool(note.flagged_injection or note_findings),
+                injection_findings=note_findings,
+            )
+        )
 
     return DenialContext(
         claim=claim_ctx,
@@ -333,13 +379,14 @@ def _work_item_flags(
 ) -> list[str]:
     """Flags describing a work item's current proposal and context.
 
-    ``injection_flagged`` when a payer document carried planted instructions (found by the scanner
-    on import or re-scan, or reported by the model), then the draft's own flags, then
-    ``coding_change`` for any code or modifier edit. Recomputed on every (re)generation so the
-    flags never describe a superseded proposal.
+    ``injection_flagged`` when a payer document or a note excerpt carried planted instructions
+    (found by the scanner on import or re-scan, or reported by the model), then the draft's own
+    flags, then ``coding_change`` for any code or modifier edit. Recomputed on every (re)generation
+    so the flags never describe a superseded proposal.
     """
     flags: list[str] = []
-    if classification.injection_detected or ctx.has_flagged_documents:
+    flagged_notes = any(note.flagged_injection for note in ctx.notes)
+    if classification.injection_detected or ctx.has_flagged_documents or flagged_notes:
         flags.append(FLAG_INJECTION)
     flags.extend(draft.flags)
     if draft.coding_change and FLAG_CODING_CHANGE not in flags:
@@ -437,33 +484,80 @@ def regenerate_proposal(
     return proposal
 
 
+def _record_failure(
+    session: Session, rc: RemittanceClaim, exc: Exception, *, actor_id: str
+) -> PipelineFailure:
+    """Audit one skipped claim: ids and the exception class name only (a message may quote data)."""
+    failure = PipelineFailure(remittance_claim_id=rc.id, claim_id=rc.claim_id, error=type(exc).__name__)
+    log.warning(
+        "pipeline failed for remittance claim %s (%s); rolled back to its savepoint, continuing",
+        rc.id,
+        failure.error,
+    )
+    log.debug(
+        "pipeline failure traceback (frames only):\n%s", "".join(traceback.format_tb(exc.__traceback__))
+    )
+    audit.record(
+        session,
+        actor_type=ActorType.AGENT,
+        actor_id=actor_id,
+        action="pipeline_failed",
+        entity_type="remittance_claim",
+        entity_id=rc.id,
+        claim_id=rc.claim_id,
+        details={"remittance_claim_id": rc.id, "error": failure.error},
+    )
+    return failure
+
+
 def process_pending(
     session: Session,
     *,
     llm_client: LLMClient | None = None,
     today: date | None = None,
     limit: int | None = None,
-) -> list[WorkItem]:
-    """Create work items for every denied, matched remittance claim that has none yet."""
+    actor_id: str = PIPELINE_ACTOR,
+) -> PipelineRun:
+    """Create work items for every denied, matched remittance claim that has none yet.
+
+    Each claim runs inside ``session.begin_nested()`` (a SAVEPOINT): when it raises, its rows
+    (work item, proposal, model-call records) are rolled back to the savepoint, a ``pipeline_failed``
+    audit event names the remittance claim and the exception class, and the loop goes on. The
+    result lists the created work items and, under ``failed``, the claims to retry on the next run.
+    Nothing is committed here; the caller commits.
+    """
     stmt = (
         select(RemittanceClaim)
         .where(RemittanceClaim.is_denial.is_(True), RemittanceClaim.claim_id.is_not(None))
         .order_by(RemittanceClaim.id)
     )
     existing_ids = set(session.execute(select(WorkItem.remittance_claim_id)).scalars())
-    created: list[WorkItem] = []
+    pending = [rc for rc in session.execute(stmt).scalars().all() if rc.id not in existing_ids]
+    run = PipelineRun()
     client = _resolve_client(llm_client)
-    for rc in session.execute(stmt).scalars():
-        if rc.id in existing_ids:
+    for rc in pending:
+        try:
+            with session.begin_nested():
+                wi = process_remittance_claim(
+                    session, rc, llm_client=client, today=today, actor_id=actor_id, resolve_client=False
+                )
+        except Exception as exc:  # one bad denial must not take the batch down with it
+            run.failed.append(_record_failure(session, rc, exc, actor_id=actor_id))
             continue
-        wi = process_remittance_claim(session, rc, llm_client=client, today=today, resolve_client=False)
         if wi is not None:
-            created.append(wi)
-            if limit is not None and len(created) >= limit:
+            run.append(wi)
+            if limit is not None and len(run) >= limit:
                 break
     session.flush()
-    log.info("pipeline processed %d remittance claims", len(created))
-    return created
+    log.info("pipeline processed %d remittance claims (%d failed)", len(run), len(run.failed))
+    return run
 
 
-__all__ = ["build_context", "process_remittance_claim", "process_pending", "regenerate_proposal"]
+__all__ = [
+    "PipelineFailure",
+    "PipelineRun",
+    "build_context",
+    "process_pending",
+    "process_remittance_claim",
+    "regenerate_proposal",
+]

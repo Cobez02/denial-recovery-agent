@@ -10,10 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:${PATH}"
 
 # WeasyPrint runtime libraries (PDF rendering of appeal letters) and a base font set.
+# WeasyPrint >= 53 on Debian >= 11 needs pango, pangoft2 and the harfbuzz *subset* library.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 libgdk-pixbuf-2.0-0 \
-        shared-mime-info fonts-dejavu-core \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libharfbuzz-subset0 libcairo2 \
+        libgdk-pixbuf-2.0-0 shared-mime-info fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,6 +30,9 @@ COPY app ./app
 COPY synthetic ./synthetic
 RUN uv sync --frozen --no-dev --extra pdf
 
+# A missing runtime library must fail the build, not silently drop appeal_letter.pdf from exports.
+RUN python -c "import weasyprint"
+
 # Run as a non-root user; ./data is mounted here by docker-compose.yml.
 RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin denial \
     && mkdir -p /app/data/exports \
@@ -36,5 +40,6 @@ RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin denial \
 USER denial
 
 EXPOSE 8000
-# Apply migrations, then serve. Reachable only through the compose port binding (127.0.0.1:8000).
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Apply migrations, then serve through the CLI so uvicorn's loggers propagate to the PHI-masking
+# root handler (docs/SPEC.md section 15). Reachable only through the compose port binding.
+CMD ["sh", "-c", "denial-agent init-db --migrate && denial-agent serve --host 0.0.0.0 --port 8000"]

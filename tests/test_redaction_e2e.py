@@ -167,6 +167,9 @@ def test_no_identifier_reaches_a_model_payload(session, settings, clinic, captur
         patient = work_item.claim.patient
         assert patient.first_name in proposal.appeal_letter and patient.last_name in proposal.appeal_letter
         assert not LEFTOVER_TOKEN.search(proposal.appeal_letter), work_item.claim.claim_control_number
-        assert "model_narrative" in work_item.flags or "model_draft_rejected" in work_item.flags
+        # The stub returns the narrative verbatim, so the fact check must accept every model draft:
+        # a rejected draft here would mean the check refuses facts that are in its own inputs.
+        assert "model_narrative" in work_item.flags, work_item.claim.claim_control_number
+        assert "model_draft_rejected" not in work_item.flags, work_item.claim.claim_control_number
     draft_payloads = [p for p in payloads if p.name == "draft_appeal"]
     assert len(draft_payloads) == len(letters)

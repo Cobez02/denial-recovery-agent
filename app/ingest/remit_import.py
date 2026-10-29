@@ -7,7 +7,10 @@ sha256) is recorded as a ``duplicate`` batch and nothing else is written. After 
 stored, ``app.outcomes.matching.record_outcomes_for_remittance`` is called when that module exists.
 ``rematch_unmatched`` repeats the match / link / status step for remittance claims that found no
 claim at import time; the claims importer calls it, so an 835 that arrives before its claims
-export is resolved as soon as the claims are known.
+export is resolved as soon as the claims are known. ``relink_remittance_lines`` repeats only the
+line-linking step for one claim; the claims importer calls it after a re-export changed a claim's
+lines, so a renumbered or trimmed export never leaves a remittance line pointing at the wrong
+procedure.
 
 Logs and audit details carry ids, counts and sequence numbers only.
 """
@@ -278,6 +281,34 @@ def link_remittance_lines(rc: RemittanceClaim, claim: Claim) -> int:
     return sum(1 for line in rc.lines if line.claim_line is not None)
 
 
+def relink_remittance_lines(session: Session, claim: Claim) -> int:
+    """Re-link the SVC rows of every remittance claim matched to ``claim`` against its current lines.
+
+    Called after a claims re-export changed the claim's lines (renumbered, re-ordered or trimmed):
+    every link is dropped and rebuilt with :func:`link_remittance_lines`, so a remittance line
+    follows its procedure rather than a line number that now holds something else. Returns the
+    number of remittance lines linked afterwards; a line whose procedure is gone stays unlinked.
+    """
+    stmt = select(RemittanceClaim).where(RemittanceClaim.claim_id == claim.id).order_by(RemittanceClaim.id)
+    remittance_claims = [rc for rc in session.execute(stmt).scalars() if rc.lines]
+    if not remittance_claims:
+        return 0
+    for rc in remittance_claims:
+        for remittance_line in rc.lines:
+            remittance_line.claim_line = None
+            remittance_line.claim_line_id = None
+    session.flush()
+    linked = sum(link_remittance_lines(rc, claim) for rc in remittance_claims)
+    log.info(
+        "re-linked remittance lines for claim %s: %d of %d linked across %d remittance claim(s)",
+        claim.id,
+        linked,
+        sum(len(rc.lines) for rc in remittance_claims),
+        len(remittance_claims),
+    )
+    return linked
+
+
 def claim_status_for(rc: RemittanceClaim) -> str | None:
     """New claim status implied by a remittance claim, or None to leave it unchanged."""
     paid = Decimal(rc.paid_amount or 0)
@@ -411,6 +442,7 @@ __all__ = [
     "claim_status_for",
     "import_835",
     "link_remittance_lines",
+    "relink_remittance_lines",
     "rematch_unmatched",
     "transaction_sha",
 ]

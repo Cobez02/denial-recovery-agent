@@ -9,7 +9,10 @@ draft it returns:
 - marks any code or modifier edit as a coding change that needs a quoted note excerpt before approval.
 
 Notes and payer documents are untrusted data. The helpers here only quote sentences that contain the
-keywords a playbook looks for; nothing in a note or letter is ever treated as an instruction.
+keywords a playbook looks for; nothing in a note or letter is ever treated as an instruction. A note
+flagged for planted instructions (`NoteContext.flagged_injection`) is treated as absent: `usable_notes`
+is the only note list the search helpers read, and a draft built while such a note existed carries the
+flag `flagged_notes_skipped` so the reviewer knows evidence was left out.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ FLAG_PAYER_FROM_DOCUMENT = "payer_from_document"
 FLAG_PAYER_CHANGE_UNVERIFIED = "payer_change_unverified"
 FLAG_CONTRACTUAL_BUNDLING = "contractual_bundling"
 FLAG_NO_NOTES = "no_note_excerpts"
+FLAG_FLAGGED_NOTES_SKIPPED = "flagged_notes_skipped"
 
 
 # --------------------------------------------------------------------------------------
@@ -75,21 +79,33 @@ def sentence_matches(sentence: str, keywords: Iterable[str]) -> list[str]:
     return [kw for kw in keywords if kw and keyword_pattern(kw).search(sentence)]
 
 
+def usable_notes(ctx: DenialContext) -> list[NoteContext]:
+    """The notes a playbook may read or quote: every note not flagged for planted instructions."""
+    return [note for note in ctx.notes if not note.flagged_injection]
+
+
+def has_flagged_notes(ctx: DenialContext) -> bool:
+    return any(note.flagged_injection for note in ctx.notes)
+
+
 def notes_mention(ctx: DenialContext, keywords: Iterable[str]) -> bool:
     kws = list(keywords)
     return any(
-        sentence_matches(sentence, kws) for note in ctx.notes for sentence in split_sentences(note.text)
+        sentence_matches(sentence, kws)
+        for note in usable_notes(ctx)
+        for sentence in split_sentences(note.text)
     )
 
 
 def latest_note(ctx: DenialContext) -> NoteContext | None:
-    """The most recently dated note; undated notes rank last (first one in context order wins)."""
-    if not ctx.notes:
+    """The most recently dated usable note; undated notes rank last (first one in context order wins)."""
+    notes = usable_notes(ctx)
+    if not notes:
         return None
-    dated = [n for n in ctx.notes if n.note_date is not None]
+    dated = [n for n in notes if n.note_date is not None]
     if dated:
         return max(dated, key=lambda n: n.note_date)  # type: ignore[arg-type, return-value]
-    return ctx.notes[0]
+    return notes[0]
 
 
 def code_is_numeric_in(code: str, ranges: Sequence[Sequence[int]]) -> bool:
@@ -269,10 +285,11 @@ class Playbook:
     def find_supporting_notes(
         self, ctx: DenialContext, keywords: Iterable[str], *, limit: int | None = None
     ) -> list[tuple[NoteContext, str]]:
-        """(note, sentence) for every note sentence that contains one of the keywords, in note order."""
+        """(note, sentence) for every usable note sentence that contains one of the keywords, in note
+        order. Notes flagged for planted instructions are never searched."""
         kws = [k for k in keywords if k]
         found: list[tuple[NoteContext, str]] = []
-        for note in ctx.notes:
+        for note in usable_notes(ctx):
             for sentence in split_sentences(note.text):
                 if sentence_matches(sentence, kws):
                     found.append((note, sentence))
@@ -316,6 +333,8 @@ class Playbook:
             requires_note_excerpt = True
             if FLAG_CODING_CHANGE not in flag_list:
                 flag_list.insert(0, FLAG_CODING_CHANGE)
+        if has_flagged_notes(ctx) and FLAG_FLAGGED_NOTES_SKIPPED not in flag_list:
+            flag_list.append(FLAG_FLAGGED_NOTES_SKIPPED)
         if FLAG_UNSUPPORTED_CODING_CHANGE in flag_list:
             confidence = min(confidence, 0.4)
         return ProposalDraft(
@@ -371,6 +390,7 @@ class Playbook:
 __all__ = [
     "FLAG_CODING_CHANGE",
     "FLAG_CONTRACTUAL_BUNDLING",
+    "FLAG_FLAGGED_NOTES_SKIPPED",
     "FLAG_MISSED_MONEY_REVIEW",
     "FLAG_NO_NOTES",
     "FLAG_PAYER_CHANGE_UNVERIFIED",
@@ -382,6 +402,7 @@ __all__ = [
     "dedupe_citations",
     "document_for_ref",
     "document_ref",
+    "has_flagged_notes",
     "keyword_pattern",
     "latest_note",
     "normalize_ws",
@@ -393,4 +414,5 @@ __all__ = [
     "reason_text",
     "sentence_matches",
     "split_sentences",
+    "usable_notes",
 ]

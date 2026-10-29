@@ -99,7 +99,7 @@ button.link { background: none; border: none; color: var(--accent); cursor: poin
 .summary { font-weight: 600; }
 
 .document, .note { border: 1px solid var(--line); border-radius: 4px; padding: 0.6rem 0.8rem; margin-bottom: 0.8rem; }
-.document.flagged { border-color: var(--danger); }
+.document.flagged, .note.flagged { border-color: var(--danger); }
 .doc-head { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
 .doc-text, .letter { white-space: pre-wrap; overflow-wrap: anywhere; background: #fafbfc; border: 1px solid var(--line); border-radius: 4px; padding: 0.6rem; margin: 0; max-height: 28rem; overflow: auto; }
 .letter { font-family: Georgia, "Times New Roman", serif; font-size: 0.95rem; }

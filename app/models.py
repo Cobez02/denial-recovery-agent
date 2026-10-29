@@ -85,6 +85,7 @@ class User(Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    totp_last_step: Mapped[int | None] = mapped_column(Integer)  # last accepted TOTP time step (replay guard)
 
 
 # --------------------------------------------------------------------------------------
@@ -193,6 +194,8 @@ class NoteExcerpt(Base):
     author: Mapped[str | None] = mapped_column(String(200))
     text: Mapped[str] = mapped_column(Text)
     source: Mapped[str | None] = mapped_column(String(100))
+    flagged_injection: Mapped[bool] = mapped_column(Boolean, default=False)
+    injection_findings: Mapped[list[Any]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     claim: Mapped[Claim] = relationship(back_populates="notes")

@@ -6,6 +6,7 @@ ANTHROPIC_API_KEY from the environment itself; it is listed here only so .env wo
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -14,10 +15,24 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = PROJECT_ROOT / ".env"
+
+# Values of SECRET_KEY that must never sign a session cookie outside the test suite.
+PLACEHOLDER_SECRET_KEYS = frozenset(
+    {"change-me", "changeme", "secret", "change-me-in-.env-this-default-is-not-secret"}
+)
+MIN_SECRET_KEY_LENGTH = 24
+
+
+def is_placeholder_secret(value: str | None) -> bool:
+    """True for an empty, placeholder or too-short SECRET_KEY (see create_app and `denial-agent serve`)."""
+    key = (value or "").strip()
+    return not key or key.lower() in PLACEHOLDER_SECRET_KEYS or len(key) < MIN_SECRET_KEY_LENGTH
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # The .env file is the project's own, wherever the process was started from.
+    model_config = SettingsConfigDict(env_file=str(ENV_FILE), env_file_encoding="utf-8", extra="ignore")
 
     app_env: Literal["local", "test", "docker"] = "local"
     secret_key: str = Field(default="change-me-in-.env-this-default-is-not-secret", repr=False)
@@ -82,6 +97,8 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    if os.environ.get("APP_ENV", "").lower() == "test":
+        return Settings(_env_file=None)  # the suite is hermetic: no operator .env leaks into tests
     return Settings()
 
 

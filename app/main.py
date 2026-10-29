@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.config import get_settings
+from app.config import get_settings, is_placeholder_secret
 from app.logging_config import configure_logging
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,11 @@ ROUTER_MODULES: tuple[tuple[str, str], ...] = (
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.log_level)
+    if settings.app_env != "test" and is_placeholder_secret(settings.secret_key):
+        raise RuntimeError(
+            "SECRET_KEY is missing or a placeholder; session cookies would be forgeable. Put a random value "
+            'in .env (python -c "import secrets; print(secrets.token_urlsafe(48))") and start again.'
+        )
 
     app = FastAPI(title="Denial Recovery Agent", version="0.1.0", docs_url=None, redoc_url=None)
     app.add_middleware(

@@ -79,6 +79,7 @@ def upgrade() -> None:
         sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("totp_last_step", sa.Integer(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("email"),
     )
@@ -179,6 +180,8 @@ def upgrade() -> None:
         sa.Column("author", sa.String(length=200), nullable=True),
         sa.Column("text", sa.Text(), nullable=False),
         sa.Column("source", sa.String(length=100), nullable=True),
+        sa.Column("flagged_injection", sa.Boolean(), nullable=False),
+        sa.Column("injection_findings", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["claim_id"], ["claims.id"]),
         sa.PrimaryKeyConstraint("id"),

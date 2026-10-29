@@ -35,3 +35,6 @@ Thumbs.db
 logs/
 *.log
 exports/
+
+# local editor/agent tooling
+.claude/

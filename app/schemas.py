@@ -395,6 +395,10 @@ class RemittanceContext(BaseModel):
     trace_number: str | None = None
     denied_amount: Decimal = Decimal("0")
     remark_codes: list[str] = Field(default_factory=list)
+    # The payer's own spelling of the patient (NM1*QC / NM1*IL): registered for redaction too.
+    patient_first_name: str | None = None
+    patient_last_name: str | None = None
+    member_id: str | None = None
 
 
 class DocumentContext(BaseModel):
@@ -411,6 +415,8 @@ class NoteContext(BaseModel):
     note_date: date | None = None
     author: str | None = None
     text: str
+    flagged_injection: bool = False  # planted instructions found at import or in build_context
+    injection_findings: list[InjectionFinding] = Field(default_factory=list)
 
 
 class DenialContext(BaseModel):

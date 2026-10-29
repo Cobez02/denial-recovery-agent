@@ -12,16 +12,20 @@ Everything here runs against the committed synthetic fixture set ``synthetic/fix
   independent of ``app.redact`` so the redaction and PHI-in-logs tests do not trust the code under test.
 - :func:`fixture_run` gives a module-scoped fixture one private database with the batch imported and
   processed, so read-only tests share a single run instead of repeating the import per function.
+- :func:`http_run` gives a module-scoped fixture one private database, the FastAPI app and a
+  TestClient logged in through the real password + TOTP flow, with every model payload and every
+  log record captured for the whole run (the end-to-end synthetic test drives the loop over HTTP).
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import logging
 import re
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -42,6 +46,14 @@ DOCUMENTS_FILE = "payer_documents.csv"
 LABELS_FILE = "labels.json"
 MANIFEST_FILE = "manifest.json"
 REMIT_GLOB = "remit_*.835"
+
+# The review pages: the hidden CSRF field every form carries, one queue row, the HTMX header that
+# stands in for the token on same-origin requests (see app/auth/deps.py).
+CSRF_RE = re.compile(r'name="_csrf" value="([^"]+)"')
+QUEUE_ROW_RE = re.compile(r'<tr class="queue-row">\s*<td><a href="/items/(\d+)"')
+HX_HEADERS: dict[str, str] = {"HX-Request": "true"}
+REVIEWER_EMAIL = "reviewer@example.test"
+REVIEWER_PASSWORD = "correct horse battery staple 42!"
 
 # Identifier kinds reported by identifiers_for_batch / scan_text_for_identifiers.
 KIND_NAME = "PATIENT_NAME"
@@ -275,8 +287,196 @@ def fixture_run(
 
 
 # --------------------------------------------------------------------------------------
+# One shared HTTP run for a whole test module
+# --------------------------------------------------------------------------------------
+
+
+class LogCapture(logging.Handler):
+    """Keeps every record that reaches the root logger, as the application's own handlers see it.
+
+    The app's ``PHIMaskingFilter`` is attached to this handler too (``configure_logging`` does that
+    for every foreign root handler), so the records are the masked ones the real handlers write.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+    @property
+    def messages(self) -> list[str]:
+        return [record.getMessage() for record in self.records]
+
+
+@dataclass
+class HttpRun:
+    """A private database, the app and a logged-in client for a whole module (see :func:`http_run`)."""
+
+    session: Session
+    settings: Any
+    clinic: Any
+    reviewer: Any
+    reviewer_password: str
+    app: Any
+    client: Any
+    batch_dir: Path
+    today: date
+    labels: list[dict[str, Any]]
+    label_by_ccn: dict[str, dict[str, Any]]
+    payloads: list[RenderedPrompt] = field(default_factory=list)
+    logs: LogCapture = field(default_factory=LogCapture)
+
+
+def csrf_token(client: Any) -> str:
+    """The session's CSRF token, read from the queue page exactly as a browser would."""
+    page = client.get("/queue")
+    assert page.status_code == 200, page.status_code
+    match = CSRF_RE.search(page.text)
+    assert match is not None, "the queue page carries no CSRF field"
+    return match.group(1)
+
+
+def queue_item_ids(html: str) -> list[int]:
+    """Work item ids in the order the queue table lists them."""
+    return [int(x) for x in QUEUE_ROW_RE.findall(html)]
+
+
+@contextmanager
+def http_run(
+    tmp_dir: str | Path,
+    *,
+    batch_dir: str | Path = FIXTURE_DIR,
+    reviewer_email: str = REVIEWER_EMAIL,
+    reviewer_password: str = REVIEWER_PASSWORD,
+) -> Iterator[HttpRun]:
+    """A database of its own, one clinic, one reviewer and a TestClient logged in through MFA.
+
+    Wires the environment, settings, engine and session like the conftest fixtures, creates the
+    reviewer through ``app.auth.service`` and logs the client in with POST /login and POST
+    /login/mfa (a ``login_success`` audit event, as in production). Nothing is imported: the
+    caller drives the loop over HTTP. For the whole run every ``RenderedPrompt`` the stub client
+    receives lands in ``payloads`` and every log record the root logger receives (``app`` loggers
+    at DEBUG, the rest at the configured level) in ``logs``; both patches are undone on exit.
+    Tests in a module that uses this must not also use the function-scoped conftest fixtures.
+    """
+    import pyotp
+    from fastapi.testclient import TestClient
+
+    from app.auth.service import create_user
+    from app.config import get_settings, reset_settings_cache
+    from app.db import configure_engine, dispose_engine, init_db, make_engine, session_factory
+    from app.llm import clients
+    from app.logging_config import PHIMaskingFilter
+    from app.main import create_app
+    from app.models import Clinic
+    from tests.conftest import set_test_env  # the one definition of the test environment
+
+    set_test_env(Path(tmp_dir))
+    reset_settings_cache()
+    dispose_engine()
+    settings = get_settings()
+    engine = make_engine(settings.database_url)
+    configure_engine(engine)
+    init_db(engine)
+    session = session_factory()()
+
+    root = logging.getLogger()
+    app_logger = logging.getLogger("app")
+    handlers_before = list(root.handlers)
+    root_level, app_level = root.level, app_logger.level
+    capture = LogCapture()
+    capture.addFilter(PHIMaskingFilter())
+    root.addHandler(capture)
+    monkeypatch = pytest.MonkeyPatch()
+    payloads: list[RenderedPrompt] = []
+    client: Any = None
+    try:
+        original = clients.StubClient.complete
+
+        def _capture(self: Any, rendered: RenderedPrompt) -> Any:
+            payloads.append(rendered)
+            return original(self, rendered)
+
+        monkeypatch.setattr(clients.StubClient, "complete", _capture)
+
+        clinic = Clinic(
+            name="Test Dermatology Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM"
+        )
+        session.add(clinic)
+        session.commit()
+        settings.clinic_id = clinic.id
+        reviewer = create_user(session, email=reviewer_email, password=reviewer_password, role="reviewer")
+        session.commit()
+
+        app = create_app()  # configures logging: root at LOG_LEVEL, masking filter on every handler
+        app_logger.setLevel(logging.DEBUG)
+        client = TestClient(app, base_url="http://testserver", follow_redirects=False)
+        response = client.post("/login", data={"email": reviewer.email, "password": reviewer_password})
+        assert response.status_code in (200, 302, 303), response.status_code
+        response = client.post("/login/mfa", data={"code": pyotp.TOTP(reviewer.totp_secret).now()})
+        assert response.status_code in (200, 302, 303), response.status_code
+        assert client.get("/queue").status_code == 200, "login through password + TOTP failed"
+
+        labels = load_labels(batch_dir)
+        yield HttpRun(
+            session=session,
+            settings=settings,
+            clinic=clinic,
+            reviewer=reviewer,
+            reviewer_password=reviewer_password,
+            app=app,
+            client=client,
+            batch_dir=Path(batch_dir),
+            today=batch_as_of(batch_dir),
+            labels=labels,
+            label_by_ccn=labels_by_ccn(labels),
+            payloads=payloads,
+            logs=capture,
+        )
+    finally:
+        monkeypatch.undo()
+        if client is not None:
+            client.close()
+        session.rollback()
+        session.close()
+        dispose_engine()
+        engine.dispose()
+        reset_settings_cache()
+        # Leave the root logger as it was found: drop the capture handler and the stderr handler
+        # configure_logging added during this run; never re-add a handler pytest already removed.
+        for handler in list(root.handlers):
+            if handler is capture or (
+                handler not in handlers_before and getattr(handler, "_denial_agent_handler", False)
+            ):
+                root.removeHandler(handler)
+        root.setLevel(root_level)
+        app_logger.setLevel(app_level)
+
+
+# --------------------------------------------------------------------------------------
 # Identifiers and scanning
 # --------------------------------------------------------------------------------------
+
+
+def payer_letterheads(profile_name: str | None = None) -> set[str]:
+    """The synthetic payers' own city/state/zip lines as the letter templates print them (lower case).
+
+    Some synthetic payers are located in towns synthetic patients also live in, so a whole-batch
+    address scan of a payload would otherwise report a payer's letterhead as a patient address. The
+    default profile is the one named in the fixture manifest.
+    """
+    from synthetic.profile import load_profile
+
+    letterheads: set[str] = set()
+    for payer in load_profile(profile_name or load_manifest()["profile"]).payers:
+        address = payer.address or {}
+        city, state, zip_code = address.get("city", ""), address.get("state", ""), address.get("zip", "")
+        if city and zip_code:
+            letterheads.add(f"{city}, {state} {zip_code}".lower())
+            letterheads.add(f"{city} {state} {zip_code}".lower())
+    return letterheads
 
 
 def dob_spellings(dob: date) -> list[str]:
@@ -440,31 +640,42 @@ def find_planted_phrases(text: str | None, phrases: Sequence[str]) -> list[str]:
 __all__ = [
     "AS_OF",
     "CLAIMS_FILE",
+    "CSRF_RE",
     "DOCUMENTS_FILE",
     "FIXTURE_DIR",
     "FixtureRun",
+    "HX_HEADERS",
+    "HttpRun",
     "KIND_ACCOUNT",
     "KIND_ADDRESS",
     "KIND_DOB",
     "KIND_MEMBER_ID",
     "KIND_NAME",
     "LABELS_FILE",
+    "LogCapture",
     "MANIFEST_FILE",
     "NOTES_FILE",
+    "QUEUE_ROW_RE",
+    "REVIEWER_EMAIL",
+    "REVIEWER_PASSWORD",
     "WORD_BOUNDED_KINDS",
     "batch_as_of",
     "batch_summary",
+    "csrf_token",
     "dob_spellings",
     "find_planted_phrases",
     "fixture_run",
+    "http_run",
     "identifiers_for_batch",
     "labels_by_ccn",
     "load_fixture_batch",
     "load_labels",
     "load_manifest",
     "mask_preview",
+    "payer_letterheads",
     "planted_phrases",
     "planted_phrases_by_style",
+    "queue_item_ids",
     "read_claim_rows",
     "remit_files",
     "run_pipeline",

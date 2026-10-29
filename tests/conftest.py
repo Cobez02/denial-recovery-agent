@@ -24,7 +24,44 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+# Every environment variable Settings reads: cleared first so an operator's shell or .env never
+# changes what the suite tests (get_settings also skips the .env file when APP_ENV=test).
+SETTINGS_ENV_VARS = (
+    "APP_ENV",
+    "SECRET_KEY",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "JOB_BACKEND",
+    "LLM_PROVIDER",
+    "LLM_MODEL",
+    "LLM_EFFORT",
+    "LLM_MAX_RETRIES",
+    "LLM_TIMEOUT_SECONDS",
+    "LLM_SERVER_FALLBACKS",
+    "LLM_RECORD",
+    "LLM_REPLAY_DIR",
+    "ANTHROPIC_API_KEY",
+    "CLASSIFY_MODEL_THRESHOLD",
+    "MODEL_ENABLED_FOR_DRAFTING",
+    "AUTH_REQUIRED",
+    "SESSION_COOKIE_SECURE",
+    "SESSION_MAX_AGE_SECONDS",
+    "LOGIN_MAX_FAILURES",
+    "LOGIN_LOCKOUT_MINUTES",
+    "DATA_DIR",
+    "EXPORT_DIR",
+    "LOG_LEVEL",
+    "DEADLINE_WARN_DAYS",
+    "CLINIC_ID",
+    "DEFAULT_TIMELY_FILING_DAYS",
+    "DEFAULT_CORRECTED_CLAIM_DAYS",
+    "DEFAULT_APPEAL_DAYS",
+)
+
+
 def _set_test_env(tmp_path: Path) -> None:
+    for name in SETTINGS_ENV_VARS:
+        os.environ.pop(name, None)
     os.environ["APP_ENV"] = "test"
     os.environ["DATABASE_URL"] = f"sqlite:///{(tmp_path / 'test.db').as_posix()}"
     os.environ["LLM_PROVIDER"] = "stub"
@@ -118,10 +155,10 @@ def client(app, reviewer, reviewer_password):
 
     c = TestClient(app, base_url="http://testserver", follow_redirects=False)
     r = c.post("/login", data={"email": reviewer.email, "password": reviewer_password})
-    assert r.status_code in (200, 303, 302), r.text
+    assert r.status_code == 303 and r.headers["location"].endswith("/login/mfa"), r.text
     code = pyotp.TOTP(reviewer.totp_secret).now()
     r = c.post("/login/mfa", data={"code": code})
-    assert r.status_code in (200, 303, 302), r.text
+    assert r.status_code == 303 and r.headers["location"].endswith("/queue"), r.text
     return c
 
 

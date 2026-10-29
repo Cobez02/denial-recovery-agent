@@ -28,10 +28,26 @@ _MASK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
-def mask_text(text: str) -> str:
+# (logger name, replacement label) for every substitution the filter made. The PHI-in-logs test asserts
+# that no `app.*` logger ever needed one: masking is defence in depth, not the first line.
+MASK_HITS: list[tuple[str, str]] = []
+
+
+def _mask(text: str) -> tuple[str, list[str]]:
+    labels: list[str] = []
     for pattern, repl in _MASK_PATTERNS:
-        text = pattern.sub(repl, text)
-    return text
+        text, n = pattern.subn(repl, text)
+        if n:
+            labels.extend([repl] * n)
+    return text, labels
+
+
+def mask_text(text: str) -> str:
+    return _mask(text)[0]
+
+
+def reset_mask_hits() -> None:
+    MASK_HITS.clear()
 
 
 class PHIMaskingFilter(logging.Filter):
@@ -52,7 +68,10 @@ class PHIMaskingFilter(logging.Filter):
             msg = f"{msg}\n{frames}{name}".rstrip()
             record.exc_info = None
             record.exc_text = None
-        record.msg = mask_text(msg)
+        masked, labels = _mask(msg)
+        if labels:
+            MASK_HITS.extend((record.name, label) for label in labels)
+        record.msg = masked
         record.args = ()
         return True
 
@@ -71,7 +90,7 @@ def configure_logging(level: str | int = "INFO") -> None:
     handler._denial_agent_handler = True  # type: ignore[attr-defined]
     root.addHandler(handler)
     # Quiet noisy libraries; the SDK never logs request bodies at INFO.
-    for noisy in ("httpx", "httpcore", "anthropic", "uvicorn.access"):
+    for noisy in ("httpx", "httpcore", "anthropic", "uvicorn.access", "alembic"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

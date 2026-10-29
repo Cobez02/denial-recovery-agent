@@ -25,11 +25,13 @@ from app.llm.factory import get_client
 from app.llm.guard import make_guard_call
 from app.models import Claim, Proposal, RemittanceClaim, WorkItem
 from app.playbooks import priority_score, propose
+from app.playbooks.base import FLAG_CODING_CHANGE
 from app.redact.injection import detect_injection
 from app.redact.registry import IdentifierRegistry
 from app.schemas import (
     ClaimContext,
     ClaimLineContext,
+    ClassificationResult,
     DenialContext,
     DocumentContext,
     InjectionFinding,
@@ -43,6 +45,7 @@ from app.schemas import (
 log = logging.getLogger(__name__)
 
 PIPELINE_ACTOR = "pipeline"
+FLAG_INJECTION = "injection_flagged"
 
 
 def _utcnow() -> datetime:
@@ -215,10 +218,12 @@ def process_remittance_claim(
     llm_client: LLMClient | None = None,
     today: date | None = None,
     actor_id: str = PIPELINE_ACTOR,
+    resolve_client: bool = True,
 ) -> WorkItem | None:
     """Create a work item with a classified, cited proposal for one denied remittance claim.
 
-    Idempotent: a remittance claim that already has a work item returns it unchanged.
+    Idempotent: a remittance claim that already has a work item returns it unchanged. With
+    `resolve_client=False` the given `llm_client` (possibly None: rules only) is used as is.
     """
     if not rc.is_denial or rc.claim_id is None:
         return None
@@ -258,7 +263,7 @@ def process_remittance_claim(
         },
     )
 
-    client = _resolve_client(llm_client)
+    client = _resolve_client(llm_client) if resolve_client else llm_client
     registry = IdentifierRegistry.from_context(ctx)
     guard_call = (
         make_guard_call(session, client, registry, work_item_id=work_item.id, purpose="denial_pipeline")
@@ -267,10 +272,6 @@ def process_remittance_claim(
     )
 
     classification = classify(ctx, guard_call)
-    flags: list[str] = []
-    if classification.injection_detected or ctx.has_flagged_documents:
-        flags.append("injection_flagged")
-
     work_item.category = str(classification.category)
     work_item.category_confidence = classification.confidence
     work_item.classification_source = str(classification.source)
@@ -299,10 +300,7 @@ def process_remittance_claim(
         draft.flags = list(dict.fromkeys([*draft.flags, *letter_flags]))
 
     proposal = _persist_proposal(session, work_item, draft, version=1)
-    flags.extend(draft.flags)
-    if draft.coding_change and "coding_change" not in flags:
-        flags.append("coding_change")
-    work_item.flags = list(dict.fromkeys(flags))
+    work_item.flags = _work_item_flags(ctx, classification, draft)
     work_item.deadline = draft.deadline
     work_item.deadline_kind = str(draft.deadline_kind) if draft.deadline_kind else None
     work_item.priority_score = priority_score(draft, ctx)
@@ -330,13 +328,31 @@ def process_remittance_claim(
     return work_item
 
 
+def _work_item_flags(
+    ctx: DenialContext, classification: ClassificationResult, draft: ProposalDraft
+) -> list[str]:
+    """Flags describing a work item's current proposal and context.
+
+    ``injection_flagged`` when a payer document carried planted instructions (found by the scanner
+    on import or re-scan, or reported by the model), then the draft's own flags, then
+    ``coding_change`` for any code or modifier edit. Recomputed on every (re)generation so the
+    flags never describe a superseded proposal.
+    """
+    flags: list[str] = []
+    if classification.injection_detected or ctx.has_flagged_documents:
+        flags.append(FLAG_INJECTION)
+    flags.extend(draft.flags)
+    if draft.coding_change and FLAG_CODING_CHANGE not in flags:
+        flags.append(FLAG_CODING_CHANGE)
+    return list(dict.fromkeys(flags))
+
+
 def _persist_proposal(
     session: Session, work_item: WorkItem, draft: ProposalDraft, *, version: int
 ) -> Proposal:
     for p in work_item.proposals:
         p.is_current = False
     proposal = Proposal(
-        work_item_id=work_item.id,
         version=version,
         is_current=True,
         action_type=str(draft.action_type),
@@ -353,7 +369,10 @@ def _persist_proposal(
         model_id=draft.model_id,
         generated_by=draft.generated_by,
     )
-    session.add(proposal)
+    # Append through the relationship (not session.add with a raw work_item_id) so the already
+    # loaded `work_item.proposals` collection sees the new version in this session: otherwise
+    # `current_proposal` is None until a reload and `regenerate_proposal` would reuse version 1.
+    work_item.proposals.append(proposal)
     session.flush()
     return proposal
 
@@ -366,7 +385,11 @@ def regenerate_proposal(
     today: date | None = None,
     actor_id: str = PIPELINE_ACTOR,
 ) -> Proposal:
-    """Re-run classification and drafting for an existing work item, adding a new proposal version."""
+    """Re-run classification and drafting for an existing work item, adding a new proposal version.
+
+    The work item's category, flags, deadline and priority follow the new proposal, so a payer
+    letter attached after the first proposal is re-scanned and flagged here.
+    """
     ctx = build_context(session, work_item.remittance_claim, today=today)
     if ctx is None:
         raise ValueError("work item has no matched claim")
@@ -385,6 +408,7 @@ def regenerate_proposal(
         draft.flags = list(dict.fromkeys([*draft.flags, *letter_flags]))
     version = (max((p.version for p in work_item.proposals), default=0)) + 1
     proposal = _persist_proposal(session, work_item, draft, version=version)
+    work_item.flags = _work_item_flags(ctx, classification, draft)
     work_item.category = str(classification.category)
     work_item.category_confidence = classification.confidence
     work_item.classification_source = str(classification.source)
@@ -401,7 +425,14 @@ def regenerate_proposal(
         entity_type="proposal",
         entity_id=proposal.id,
         claim_id=work_item.claim_id,
-        details={"work_item_id": work_item.id, "version": version, "action_type": str(draft.action_type)},
+        details={
+            "work_item_id": work_item.id,
+            "version": version,
+            "action_type": str(draft.action_type),
+            "category": str(classification.category),
+            "coding_change": bool(draft.coding_change),
+            "flags": work_item.flags,
+        },
     )
     return proposal
 
@@ -425,7 +456,7 @@ def process_pending(
     for rc in session.execute(stmt).scalars():
         if rc.id in existing_ids:
             continue
-        wi = process_remittance_claim(session, rc, llm_client=client, today=today)
+        wi = process_remittance_claim(session, rc, llm_client=client, today=today, resolve_client=False)
         if wi is not None:
             created.append(wi)
             if limit is not None and len(created) >= limit:

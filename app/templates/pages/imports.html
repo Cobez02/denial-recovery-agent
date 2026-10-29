@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Imports - Denial Recovery Agent{% endblock %}
+{% block content %}
+<h1>Imports</h1>
+{% if error %}{% include "partials/error.html" %}{% endif %}
+
+{% if job %}
+<section class="card job">
+  <h2>Last job: {{ job.kind }}{% if job.file_name %} · {{ job.file_name }}{% endif %}</h2>
+  <p>Job <code>{{ job.id }}</code> is <strong>{{ job.status }}</strong>{% if job.error %} ({{ job.error }}){% endif %}.
+    {% if job.queued %}It runs on the worker; refresh this page to see the batch.{% endif %}</p>
+  {% if job.batch_id %}
+  <p>Import batch {{ job.batch_id }}: <strong>{{ job.batch_status }}</strong>{% if job.batch_error %} - {{ job.batch_error }}{% endif %}</p>
+  {% endif %}
+  {% if job.counts %}
+  <table class="table compact counts-table">
+    <thead><tr>{% for k in job.counts %}<th>{{ k|label }}</th>{% endfor %}</tr></thead>
+    <tbody><tr>{% for k, v in job.counts.items() %}<td class="num">{{ v }}</td>{% endfor %}</tr></tbody>
+  </table>
+  {% endif %}
+  {% if job.pipeline %}
+  <p>Pipeline: <strong>{{ job.pipeline }}</strong>{% if job.pipeline_error %} ({{ job.pipeline_error }}){% endif %}
+    {% if job.work_items_created is not none %}· {{ job.work_items_created }} work item(s) created{% endif %}</p>
+  {% if job.pipeline == 'failed' %}
+  <div class="alert alert-warn">The import is committed but its denials are still pending. Use <em>Process pending denials</em> below to try again.</div>
+  {% endif %}
+  {% if job.work_item_ids %}
+  <p class="muted">New items: {% for id in job.work_item_ids %}<a href="/items/{{ id }}">{{ id }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
+<div class="columns">
+<div class="col">
+<section class="card">
+  <h2>Upload</h2>
+  <p class="muted">Files up to {{ max_upload_mb }} MB. Clinic for claim, note and document files:
+    {% if clinic %}<strong>{{ clinic.name }}</strong> (id {{ clinic.id }}){% else %}<strong>none configured</strong> - set CLINIC_ID or create exactly one clinic{% endif %}.</p>
+  {% for kind, title, hint in [
+      ('835', 'X12 835 remittance', 'Denials in the file are classified and proposals drafted after the import.'),
+      ('claims', 'Claim export (CSV)', 'One row per claim line; remittances that arrived earlier are re-matched.'),
+      ('notes', 'Note excerpts (notes.csv)', 'Quoted clinical note excerpts tied to claim control numbers.'),
+      ('documents', 'Payer documents (payer_documents.csv)', 'Letters and portal text; scanned for planted instructions.')] %}
+  <form method="post" action="/imports/{{ kind }}" enctype="multipart/form-data" class="upload">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label><strong>{{ title }}</strong> <span class="muted">{{ hint }}</span>
+      <input type="file" name="file" required></label>
+    <button type="submit">Import {{ kind }}</button>
+  </form>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>Pending work</h2>
+  <p>{{ pending_denials }} denied, matched remittance claim(s) without a work item.</p>
+  <form method="post" action="/imports/process" class="inline-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <button type="submit"{% if not pending_denials %} disabled{% endif %}>Process pending denials</button>
+  </form>
+  <p>{{ unmatched_total }} unmatched remittance claim(s).</p>
+  <form method="post" action="/imports/rematch" class="inline-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <button type="submit"{% if not unmatched_total %} disabled{% endif %}>Re-match</button>
+  </form>
+</section>
+</div>
+
+<div class="col">
+<section class="card">
+  <h2>Import batches <span class="muted">(newest first)</span></h2>
+  <table class="table compact">
+    <thead><tr><th>#</th><th>Kind</th><th>File</th><th>Status</th><th>Counts</th><th>Started</th><th>By</th></tr></thead>
+    <tbody>
+      {% for b in batches %}
+      <tr>
+        <td>{{ b.id }}</td>
+        <td>{{ b.kind }}</td>
+        <td>{{ b.file_name }}</td>
+        <td><span class="status status-{{ b.status }}">{{ b.status }}</span>{% if b.error %}<br><span class="muted small">{{ b.error }}</span>{% endif %}</td>
+        <td class="small">{% for k, v in (b.counts or {}).items() %}{% if v is not iterable or v is string %}{{ k }}={{ v }} {% endif %}{% endfor %}</td>
+        <td>{{ b.started_at|fmt_datetime }}</td>
+        <td>{{ b.created_by or '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted">No imports yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Unmatched remittance claims <span class="muted">({{ unmatched_total }})</span></h2>
+  <p class="muted">Remittance claims whose patient control number matched no claim. Import the claim export, then re-match.</p>
+  <table class="table compact">
+    <thead><tr><th>Remittance file</th><th>Payer</th><th>Seq</th><th>Patient control #</th><th class="num">Charge</th><th>Status code</th></tr></thead>
+    <tbody>
+      {% for rc in unmatched %}
+      <tr>
+        <td>{{ rc.remittance.file_name if rc.remittance else '' }}</td>
+        <td>{{ rc.remittance.payer.name if rc.remittance and rc.remittance.payer else (rc.remittance.payer_name if rc.remittance else '') }}</td>
+        <td>{{ rc.sequence }}</td>
+        <td>{{ rc.patient_control_number }}</td>
+        <td class="num">{{ rc.charge_amount|money }}</td>
+        <td>{{ rc.claim_status_code }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">Every remittance claim is matched.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+</div>
+</div>
+{% endblock %}

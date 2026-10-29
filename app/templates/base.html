@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Denial Recovery Agent{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/queue">Denial Recovery Agent</a>
+  <nav>
+    {% if current_user %}
+    <a href="/queue"{% if request.url.path.startswith('/queue') or request.url.path.startswith('/items') %} class="active"{% endif %}>Queue</a>
+    <a href="/imports"{% if request.url.path.startswith('/imports') %} class="active"{% endif %}>Imports</a>
+    <a href="/dashboard"{% if request.url.path.startswith('/dashboard') %} class="active"{% endif %}>Dashboard</a>
+    <a href="/audit"{% if request.url.path.startswith('/audit') %} class="active"{% endif %}>Audit</a>
+    <form method="post" action="/logout" class="inline-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <button type="submit" class="link">Log out <span class="muted">({{ current_user.email }})</span></button>
+    </form>
+    {% else %}
+    <a href="/login">Log in</a>
+    {% endif %}
+  </nav>
+</header>
+<main class="container">
+  {% for f in flashes %}
+  <div class="alert alert-{{ f.level }}">{{ f.text }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+<footer class="footer muted">Nothing on this site submits a claim. Approvals produce an export package for a person to submit.</footer>
+<script>
+  // Refused actions come back as 400 with the explanation rendered; let HTMX swap them in.
+  document.addEventListener('htmx:beforeSwap', function (evt) {
+    if (evt.detail.xhr && evt.detail.xhr.status === 400) {
+      evt.detail.shouldSwap = true;
+      evt.detail.isError = false;
+    }
+  });
+</script>
+</body>
+</html>

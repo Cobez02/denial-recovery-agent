@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.orm import Session
 
 from app.enums import ActorType
@@ -22,6 +22,11 @@ from app.models import AuditLog
 
 class AuditImmutableError(RuntimeError):
     """Raised when code tries to update or delete an audit row."""
+
+
+# Transaction-scoped advisory lock key: a web process and an rq worker appending at the same time
+# would otherwise both chain on the same prev_hash and fork the chain. SQLite serialises writers.
+AUDIT_CHAIN_LOCK_KEY = 815001
 
 
 def _json_default(o: Any) -> Any:
@@ -81,6 +86,9 @@ def record(
 ) -> AuditLog:
     """Append one audit event. Details must be identifiers and counts, never free-text PHI."""
     session.flush()  # make sure earlier rows in this transaction are visible to _last_hash
+    bind = session.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": AUDIT_CHAIN_LOCK_KEY})
     entry = AuditLog(
         ts=datetime.now(UTC),
         actor_type=str(actor_type),

@@ -528,6 +528,20 @@ def test_modifier_invalid_and_duplicate_modifiers_are_removed() -> None:
     assert_cited(ctx, draft)
 
 
+def test_modifier_59_with_x_modifier_drops_the_redundant_59() -> None:
+    ctx = make_ctx(
+        reasons=[reason("4", ("N519",), line_number=1, procedure_code="17000")],
+        lines=[line(1, "17000", ("59", "XS")), line(2, "17110")],
+    )
+    draft = propose(ctx, classification(DenialCategory.MODIFIER))
+    assert draft.action_type == ActionType.CORRECTED_CLAIM
+    change = modifier_change(draft, 1)
+    assert change.before == ["59", "XS"] and change.after == ["XS"]
+    assert draft.coding_change and FLAG_CODING_CHANGE in draft.flags
+    assert FLAG_UNSUPPORTED_CODING_CHANGE not in draft.flags  # the claim itself is the evidence
+    assert_cited(ctx, draft)
+
+
 def test_modifier_bundled_pair_adds_59_or_xs() -> None:
     lines = [line(1, "17110", charge="200.00"), line(2, "17000", charge="100.00")]
     distinct = make_ctx(

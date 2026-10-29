@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}Work item {{ d.work_item.id }} - Denial Recovery Agent{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="/queue">Queue</a> / Work item {{ d.work_item.id }}</p>
+{% include "partials/item_panel.html" %}
+{% endblock %}

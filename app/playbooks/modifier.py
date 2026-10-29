@@ -4,6 +4,7 @@ Situations (see the YAML for the code lists and keywords):
 
 (a) an E/M code on the same date as a procedure without modifier 25 -> add 25 to the E/M line;
 (b) CARC 4 / RARC M78 or N519 on a line carrying an invalid or repeated modifier -> remove it;
+(e) modifier 59 billed together with an X{EPSU} modifier on a denied line -> drop the redundant 59;
 (c) two procedures that bundle on the same day -> add 59 (XS when the notes describe a different site)
     to the column-2 line;
 (d) the notes describe a bilateral service billed on one line -> add 50.
@@ -137,11 +138,11 @@ class ModifierPlaybook(Playbook):
         # (b) invalid or duplicate modifiers on lines the denial points at
         valid = set(rules["valid_modifiers"])
         mod_reasons = self.modifier_reasons(ctx)
+        target_numbers = {r.line_number for r in mod_reasons if r.line_number is not None}
+        targets = [
+            line for line in ctx.claim.lines if not target_numbers or line.line_number in target_numbers
+        ]
         if "invalid_or_duplicate_modifier" in situations and mod_reasons:
-            target_numbers = {r.line_number for r in mod_reasons if r.line_number is not None}
-            targets = [
-                line for line in ctx.claim.lines if not target_numbers or line.line_number in target_numbers
-            ]
             for line in targets:
                 current = [str(mod).strip().upper() for mod in working[line.line_number]]
                 cleaned: list[str] = []
@@ -151,6 +152,17 @@ class ModifierPlaybook(Playbook):
                 if cleaned != current:  # a difference in case or spacing alone is not a coding change
                     related = [r for r in mod_reasons if r.line_number in (None, line.line_number)]
                     record("invalid_or_duplicate_modifier", line, cleaned, [], related)
+
+        # (e) 59 together with a specific X{EPSU} modifier on a denied line: keep the specific one
+        redundant_rule = situations.get("redundant_distinct_service_pair")
+        if redundant_rule and mod_reasons:
+            specific = {str(m) for m in rules.get("distinct_service_modifiers", [])} - {"59"}
+            for line in targets:
+                current = [str(mod).strip().upper() for mod in working[line.line_number]]
+                if "59" in current and any(m in specific for m in current):
+                    related = [r for r in mod_reasons if r.line_number in (None, line.line_number)]
+                    after = [m for m in current if m != "59"]
+                    record("redundant_distinct_service_pair", line, after, [], related)
 
         # (a) E/M on the same date as a procedure without 25
         em_rule = situations.get("em_same_day_procedure")

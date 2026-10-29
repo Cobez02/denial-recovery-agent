@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Denial Recovery Agent{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <p class="muted">Generated {{ m.generated_at|fmt_datetime }} · audit chain {% if m.audit_chain_ok %}intact{% else %}<strong class="danger-text">BROKEN</strong>{% endif %}</p>
+</div>
+
+<div class="tiles">
+  <div class="tile"><div class="tile-value">{{ m.recovered_dollars|money }}</div><div class="tile-label">Recovered dollars</div></div>
+  <div class="tile"><div class="tile-value">{{ m.overturn_rate|pct }}</div><div class="tile-label">Overturn rate ({{ m.paid_fixes + m.partial_fixes }} of {{ m.submitted_fixes }} submitted fixes)</div></div>
+  <div class="tile"><div class="tile-value">{{ m.dollars_at_stake|money }}</div><div class="tile-label">Dollars at stake (open items)</div></div>
+  <div class="tile"><div class="tile-value">{{ m.total_work_items }}</div><div class="tile-label">Work items</div></div>
+  <div class="tile"><div class="tile-value">{% if m.avg_review_minutes is not none %}{{ '%.1f'|format(m.avg_review_minutes) }}{% else %}n/a{% endif %}</div><div class="tile-label">Average review minutes ({{ m.reviewed_items }} reviewed)</div></div>
+  <div class="tile"><div class="tile-value">{{ m.denied_again }}</div><div class="tile-label">Denied again</div></div>
+  <div class="tile"><div class="tile-value">{{ m.model_calls }}</div><div class="tile-label">Model calls ({{ m.model_input_tokens }} in / {{ m.model_output_tokens }} out tokens)</div></div>
+</div>
+
+<div class="columns">
+<div class="col">
+<section class="card">
+  <h2>Items by status</h2>
+  <table class="table compact">
+    <thead><tr><th>Status</th><th class="num">Items</th></tr></thead>
+    <tbody>
+      {% for status, n in m.items_by_status.items() %}
+      <tr><td><a href="/queue?status={{ status }}">{{ status|label }}</a></td><td class="num">{{ n }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>Deadline buckets <span class="muted">(open items)</span></h2>
+  <table class="table compact">
+    <thead><tr><th>Bucket</th><th class="num">Items</th><th class="num">Dollars</th></tr></thead>
+    <tbody>
+      {% for b in m.deadline_buckets %}
+      <tr><td>{{ b.label }}</td><td class="num">{{ b.items }}</td><td class="num">{{ b.dollars|money }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+</div>
+<div class="col">
+<section class="card">
+  <h2>By category</h2>
+  <table class="table compact">
+    <thead><tr><th>Category</th><th class="num">Items</th><th class="num">At stake</th><th class="num">Submitted</th><th class="num">Paid</th><th class="num">Partial</th><th class="num">Denied again</th><th class="num">Overturn</th><th class="num">Recovered</th></tr></thead>
+    <tbody>
+      {% for c in m.by_category %}
+      <tr><td>{{ c.key|label }}</td><td class="num">{{ c.items }}</td><td class="num">{{ c.dollars_at_stake|money }}</td><td class="num">{{ c.submitted }}</td><td class="num">{{ c.paid }}</td><td class="num">{{ c.partial }}</td><td class="num">{{ c.denied_again }}</td><td class="num">{{ c.overturn_rate|pct }}</td><td class="num">{{ c.recovered_dollars|money }}</td></tr>
+      {% else %}
+      <tr><td colspan="9" class="muted">No work items yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section class="card">
+  <h2>By payer</h2>
+  <table class="table compact">
+    <thead><tr><th>Payer</th><th class="num">Items</th><th class="num">At stake</th><th class="num">Submitted</th><th class="num">Paid</th><th class="num">Partial</th><th class="num">Denied again</th><th class="num">Overturn</th><th class="num">Recovered</th></tr></thead>
+    <tbody>
+      {% for c in m.by_payer %}
+      <tr><td>{{ c.key }}</td><td class="num">{{ c.items }}</td><td class="num">{{ c.dollars_at_stake|money }}</td><td class="num">{{ c.submitted }}</td><td class="num">{{ c.paid }}</td><td class="num">{{ c.partial }}</td><td class="num">{{ c.denied_again }}</td><td class="num">{{ c.overturn_rate|pct }}</td><td class="num">{{ c.recovered_dollars|money }}</td></tr>
+      {% else %}
+      <tr><td colspan="9" class="muted">No work items yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+</div>
+</div>
+{% endblock %}

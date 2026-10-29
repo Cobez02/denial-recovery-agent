@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Verification code - Denial Recovery Agent{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Verification code</h1>
+  {% if error %}<div class="alert alert-error" role="alert">{{ error }}</div>{% endif %}
+  <form method="post" action="/login/mfa" class="stack">
+    <label>Six-digit code from your authenticator app
+      <input type="text" name="code" inputmode="numeric" pattern="[0-9 ]*" autocomplete="one-time-code" required autofocus>
+    </label>
+    <button type="submit" class="primary">Log in</button>
+  </form>
+  <p class="muted"><a href="/login">Start over</a></p>
+</section>
+{% endblock %}

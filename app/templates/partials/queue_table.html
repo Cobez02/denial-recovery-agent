@@ -1,0 +1,45 @@
+<div id="queue-table">
+<p class="muted">{{ rows|length }} item(s). Sorted by deadline (soonest first, none last), then dollars, then confidence.</p>
+<table class="table queue">
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Claim</th>
+      <th>Patient</th>
+      <th>Payer</th>
+      <th>Category</th>
+      <th>Proposed action</th>
+      <th>Status</th>
+      <th class="num">Dollars</th>
+      <th>Deadline</th>
+      <th>Flags</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    {% set wi = row.item %}
+    <tr class="queue-row">
+      <td><a href="/items/{{ wi.id }}">{{ wi.id }}</a></td>
+      <td><a href="/items/{{ wi.id }}">{{ wi.claim.claim_control_number }}</a></td>
+      <td>{{ row.patient_name }}</td>
+      <td>{{ wi.claim.payer.name if wi.claim.payer else '' }}</td>
+      <td>{{ wi.category|label }} <span class="muted">({{ '%.0f'|format((wi.category_confidence or 0) * 100) }}%)</span></td>
+      <td>{{ row.proposal.action_type|label if row.proposal else '-' }}</td>
+      <td><span class="{{ wi.status|status_class }}">{{ wi.status|label }}</span></td>
+      <td class="num">{{ wi.dollar_value|money }}</td>
+      <td>
+        {% if wi.deadline %}
+          {{ wi.deadline|fmt_date }}
+          {% if row.badge %}<span class="{{ row.badge|badge_class }}">{{ row.badge }}</span>{% endif %}
+        {% else %}<span class="muted">none</span>{% endif %}
+      </td>
+      <td>
+        {% for flag in wi.flags or [] %}<span class="{{ flag|flag_class }}">{{ flag|label }}</span> {% endfor %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="10" class="muted empty">No work items match these filters.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>

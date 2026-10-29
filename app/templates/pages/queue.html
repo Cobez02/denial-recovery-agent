@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Review queue - Denial Recovery Agent{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Review queue</h1>
+  <p class="counts">
+    {% for status, n in counts.items() %}
+    <a href="/queue?status={{ status }}" class="count{% if filters.status == status %} active{% endif %}"><b>{{ n }}</b> {{ status|label }}</a>
+    {% endfor %}
+  </p>
+</div>
+<form class="filters" method="get" action="/queue"
+      hx-get="/queue" hx-target="#queue-table" hx-swap="outerHTML" hx-trigger="change" hx-push-url="true">
+  <label>Status
+    <select name="status">
+      <option value="">Open (not closed or rejected)</option>
+      <option value="all"{% if filters.status == 'all' %} selected{% endif %}>All</option>
+      {% for s in statuses %}
+      <option value="{{ s }}"{% if filters.status == s %} selected{% endif %}>{{ s|label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Category
+    <select name="category">
+      <option value="">All</option>
+      {% for c in categories %}
+      <option value="{{ c }}"{% if filters.category == c %} selected{% endif %}>{{ c|label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Payer
+    <select name="payer_id">
+      <option value="">All</option>
+      {% for p in payers %}
+      <option value="{{ p.id }}"{% if filters.payer_id == p.id %} selected{% endif %}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Flags
+    <select name="flagged">
+      <option value="">Any</option>
+      <option value="1"{% if filters.flagged == '1' %} selected{% endif %}>Flagged only</option>
+      <option value="0"{% if filters.flagged == '0' %} selected{% endif %}>Unflagged only</option>
+      <option value="injection_flagged"{% if filters.flagged == 'injection_flagged' %} selected{% endif %}>Possible planted instructions</option>
+      <option value="coding_change"{% if filters.flagged == 'coding_change' %} selected{% endif %}>Coding change</option>
+    </select>
+  </label>
+  <label>Sort
+    <select name="sort">
+      {% for s in sorts %}
+      <option value="{{ s }}"{% if filters.sort == s %} selected{% endif %}>{{ s|label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <noscript><button type="submit">Apply</button></noscript>
+</form>
+{% include "partials/queue_table.html" %}
+{% endblock %}

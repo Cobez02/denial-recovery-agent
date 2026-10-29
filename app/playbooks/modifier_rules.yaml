@@ -144,6 +144,13 @@ situations:
     description: "Remove a modifier that is not valid for the claim export, or a repeated modifier"
     needs_note_support: false
 
+  # (e) Modifier 59 billed together with one of the specific X{EPSU} modifiers on the same line
+  #     (CARC 4 / RARC N519): the X modifier is the specific form of 59, so the pair is invalid.
+  #     Drop 59 and keep the specific modifier; the claim itself is the evidence.
+  - id: redundant_distinct_service_pair
+    description: "Modifier 59 billed with an X{EPSU} modifier: drop the redundant 59 and keep the specific modifier"
+    needs_note_support: false
+
   # (c) Two procedures that bundle on the same day: the column-2 code needs 59 (or XS when the notes
   #     describe a different site). Pairs are [column_1, column_2]; the modifier goes on column 2.
   - id: bundled_pair

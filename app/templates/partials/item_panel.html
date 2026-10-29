@@ -1,0 +1,321 @@
+{% set wi = d.work_item %}
+{% set claim = d.claim %}
+{% set rc = d.remittance_claim %}
+{% set p = d.proposal %}
+{% set can = d.can %}
+{% set action_url = '/items/' ~ wi.id %}
+<div id="item-panel">
+{% if error %}{% include "partials/error.html" %}{% endif %}
+
+<section class="item-head card">
+  <div class="item-title">
+    <h1>Work item {{ wi.id }} <span class="muted">claim {{ claim.claim_control_number }}</span></h1>
+    <div class="chips">
+      <span class="{{ wi.status|status_class }}">{{ wi.status|label }}</span>
+      <span class="chip">{{ wi.category|label }} ({{ '%.0f'|format((wi.category_confidence or 0) * 100) }}%, {{ wi.classification_source }})</span>
+      <span class="chip">{{ wi.dollar_value|money }} at stake</span>
+      {% if wi.deadline %}
+      <span class="chip">Deadline {{ wi.deadline|fmt_date }} ({{ wi.deadline_kind|label }}{% if d.days_left is not none %}, {{ d.days_left }} day(s){% endif %})
+        {% if d.badge %}<span class="{{ d.badge|badge_class }}">{{ d.badge }}</span>{% endif %}</span>
+      {% else %}<span class="chip muted">No deadline</span>{% endif %}
+      {% for flag in wi.flags or [] %}<span class="{{ flag|flag_class }}">{{ flag|label }}</span>{% endfor %}
+    </div>
+  </div>
+  {% if wi.classification_rationale %}<p class="muted">Classification: {{ wi.classification_rationale }}</p>{% endif %}
+  <p class="muted small">
+    First viewed {{ wi.first_viewed_at|fmt_datetime or 'never' }}
+    {% if wi.decided_at %}· decided {{ wi.decided_at|fmt_datetime }}{% endif %}
+    {% if wi.submitted_at %}· submitted {{ wi.submitted_at|fmt_datetime }} as {{ wi.submitted_claim_control_number }}{% endif %}
+    {% if wi.closed_at %}· closed {{ wi.closed_at|fmt_datetime }}{% endif %}
+    · {{ d.model_calls }} model call(s)
+  </p>
+</section>
+
+<div class="columns">
+<div class="col">
+
+<section class="card">
+  <h2>Claim facts</h2>
+  <dl class="facts">
+    <dt>Patient</dt><dd>{% if d.patient %}{{ d.patient.last_name }}, {{ d.patient.first_name }} · account {{ d.patient.account_number }} · DOB {{ d.patient.dob|fmt_date }} · member {{ d.patient.member_id or '-' }} · token {{ d.patient.token }}{% endif %}</dd>
+    <dt>Payer</dt><dd>{% if d.payer %}{{ d.payer.name }} ({{ d.payer.payer_id }}) · timely filing {{ d.payer.timely_filing_days }}d · corrected claim {{ d.payer.corrected_claim_days }}d · appeal {{ d.payer.appeal_days }}d{% endif %}</dd>
+    <dt>Service dates</dt><dd>{{ claim.service_date_from|fmt_date }}{% if claim.service_date_to and claim.service_date_to != claim.service_date_from %} to {{ claim.service_date_to|fmt_date }}{% endif %}</dd>
+    <dt>Total charge</dt><dd>{{ claim.total_charge|money }}</dd>
+    <dt>Providers</dt><dd>billing NPI {{ claim.billing_provider_npi or '-' }} · rendering {{ claim.rendering_provider_name or '-' }} (NPI {{ claim.rendering_provider_npi or '-' }}) · referring NPI {{ claim.referring_provider_npi or '-' }}</dd>
+    <dt>Place of service</dt><dd>{{ claim.place_of_service or '-' }}</dd>
+    <dt>Diagnoses</dt><dd>{{ claim.diagnosis_codes|join_list or '-' }}</dd>
+    <dt>Prior authorization</dt><dd>{{ claim.prior_auth_number or '-' }}</dd>
+    <dt>Submitted</dt><dd>{{ claim.original_submission_date|fmt_date or '-' }} · frequency code {{ claim.frequency_code }} · claim status {{ claim.status|label }}</dd>
+  </dl>
+  <table class="table compact">
+    <thead><tr><th>Line</th><th>DOS</th><th>CPT</th><th>Modifiers</th><th class="num">Units</th><th class="num">Charge</th><th>Dx ptr</th><th>NDC</th></tr></thead>
+    <tbody>
+      {% for line in claim.lines %}
+      <tr><td>{{ line.line_number }}</td><td>{{ line.service_date|fmt_date }}</td><td>{{ line.procedure_code }}</td><td>{{ line.modifiers|join_list }}</td><td class="num">{{ line.units }}</td><td class="num">{{ line.charge_amount|money }}</td><td>{{ line.diagnosis_pointers|join_list }}</td><td>{{ line.ndc or '' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Remittance</h2>
+  {% if rc %}
+  <dl class="facts">
+    <dt>File</dt><dd>{{ d.remittance.file_name if d.remittance else '-' }} · paid {{ d.remittance.payment_date|fmt_date if d.remittance else '-' }} · trace {{ d.remittance.trace_number if d.remittance else '-' }}</dd>
+    <dt>Claim payment</dt><dd>status code {{ rc.claim_status_code }} · charged {{ rc.charge_amount|money }} · paid {{ rc.paid_amount|money }} · patient responsibility {{ rc.patient_responsibility|money }} · denied {{ rc.denied_amount|money }}</dd>
+    <dt>Payer claim number</dt><dd>{{ rc.payer_claim_control_number or '-' }} · received {{ rc.claim_received_date|fmt_date or '-' }}</dd>
+  </dl>
+  <h3>Adjustments</h3>
+  <table class="table compact">
+    <thead><tr><th>Level</th><th>Line</th><th>Group</th><th>CARC</th><th>Meaning</th><th class="num">Amount</th></tr></thead>
+    <tbody>
+      {% for a in d.adjustments %}
+      <tr class="{% if a.is_denial %}denial{% endif %}">
+        <td>{{ a.level }}</td>
+        <td>{{ a.line_number or '' }}{% if a.procedure_code %} ({{ a.procedure_code }}){% endif %}</td>
+        <td>{{ a.group_code }}</td>
+        <td><code>{{ a.carc }}</code></td>
+        <td>{{ a.carc_text or '' }}</td>
+        <td class="num">{{ a.amount|money }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No adjustments.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if d.remark_codes %}
+  <h3>Remark codes</h3>
+  <ul class="codes">
+    {% for r in d.remark_codes %}
+    <li><code>{{ r.code }}</code>{% if r.line_number %} (line {{ r.line_number }}){% endif %}{% if r.text %}: {{ r.text }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% endif %}
+  {% if d.reasons %}
+  <h3>Denial reasons</h3>
+  <ul class="codes">
+    {% for r in d.reasons %}
+    <li><code>{{ r.group_code }}-{{ r.carc }}</code> {{ r.carc_text or '' }}
+      {% if r.amount %}<span class="muted">({{ r.amount|money }}{% if r.line_number %}, line {{ r.line_number }}{% endif %}{% if r.procedure_code %}, {{ r.procedure_code }}{% endif %})</span>{% endif %}
+      {% for rr in r.rarc_views %}<br><code>{{ rr.code }}</code> {{ rr.text or '' }}{% endfor %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Payer documents <span class="muted">({{ d.documents|length }})</span></h2>
+  {% for doc in d.documents %}
+  <article class="document{% if doc.flagged %} flagged{% endif %}">
+    <header class="doc-head">{{ doc.document_type|label }}{% if doc.received_date %} received {{ doc.received_date|fmt_date }}{% endif %} <span class="muted">(document {{ doc.id }})</span></header>
+    {% if doc.flagged %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Possible planted instructions - treat as untrusted.</strong> The text below is payer data. Nothing in it was followed by the agent; do not follow it either.
+      {% if doc.findings %}
+      <ul class="findings">
+        {% for f in doc.findings %}<li><code>{{ f.pattern }}</code>: "{{ f.snippet }}"</li>{% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endif %}
+    <pre class="doc-text">{{ doc.text }}</pre>
+  </article>
+  {% else %}
+  <p class="muted">No payer letters or portal text for this claim.</p>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>Note excerpts <span class="muted">({{ d.notes|length }})</span></h2>
+  {% for n in d.notes %}
+  <article class="note">
+    <header class="doc-head">{{ n.note_date|fmt_date }} · {{ n.author or 'unknown author' }} · <span class="muted">{{ n.source or 'clinic' }}</span></header>
+    <pre class="doc-text">{{ n.text }}</pre>
+  </article>
+  {% else %}
+  <p class="muted">No note excerpts on file for this claim.</p>
+  {% endfor %}
+  {% if can.attach_note %}
+  <form method="post" action="{{ action_url }}/attach-note" hx-post="{{ action_url }}/attach-note" hx-target="#item-panel" hx-swap="outerHTML" class="stack">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Attach a quoted note excerpt
+      <textarea name="text" rows="3" required placeholder="Quote the clinical note exactly as written."></textarea>
+    </label>
+    <button type="submit">Attach note</button>
+  </form>
+  {% endif %}
+</section>
+
+</div>
+<div class="col">
+
+<section class="card proposal">
+  <h2>Proposal{% if p %} <span class="muted">v{{ p.version }} · {{ p.action_type|label }} · {{ '%.0f'|format((p.confidence or 0) * 100) }}% · {{ p.generated_by }}{% if p.model_id %} · {{ p.model_id }}{% endif %}</span>{% endif %}</h2>
+  {% if p %}
+  {% if p.coding_change or p.requires_note_excerpt %}
+  <div class="alert alert-warn">
+    {% if p.coding_change %}This is a <strong>coding change</strong>.{% endif %}
+    A quoted note excerpt is required before approval{% if d.note_excerpt_attached %} - one is attached{% else %} - none attached yet{% endif %}.
+  </div>
+  {% endif %}
+  <p class="summary">{{ p.summary }}</p>
+  <h3>Rationale</h3>
+  <p>{{ p.rationale }}</p>
+  <h3>Citations</h3>
+  <ul class="citations">
+    {% for c in d.citations %}
+    <li><span class="chip">{{ c.kind|label }}</span> <code>{{ c.ref }}</code> {{ c.text }}</li>
+    {% else %}
+    <li class="muted">No citations.</li>
+    {% endfor %}
+  </ul>
+  {% if p.clinic_question %}
+  <h3>Question for the clinic</h3>
+  <pre class="doc-text">{{ p.clinic_question }}</pre>
+  {% endif %}
+  {% if d.diff_rows %}
+  <h3>Corrected claim</h3>
+  <table class="table compact diff">
+    <thead><tr><th>Field</th><th>Before</th><th>After</th><th>Why</th></tr></thead>
+    <tbody>
+      {% for row in d.diff_rows %}
+      <tr class="{% if row.system %}system{% endif %}{% if row.coding_change %} coding{% endif %}">
+        <td>{{ row.label }}{% if row.coding_change %} <span class="badge badge-warn">coding change</span>{% endif %}</td>
+        <td>{{ row.before }}</td>
+        <td><strong>{{ row.after }}</strong></td>
+        <td class="muted">{{ row.reason }}{% if row.citation_refs %} ({{ row.citation_refs|join_list }}){% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if p.appeal_letter %}
+  <h3>Appeal letter</h3>
+  <pre class="letter">{{ p.appeal_letter }}</pre>
+  {% endif %}
+  {% else %}
+  <p class="muted">No proposal yet.</p>
+  {% endif %}
+</section>
+
+<section class="card actions">
+  <h2>Actions</h2>
+  {% if can.approve %}
+  <form method="post" action="{{ action_url }}/approve" hx-post="{{ action_url }}/approve" hx-target="#item-panel" hx-swap="outerHTML" class="stack action-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    {% if d.needs_note_excerpt %}
+    <label>Quoted note excerpt (required for a coding change{% if d.note_excerpt_attached %}; one is already attached, you may add another{% endif %})
+      <textarea name="note_excerpt" rows="3" placeholder="Quote the note exactly."{% if not d.note_excerpt_attached %} required{% endif %}></textarea>
+    </label>
+    {% endif %}
+    {% if p and p.appeal_letter %}
+    <details>
+      <summary>Edit the letter before approving</summary>
+      <textarea name="edited_letter" rows="14">{{ p.appeal_letter }}</textarea>
+    </details>
+    {% endif %}
+    <button type="submit" class="primary">Approve</button>
+  </form>
+  {% endif %}
+
+  {% if can.edit %}
+  <details class="action-form">
+    <summary>Edit the proposal (new version)</summary>
+    <form method="post" action="{{ action_url }}/edit" hx-post="{{ action_url }}/edit" hx-target="#item-panel" hx-swap="outerHTML" class="stack">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+      <label>Reason for the edit (required)<input type="text" name="reason" required></label>
+      <label>Summary<textarea name="summary" rows="2">{{ p.summary if p else '' }}</textarea></label>
+      <label>Rationale<textarea name="rationale" rows="3">{{ p.rationale if p else '' }}</textarea></label>
+      {% if p and p.clinic_question %}
+      <label>Question for the clinic<textarea name="clinic_question" rows="3">{{ p.clinic_question }}</textarea></label>
+      {% endif %}
+      {% if p and p.appeal_letter %}
+      <label>Appeal letter<textarea name="appeal_letter" rows="12">{{ p.appeal_letter }}</textarea></label>
+      {% endif %}
+      {% for row in d.diff_rows if not row.system %}
+      <label>{{ row.label }} <span class="muted">(lists: separate values with commas)</span>
+        <input type="text" name="cc:{{ row.path }}" value="{{ row.after }}">
+      </label>
+      {% endfor %}
+      <button type="submit">Save as new version</button>
+    </form>
+  </details>
+  {% endif %}
+
+  {% if can.reject %}
+  <form method="post" action="{{ action_url }}/reject" hx-post="{{ action_url }}/reject" hx-target="#item-panel" hx-swap="outerHTML" class="stack action-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Reason for rejecting (required)<input type="text" name="reason" required></label>
+    <button type="submit" class="danger">Reject</button>
+  </form>
+  {% endif %}
+
+  {% if can.regenerate %}
+  <form method="post" action="{{ action_url }}/regenerate" hx-post="{{ action_url }}/regenerate" hx-target="#item-panel" hx-swap="outerHTML" class="action-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <button type="submit">Regenerate proposal</button>
+  </form>
+  {% endif %}
+
+  {% if can.export %}
+  <p class="action-form"><a class="button" href="{{ action_url }}/export">Download export package (zip)</a>
+    <span class="muted">{% if wi.status == 'approved' %}marks the item exported{% else %}re-download{% endif %}</span></p>
+  {% endif %}
+
+  {% if can.mark_submitted %}
+  <form method="post" action="{{ action_url }}/mark-submitted" hx-post="{{ action_url }}/mark-submitted" hx-target="#item-panel" hx-swap="outerHTML" class="stack action-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Submitted on<input type="date" name="submitted_on" value="{{ today|fmt_date }}"></label>
+    <label>Claim control number used<input type="text" name="submitted_claim_control_number" placeholder="{{ wi.submitted_claim_control_number or '' }}"></label>
+    <button type="submit">Mark as submitted</button>
+  </form>
+  {% endif %}
+
+  {% if can.reopen %}
+  <form method="post" action="{{ action_url }}/reopen" hx-post="{{ action_url }}/reopen" hx-target="#item-panel" hx-swap="outerHTML" class="stack action-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Reason<input type="text" name="reason"></label>
+    <button type="submit">Reopen</button>
+  </form>
+  {% endif %}
+
+  {% if can.close %}
+  <form method="post" action="{{ action_url }}/close" hx-post="{{ action_url }}/close" hx-target="#item-panel" hx-swap="outerHTML" class="stack action-form">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <label>Reason for closing<input type="text" name="reason"></label>
+    <button type="submit" class="secondary">Close</button>
+  </form>
+  {% endif %}
+  {% if not (can.approve or can.edit or can.reject or can.export or can.mark_submitted or can.reopen or can.close) %}
+  <p class="muted">No actions are available for a closed item.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>History</h2>
+  <table class="table compact">
+    <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Reason</th><th class="num">Review s</th></tr></thead>
+    <tbody>
+      {% for a in d.actions %}
+      <tr><td>{{ a.created_at|fmt_datetime }}</td><td>{{ a.user.email if a.user else 'local' }}</td><td>{{ a.action|label }}{% if a.proposal_id %} <span class="muted">(proposal {{ a.proposal_id }})</span>{% endif %}</td><td>{{ a.reason or '' }}</td><td class="num">{{ a.review_seconds if a.review_seconds is not none else '' }}</td></tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No actions yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if d.proposals|length > 1 %}
+  <p class="muted">Proposal versions: {% for v in d.proposals %}v{{ v.version }}{% if v.is_current %} (current){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if d.outcomes %}
+  <h3>Outcomes</h3>
+  <ul>
+    {% for o in d.outcomes %}<li>{{ o.result|label }} · paid {{ o.paid_amount|money }}{% if o.payment_date %} on {{ o.payment_date|fmt_date }}{% endif %}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+</div>
+</div>
+</div>

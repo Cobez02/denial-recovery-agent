@@ -37,6 +37,9 @@ def _set_test_env(tmp_path: Path) -> None:
     os.environ.pop("ANTHROPIC_API_KEY", None)
 
 
+set_test_env = _set_test_env  # public name for module-scoped runs (tests/helpers.py)
+
+
 @pytest.fixture()
 def settings(tmp_path: Path):
     from app.config import get_settings, reset_settings_cache

@@ -82,6 +82,7 @@ class ReviewActionType(StrEnum):
     REOPEN = "reopen"
     CLOSE = "close"
     ATTACH_NOTE = "attach_note"
+    REGENERATE = "regenerate"
 
 
 class ClaimStatus(StrEnum):

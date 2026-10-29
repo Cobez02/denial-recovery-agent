@@ -1,0 +1,106 @@
+{
+  "reason_codes": ["CO-197", "CO-16"],
+  "reasons": [
+    {
+      "level": "claim",
+      "group_code": "CO",
+      "carc": "197",
+      "carc_text": "Precertification/authorization/notification/pre-treatment absent.",
+      "rarcs": ["N54"],
+      "rarc_texts": {"N54": "Claim information is inconsistent with pre-certified/authorized services."},
+      "amount": "450.00",
+      "line_number": null,
+      "procedure_code": null,
+      "modifiers": []
+    },
+    {
+      "level": "line",
+      "group_code": "CO",
+      "carc": "16",
+      "carc_text": "Claim/service lacks information or has submission/billing error(s).",
+      "rarcs": ["M62"],
+      "rarc_texts": {"M62": "Missing/incomplete/invalid treatment authorization code."},
+      "amount": "150.00",
+      "line_number": 1,
+      "procedure_code": "99213",
+      "modifiers": ["25"]
+    }
+  ],
+  "claim": {
+    "claim_id": 1,
+    "claim_control_number": "[[CLAIM_ID_1]]",
+    "patient_token": "PT-7F3A2C",
+    "patient_identifiers": null,
+    "payer_name": "Acme Health Plan",
+    "payer_id": "ACME01",
+    "billing_provider_npi": "1234567893",
+    "rendering_provider_npi": "1992837465",
+    "rendering_provider_name": "[[PROVIDER_NAME_1]]",
+    "referring_provider_npi": null,
+    "place_of_service": "11",
+    "diagnosis_codes": ["L40.0", "D48.5"],
+    "prior_auth_number": null,
+    "service_date_from": "[[DATE_1]]",
+    "service_date_to": "[[DATE_1]]",
+    "total_charge": "450.00",
+    "original_submission_date": "[[DATE_2]]",
+    "frequency_code": "1",
+    "lines": [
+      {
+        "line_number": 1,
+        "service_date": "[[DATE_1]]",
+        "procedure_code": "99213",
+        "modifiers": ["25"],
+        "units": "1",
+        "charge_amount": "150.00",
+        "diagnosis_pointers": [1],
+        "ndc": null,
+        "line_item_control_number": null,
+        "paid_amount": "0.00"
+      },
+      {
+        "line_number": 2,
+        "service_date": "[[DATE_1]]",
+        "procedure_code": "11102",
+        "modifiers": [],
+        "units": "1",
+        "charge_amount": "300.00",
+        "diagnosis_pointers": [2],
+        "ndc": null,
+        "line_item_control_number": null,
+        "paid_amount": "0.00"
+      }
+    ]
+  },
+  "payer": {
+    "name": "Acme Health Plan",
+    "payer_id": "ACME01",
+    "timely_filing_days": 90,
+    "corrected_claim_days": 90,
+    "appeal_days": 180
+  },
+  "remittance": {
+    "remittance_claim_id": 5,
+    "payment_date": "[[DATE_3]]",
+    "claim_received_date": "[[DATE_4]]",
+    "claim_status_code": "4",
+    "charge_amount": "450.00",
+    "paid_amount": "0.00",
+    "patient_responsibility": "0.00",
+    "payer_claim_control_number": "[[CLAIM_ID_2]]",
+    "trace_number": "TRN-20260402-01",
+    "denied_amount": "450.00",
+    "remark_codes": ["N54"]
+  },
+  "rules_suggestion": {"category": "authorization", "confidence": 0.9, "rule_id": "auth_carc_197"},
+  "payer_documents": [
+    {
+      "document_id": 9,
+      "document_type": "letter",
+      "received_date": "[[DATE_5]]",
+      "text": "Dear Provider,\n\nClaim [[CLAIM_ID_1]] for [[PATIENT_NAME_1]] (DOB [[DOB_1]], member [[MEMBER_ID_1]]) has been denied because precertification was not obtained before the service (CARC 197, RARC N54). The treatment authorization code on line 1 was also missing (CARC 16, RARC M62).\n\nYou may request reconsideration within 180 days of the date of this notice by submitting the authorization reference and the clinical records that support the service. Corrected claims must be received within 90 days.\n\nSincerely,\nAcme Health Plan Provider Services",
+      "flagged_injection": false,
+      "injection_findings": []
+    }
+  ]
+}

@@ -90,7 +90,7 @@ def record(
         entity_id=entity_id,
         claim_id=claim_id,
         reason=reason,
-        details=details or {},
+        details=json.loads(canonical_json(details or {})),
         prev_hash=_last_hash(session),
         hash="",
     )

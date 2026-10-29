@@ -1,0 +1,6 @@
+{% block narrative %}
+This claim was denied for patient eligibility. Our records indicate the patient was covered by {{ f.payer_name }} on {{ f.dates_of_service }}. The eligibility verification on file for that date is available on request, and the member information on the claim matches the coverage on file.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} re-verify the patient's coverage for the date of service and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

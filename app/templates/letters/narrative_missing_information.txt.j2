@@ -1,0 +1,6 @@
+{% block narrative %}
+This claim was denied for missing or invalid information. The information identified by the remark code(s) quoted above is supplied with this appeal{% if f.changes_sentence %} ({{ f.changes_sentence }}){% endif %}, and the services rendered on {{ f.dates_of_service }} are documented in the enclosed records.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} reprocess claim {{ f.claim_control_number }} with the information supplied, for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

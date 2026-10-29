@@ -1,0 +1,235 @@
+# Modifier playbook rules (docs/SPEC.md section 9, category `modifier`).
+#
+# Everything here is a coding decision that a certified coder should review (Phase 0 "coding advice"
+# feeds this file). The playbook never adds a modifier to raise payment unless the documentation
+# supports it: a proposed edit without a supporting note excerpt is flagged `unsupported_coding_change`
+# and capped at confidence 0.4. Codes are synthetic examples for a dermatology profile.
+
+version: 1
+
+# Modifiers the claim export may carry. Anything else on a line the payer denied for a modifier
+# problem (CARC 4 / 182, RARC M78 / N519) is treated as invalid and removed. Keep this list generous:
+# a legitimate modifier that is missing here would be stripped as a "supported" coding change, while
+# an unknown modifier that is listed only sends the item to a coder (the safe direction).
+valid_modifiers:
+  # Distinct / same-day service
+  - "25"
+  - "27"
+  - "59"
+  - "XS"
+  - "XU"
+  - "XE"
+  - "XP"
+  - "24"
+  - "57"
+  # Laterality and anatomic site
+  - "50"
+  - "LT"
+  - "RT"
+  - "E1"
+  - "E2"
+  - "E3"
+  - "E4"
+  - "FA"
+  - "F1"
+  - "F2"
+  - "F3"
+  - "F4"
+  - "F5"
+  - "F6"
+  - "F7"
+  - "F8"
+  - "F9"
+  - "TA"
+  - "T1"
+  - "T2"
+  - "T3"
+  - "T4"
+  - "T5"
+  - "T6"
+  - "T7"
+  - "T8"
+  - "T9"
+  # Multiple, repeat, staged, reduced or discontinued procedures
+  - "51"
+  - "76"
+  - "77"
+  - "78"
+  - "79"
+  - "91"
+  - "22"
+  - "52"
+  - "53"
+  - "58"
+  - "73"
+  - "74"
+  # Professional / technical components, surgical team
+  - "26"
+  - "TC"
+  - "62"
+  - "66"
+  - "80"
+  - "81"
+  - "82"
+  - "AS"
+  # Therapy, coverage and payer-policy modifiers
+  - "GP"
+  - "KX"
+  - "GA"
+  - "GY"
+  - "GZ"
+  - "GC"
+  - "GE"
+  - "JW"
+  - "JZ"
+  - "Q5"
+  - "Q6"
+  - "CR"
+  - "CS"
+  - "ET"
+  - "SG"
+  - "PO"
+  - "PN"
+  - "99"
+  # Telehealth
+  - "95"
+  - "GT"
+  - "GQ"
+  - "93"
+
+# Modifiers that already assert a distinct procedural service (no 59 is added on top of these).
+distinct_service_modifiers: ["59", "XS", "XU", "XE", "XP"]
+
+# Modifiers that already assert laterality (no 50 is added on top of these).
+laterality_modifiers: ["50", "LT", "RT"]
+
+# Evaluation and management codes (inclusive numeric ranges) and surgical/procedure codes.
+em_code_ranges:
+  - [99202, 99215]
+procedure_code_ranges:
+  - [10000, 69999]
+
+# Denial codes that point at a modifier problem on a line.
+modifier_carcs: ["4", "182"]
+modifier_rarcs: ["M78", "N519"]
+
+situations:
+  # (a) An E/M visit on the same date as a procedure needs modifier 25 on the E/M line.
+  - id: em_same_day_procedure
+    modifier: "25"
+    description: "E/M service on the same date as a procedure: append modifier 25 to the E/M line"
+    needs_note_support: true
+    support_keywords:
+      - "separately identifiable"
+      - "separate problem"
+      - "new problem"
+      - "new complaint"
+      - "unrelated"
+      - "additional complaint"
+      - "also evaluated"
+      - "also reports"
+      - "also complains"
+      - "also presents"
+      - "counseled"
+      - "counseling"
+      - "discussed"
+      - "evaluation and management"
+      - "e/m service"
+      - "prescribed"
+      - "medication adjusted"
+      - "refilled"
+
+  # (b) CARC 4 / RARC M78 or N519 on a line carrying a modifier that is not valid, or repeated.
+  - id: invalid_or_duplicate_modifier
+    description: "Remove a modifier that is not valid for the claim export, or a repeated modifier"
+    needs_note_support: false
+
+  # (c) Two procedures that bundle on the same day: the column-2 code needs 59 (or XS when the notes
+  #     describe a different site). Pairs are [column_1, column_2]; the modifier goes on column 2.
+  - id: bundled_pair
+    modifier: "59"
+    alternate_modifier: "XS"
+    description: "Bundled procedure pair on the same date: append 59 (XS for a separate site) to the column-2 line"
+    needs_note_support: true
+    pairs:
+      - ["17110", "17000"]   # destruction of benign lesions with destruction of premalignant lesion
+      - ["17110", "17003"]
+      - ["17311", "11102"]   # Mohs surgery with a tangential biopsy
+      - ["17311", "11104"]   # Mohs surgery with a punch biopsy
+      - ["11104", "11102"]   # punch biopsy with tangential biopsy
+      - ["11106", "11102"]   # incisional biopsy with tangential biopsy
+      - ["11106", "11104"]
+      - ["11102", "11100"]   # tangential biopsy with the retired 11100-series biopsy codes
+      - ["11102", "11101"]
+      - ["96920", "96910"]   # laser treatment with photochemotherapy
+      - ["96921", "96910"]
+      - ["11402", "11102"]   # excision with a biopsy of the same lesion
+      - ["11602", "11102"]
+    support_keywords:
+      - "separate"
+      - "distinct"
+      - "different site"
+      - "different lesion"
+      - "second lesion"
+      - "additional lesion"
+      - "separate lesion"
+      - "separate site"
+      - "separate incision"
+      - "separate procedure"
+      - "unrelated"
+      - "different anatomic"
+      - "separate anatomic"
+      - "another location"
+      - "different location"
+      - "second procedure"
+    alternate_keywords:
+      - "different site"
+      - "separate site"
+      - "separate structure"
+      - "different structure"
+      - "separate organ"
+      - "different anatomic"
+      - "separate anatomic"
+      - "different location"
+      - "separate location"
+      - "another location"
+      - "contralateral"
+
+  # (d) The notes describe a bilateral service and the claim carries one line for it: append 50.
+  - id: bilateral
+    modifier: "50"
+    description: "Documentation describes a bilateral service billed on a single line: append modifier 50"
+    needs_note_support: true
+    support_keywords:
+      - "bilateral"
+      - "bilaterally"
+      - "both sides"
+      - "both arms"
+      - "both legs"
+      - "both hands"
+      - "both feet"
+      - "both knees"
+      - "both eyes"
+      - "both ears"
+      - "left and right"
+      - "right and left"
+
+# Keywords other playbooks use when they look for a distinct or repeat service in the notes.
+duplicate_keywords:
+  - "distinct"
+  - "second"
+  - "separate"
+  - "repeat"
+  - "repeated"
+  - "subsequent"
+  - "additional"
+
+# Words in a note that point at a repeat by a different physician (modifier 77 instead of 76).
+other_physician_keywords:
+  - "different physician"
+  - "another physician"
+  - "different provider"
+  - "another provider"
+  - "other physician"
+  - "other provider"
+  - "covering physician"

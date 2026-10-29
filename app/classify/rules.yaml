@@ -1,0 +1,330 @@
+# Classification rules: CARC/RARC combinations -> denial category (docs/SPEC.md section 7).
+#
+# This file is an ORDERED list. For each denial reason the engine walks the list top to bottom
+# and the first rule whose `match` block fits wins. A reason that matches nothing becomes
+# `other` at confidence 0.30 (rule id "unmatched"). Keep specific rules (CARC + RARC) above
+# generic ones (CARC only), generic CARC rules above RARC-only rules, and weak defaults last.
+#
+# Rule shape:
+#   id:          unique snake_case identifier, recorded on the work item as rule_id
+#   category:    one of the app.enums.DenialCategory values
+#   confidence:  0.0 - 1.0; below CLASSIFY_MODEL_THRESHOLD (0.75) the model is consulted
+#   match:
+#     carc:            list of CARCs; "*" or omitted = any CARC
+#     rarc_any:        at least one of these RARCs must be present (optional)
+#     rarc_none:       none of these RARCs may be present (optional)
+#     group:           CAS group codes allowed, e.g. [CO, PI, OA] (optional, default any)
+#     level:           claim | line | any (optional, default any)
+#     claim_paid:      true = the remittance paid something on the claim, false = it paid 0.00
+#                      (optional; needs the remittance context, otherwise the rule does not match)
+#     amount_positive: true = the adjustment amount must be > 0 (optional)
+#   rationale:   short clause shown to the reviewer after the code citation, e.g.
+#                "CO-16 with RARC M119 on line 1 ($120.00): missing or invalid NDC"
+#
+# RARC matching tries the reason's own remark codes first; the claim-level remark codes of the
+# remittance (a remark after the CLP applies to the whole claim) are added when the reason's own
+# codes did not select a remark-specific rule. The rationale cites both sets.
+#
+# Extend this file with the coder session (Phase 0) and with every shadow-mode disagreement.
+
+# ---------------------------------------------------------------------------------------------
+# Strong CARC rules and CARC + RARC combinations
+# ---------------------------------------------------------------------------------------------
+
+- id: timely_filing_29
+  category: timely_filing
+  confidence: 0.95
+  match: {carc: ["29"]}
+  rationale: "filing deadline expired; compare the original submission date with the payer's timely-filing window"
+
+- id: eligibility_coverage_period
+  category: eligibility
+  confidence: 0.90
+  match: {carc: ["26", "27", "200"]}
+  rationale: "service date falls outside the patient's coverage period; verify eligibility on the date of service"
+
+- id: eligibility_member_identity
+  category: eligibility
+  confidence: 0.90
+  match: {carc: ["31", "32", "33", "140", "177"]}
+  rationale: "payer cannot match the patient to an eligible member; verify member id, name and plan"
+
+- id: cob_109_other_payer
+  category: coordination_of_benefits
+  confidence: 0.85
+  match: {carc: ["109"], rarc_any: ["N4", "N418"]}
+  rationale: "claim belongs to another payer and the prior-payer EOB or routing is missing; obtain other-coverage details"
+
+- id: eligibility_109_wrong_payer
+  category: eligibility
+  confidence: 0.80
+  match: {carc: ["109"]}
+  rationale: "payer says the claim is not covered by them; verify the patient's payer and member id on the date of service"
+
+- id: cob_22_other_coverage
+  category: coordination_of_benefits
+  confidence: 0.90
+  match: {carc: ["22"]}
+  rationale: "payer believes another plan is primary; obtain other-coverage information and bill the primary payer"
+
+- id: cob_23_unpaid_secondary
+  category: coordination_of_benefits
+  confidence: 0.70
+  match: {carc: ["23"], claim_paid: false, amount_positive: true}
+  rationale: "prior-payer adjudication consumed the charge and this payer paid nothing; check the primary payment and the secondary submission"
+
+- id: authorization_16_auth_number
+  category: authorization
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["M62", "N54"]}
+  rationale: "authorization number missing or inconsistent with the authorized services"
+
+- id: modifier_16_modifier
+  category: modifier
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["M78", "N519"]}
+  rationale: "HCPCS modifier missing, invalid or an invalid combination"
+
+- id: missing_info_16_ndc
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["M119"]}
+  rationale: "missing or invalid NDC"
+
+- id: missing_info_16_documentation
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["N29", "N225", "M127"]}
+  rationale: "missing or incomplete documentation (notes, orders, report or medical record)"
+
+- id: missing_info_16_procedure_code
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["N56", "M20", "M51"]}
+  rationale: "procedure/HCPCS code missing, invalid or not valid for the service or date billed"
+
+- id: missing_info_16_unprocessable
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["MA130"]}
+  rationale: "claim unprocessable because of incomplete or invalid claim information; a new corrected claim is required"
+
+- id: missing_info_16_member_information
+  category: missing_information
+  confidence: 0.80
+  match: {carc: ["16"], rarc_any: ["N179"]}
+  rationale: "information requested from the member is outstanding"
+
+- id: missing_info_16_payer_requirement
+  category: missing_information
+  confidence: 0.75
+  match: {carc: ["16"], rarc_any: ["N59"]}
+  rationale: "payer-specific submission requirement not met (see the payer's provider manual)"
+
+- id: missing_info_16_charge
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["M79"]}
+  rationale: "missing or invalid charge amount"
+
+- id: missing_info_16_rendering_provider
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["N290"]}
+  rationale: "missing or invalid rendering provider identifier (NPI)"
+
+# docs/SPEC.md maps RARC M76 to medical necessity even under CARC 16: a diagnosis problem is
+# fixed from the notes (coding change with a note excerpt), not by filling in a blank field.
+- id: medical_necessity_16_diagnosis
+  category: medical_necessity
+  confidence: 0.80
+  match: {carc: ["16"], rarc_any: ["M76"]}
+  rationale: "missing, incomplete or invalid diagnosis for the service; check the diagnosis codes and pointers against the notes"
+
+- id: authorization_core
+  category: authorization
+  confidence: 0.90
+  match: {carc: ["197", "198", "15", "62", "39"]}
+  rationale: "pre-certification or authorization absent, exceeded, invalid or denied"
+
+- id: modifier_core
+  category: modifier
+  confidence: 0.90
+  match: {carc: ["4", "182"]}
+  rationale: "procedure/modifier mismatch or a modifier invalid on the date of service"
+
+- id: duplicate_18
+  category: duplicate
+  confidence: 0.95
+  match: {carc: ["18"]}
+  rationale: "payer already processed this claim or service; confirm whether a distinct service was billed"
+
+- id: medical_necessity_core
+  category: medical_necessity
+  confidence: 0.90
+  match: {carc: ["50", "56", "167"]}
+  rationale: "payer does not consider the service medically necessary or covered for this diagnosis"
+
+- id: medical_necessity_diagnosis_11
+  category: medical_necessity
+  confidence: 0.85
+  match: {carc: ["11"]}
+  rationale: "diagnosis inconsistent with the procedure; check the diagnosis codes and pointers against the notes"
+
+- id: medical_necessity_level_frequency
+  category: medical_necessity
+  confidence: 0.85
+  match: {carc: ["150", "151"]}
+  rationale: "documentation does not support the level or frequency of service billed"
+
+- id: bundling_core
+  category: bundling
+  confidence: 0.85
+  match: {carc: ["97", "234", "236", "231"]}
+  rationale: "service bundled into, or incompatible with, another service billed the same day"
+
+- id: bundling_multiple_procedure_59
+  category: bundling
+  confidence: 0.70
+  match: {carc: ["59"]}
+  rationale: "paid under multiple or concurrent procedure rules; usually a contractual reduction unless a distinct service was billed"
+
+- id: missing_info_documentation_252
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["252"]}
+  rationale: "attachment or supporting documentation required"
+
+- id: missing_info_npi_206
+  category: missing_information
+  confidence: 0.90
+  match: {carc: ["206"]}
+  rationale: "missing National Provider Identifier (NPI)"
+
+- id: missing_info_requested_226_227
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["226", "227"]}
+  rationale: "information requested by the payer was not provided or was incomplete"
+
+- id: missing_info_billing_error_125
+  category: missing_information
+  confidence: 0.75
+  match: {carc: ["125"]}
+  rationale: "submission or billing error; the remark codes identify the field"
+
+- id: patient_responsibility_cost_share
+  category: patient_responsibility
+  confidence: 0.95
+  match: {carc: ["1", "2", "3", "66"]}
+  rationale: "deductible, coinsurance or co-payment owed by the patient"
+
+- id: patient_responsibility_noncovered_pr
+  category: patient_responsibility
+  confidence: 0.85
+  match: {carc: ["96", "204", "49", "119"], group: ["PR"]}
+  rationale: "non-covered or plan-limited service assigned to the patient"
+
+- id: contractual_informational
+  category: contractual
+  confidence: 0.95
+  match: {carc: ["45", "94", "253", "23", "104", "118", "137", "144", "187", "237"], group: ["CO", "PI", "OA", "CR"]}
+  rationale: "contractual or informational adjustment; not recoverable from the payer"
+
+# ---------------------------------------------------------------------------------------------
+# RARC-driven rules: the remark code carries the meaning whatever the CARC
+# ---------------------------------------------------------------------------------------------
+
+- id: duplicate_rarc
+  category: duplicate
+  confidence: 0.80
+  match: {rarc_any: ["N522", "M86"]}
+  rationale: "payer reports a duplicate or an already-paid same/similar service"
+
+- id: medical_necessity_rarc
+  category: medical_necessity
+  confidence: 0.80
+  match: {rarc_any: ["N115", "N661", "M76"]}
+  rationale: "coverage decision based on medical-necessity criteria or the diagnosis"
+
+- id: bundling_rarc
+  category: bundling
+  confidence: 0.80
+  match: {rarc_any: ["M15", "N19", "M144", "N390", "N525"]}
+  rationale: "service treated as a component of, or within the global period of, another service"
+
+- id: cob_rarc
+  category: coordination_of_benefits
+  confidence: 0.80
+  match: {rarc_any: ["N4", "MA04"]}
+  rationale: "primary payer information or explanation of benefits is missing"
+
+- id: authorization_rarc
+  category: authorization
+  confidence: 0.75
+  match: {rarc_any: ["M62", "N54"]}
+  rationale: "authorization number missing or inconsistent with the authorized services"
+
+- id: modifier_rarc
+  category: modifier
+  confidence: 0.75
+  match: {rarc_any: ["M78", "N519"]}
+  rationale: "HCPCS modifier missing, invalid or an invalid combination"
+
+- id: missing_info_rarc
+  category: missing_information
+  confidence: 0.70
+  match: {rarc_any: ["M119", "N29", "N225", "M127", "MA130", "M20", "M51", "M79", "N290", "N179"]}
+  rationale: "remark code names missing or invalid claim information"
+
+# ---------------------------------------------------------------------------------------------
+# Weak defaults: ambiguous codes that the model reviews when it is enabled
+# ---------------------------------------------------------------------------------------------
+
+- id: noncovered_plan_rules_co
+  category: other
+  confidence: 0.50
+  match: {carc: ["96", "204", "49", "119"], rarc_any: ["N130", "N30"], group: ["CO", "PI", "OA", "CR"]}
+  rationale: "non-covered under plan rules or patient ineligible for the service; needs review"
+
+- id: missing_info_16_default
+  category: missing_information
+  confidence: 0.70
+  match: {carc: ["16"]}
+  rationale: "claim lacks information; the remark codes (if any) identify the field"
+
+- id: medical_necessity_noncovered_co
+  category: medical_necessity
+  confidence: 0.50
+  match: {carc: ["96", "204", "49"], group: ["CO", "PI", "OA", "CR"]}
+  rationale: "non-covered charge under the contract; needs review for a medical-necessity or coverage appeal"
+
+- id: benefit_maximum_co
+  category: other
+  confidence: 0.50
+  match: {carc: ["119"], group: ["CO", "PI", "OA", "CR"]}
+  rationale: "benefit maximum reached; needs review"
+
+- id: claim_data_inconsistency
+  category: other
+  confidence: 0.55
+  match: {carc: ["5", "6"]}
+  rationale: "procedure inconsistent with the place of service or the patient's age; needs coder review"
+
+- id: provider_not_eligible_b7
+  category: other
+  confidence: 0.55
+  match: {carc: ["B7"]}
+  rationale: "provider not certified or eligible for this service on the date of service; credentialing review"
+
+- id: qualifying_service_b15
+  category: other
+  confidence: 0.50
+  match: {carc: ["B15"]}
+  rationale: "a qualifying service was not received or adjudicated; needs review"
+
+- id: patient_responsibility_pr_generic
+  category: patient_responsibility
+  confidence: 0.60
+  match: {group: ["PR"]}
+  rationale: "payer assigned this amount to the patient"

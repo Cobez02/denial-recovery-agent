@@ -1,0 +1,22 @@
+{
+  "facts": {
+    "claim_control_number": "[[CLAIM_ID_1]]",
+    "payer": "Acme Health Plan",
+    "service_date": "[[DATE_1]]",
+    "denied_amount": "450.00",
+    "procedure_codes": ["99213-25", "11102"],
+    "carc": "197",
+    "rarcs": ["N54"],
+    "authorization_reference": "AUTH-5521",
+    "appeal_deadline": "[[DATE_6]]"
+  },
+  "note_excerpts": [
+    {
+      "note_id": 3,
+      "note_date": "[[DATE_1]]",
+      "author": "[[PROVIDER_NAME_1]]",
+      "text": "Patient [[PATIENT_NAME_1]] seen for plaque psoriasis of the scalp. A separately identifiable evaluation was performed, after which a tangential biopsy of a 0.8 cm lesion was taken for histology."
+    }
+  ],
+  "narrative": "We request reconsideration of the denial of claim [[CLAIM_ID_1]] for services rendered on [[DATE_1]]. The denied service (CPT 11102) was medically necessary and is supported by the attached note dated [[DATE_1]], and precertification reference AUTH-5521 was obtained before the visit, so CARC 197 does not apply."
+}

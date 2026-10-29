@@ -1,0 +1,6 @@
+{% block narrative %}
+This claim was denied for coordination of benefits. The other-coverage information on file for the patient is provided with this appeal so that the claim can be adjudicated in the correct order of benefits for the services rendered on {{ f.dates_of_service }}.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} update the coordination-of-benefits information and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

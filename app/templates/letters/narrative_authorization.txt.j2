@@ -1,0 +1,6 @@
+{% block narrative %}
+The services on this claim were denied for lack of prior authorization. {% if f.prior_auth_number %}Authorization number {{ f.prior_auth_number }} was obtained for these services and is being resubmitted on a replacement claim.{% else %}No authorization number is on file for this encounter. The clinical documentation quoted below records why the service was necessary for the diagnosis code(s) {{ f.diagnosis_list }} and could not be delayed pending authorization. We ask that authorization be granted retroactively.{% endif %}
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} {% if f.prior_auth_number %}reprocess claim {{ f.claim_control_number }} with authorization {{ f.prior_auth_number }} on file{% else %}grant retroactive authorization for the services rendered on {{ f.dates_of_service }} and reprocess claim {{ f.claim_control_number }}{% endif %} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

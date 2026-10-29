@@ -1,0 +1,6 @@
+{% block narrative %}
+The denied service was reported with a modifier the plan found inconsistent with the procedure. The clinical documentation{% if has_excerpts %} quoted below{% endif %} supports the service as rendered on {{ f.dates_of_service }}{% if f.modifier_sentence %}, and a replacement claim reports it with {{ f.modifier_sentence }}{% endif %}.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} reprocess claim {{ f.claim_control_number }} with the corrected modifier(s) for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

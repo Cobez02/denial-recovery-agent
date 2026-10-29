@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import traceback
 
 _MASK_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[SSN]"),
@@ -41,6 +42,16 @@ class PHIMaskingFilter(logging.Filter):
             msg = record.getMessage()
         except Exception:  # pragma: no cover - malformed log call
             msg = str(record.msg)
+        if record.exc_info:
+            # The formatter appends tracebacks after filters ran, so fold them in here: frames
+            # (file, line, code) and the exception class only, never the exception message, which
+            # may carry whatever text the failing call was handling.
+            exc_type, _exc, tb = record.exc_info
+            frames = "".join(traceback.format_tb(tb)) if tb is not None else ""
+            name = getattr(exc_type, "__name__", str(exc_type))
+            msg = f"{msg}\n{frames}{name}".rstrip()
+            record.exc_info = None
+            record.exc_text = None
         record.msg = mask_text(msg)
         record.args = ()
         return True
@@ -50,10 +61,14 @@ def configure_logging(level: str | int = "INFO") -> None:
     root = logging.getLogger()
     root.setLevel(level)
     for h in list(root.handlers):
-        root.removeHandler(h)
+        if getattr(h, "_denial_agent_handler", False):
+            root.removeHandler(h)
+        elif not any(isinstance(f, PHIMaskingFilter) for f in h.filters):
+            h.addFilter(PHIMaskingFilter())  # foreign handlers (pytest caplog, uvicorn) mask too
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     handler.addFilter(PHIMaskingFilter())
+    handler._denial_agent_handler = True  # type: ignore[attr-defined]
     root.addHandler(handler)
     # Quiet noisy libraries; the SDK never logs request bodies at INFO.
     for noisy in ("httpx", "httpcore", "anthropic", "uvicorn.access"):

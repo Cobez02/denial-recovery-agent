@@ -1,0 +1,73 @@
+# Local pilot stack: PostgreSQL 16, Redis, the web app and one RQ worker.
+# Every published port is bound to 127.0.0.1 only (docs/SPEC.md section 15).
+# Required .env keys: POSTGRES_PASSWORD and SECRET_KEY - see scripts/env-notes.md.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: denial
+      POSTGRES_DB: denial
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U denial -d denial"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: denial-agent:local
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://denial:${POSTGRES_PASSWORD}@db:5432/denial
+      REDIS_URL: redis://redis:6379/0
+      JOB_BACKEND: rq
+      APP_ENV: docker
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: denial-agent:local
+    command: ["rq", "worker", "--url", "redis://redis:6379/0", "default"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://denial:${POSTGRES_PASSWORD}@db:5432/denial
+      REDIS_URL: redis://redis:6379/0
+      JOB_BACKEND: rq
+      APP_ENV: docker
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+    restart: unless-stopped

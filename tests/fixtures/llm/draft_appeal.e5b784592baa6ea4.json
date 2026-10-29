@@ -1,0 +1,15 @@
+{
+  "content": "We respectfully request reconsideration of the denial of claim [[CLAIM_ID_1]] for services rendered on [[DATE_1]]. The denied service (CPT 11102) was medically necessary and is supported by the attached note dated [[DATE_1]]. Precertification reference AUTH-5521 was obtained before the visit, so CARC 197 does not apply.",
+  "error": null,
+  "model_id": "claude-opus-5-5",
+  "prompt_name": "draft_appeal",
+  "prompt_version": "draft_appeal.v1@36d2da04",
+  "status": "ok",
+  "stop_reason": "end_turn",
+  "usage": {
+    "cache_creation_tokens": 455,
+    "cache_read_tokens": 0,
+    "input_tokens": 610,
+    "output_tokens": 88
+  }
+}

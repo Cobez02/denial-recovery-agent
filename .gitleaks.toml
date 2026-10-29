@@ -1,0 +1,16 @@
+# Secret scanning (gitleaks >= 8.21). Extends the built-in rule set.
+# Runs on every commit through pre-commit (.pre-commit-config.yaml) and in CI (.github/workflows/ci.yml).
+title = "denial-agent"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic data only: generated fixtures hold fake identifiers, never credentials or real PHI; plus the obviously fake test secret key"
+paths = [
+  '''^synthetic/fixtures/.*''',
+  '''^tests/fixtures/.*''',
+]
+regexes = [
+  '''test-secret-key-not-for-production''',
+]

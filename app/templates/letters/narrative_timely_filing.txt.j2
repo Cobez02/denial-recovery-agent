@@ -1,0 +1,6 @@
+{% block narrative %}
+This claim was denied as exceeding the timely-filing limit. {% if f.original_submission_date %}Our records show the claim was first submitted on {{ f.original_submission_date }}{% if f.days_to_submit is not none %}, {{ f.days_to_submit }} days after the first date of service ({{ f.dates_of_service }}){% endif %}, within the {{ f.timely_filing_days }}-day filing limit for this plan.{% else %}Our records show the claim was submitted within the {{ f.timely_filing_days }}-day filing limit for this plan.{% endif %} Proof of timely submission (the clearinghouse acceptance report or payer acknowledgement for that submission) is enclosed.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} accept the enclosed proof of timely submission, remove the timely-filing denial and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

@@ -1,0 +1,2662 @@
+[
+  {
+    "claim_control_number": "CLM000001",
+    "scenario_id": "timely_filing_expired",
+    "category": "timely_filing",
+    "expected_action": "no_action",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "213.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000002",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J3301",
+    "denied_amount": "48.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000003",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000004",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17111",
+    "denied_amount": "149.29",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000006",
+    "scenario_id": "timely_filing_expired",
+    "category": "timely_filing",
+    "expected_action": "no_action",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "185.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000007",
+    "scenario_id": "modifier_invalid_combination",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "N519"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000008",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11406",
+    "denied_amount": "640.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000010",
+    "scenario_id": "timely_filing_expired",
+    "category": "timely_filing",
+    "expected_action": "no_action",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "465.00",
+    "payer_id": "BH003",
+    "injection_planted": true,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000011",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "17110",
+    "denied_amount": "128.30",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000013",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000014",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J3301",
+    "denied_amount": "24.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000015",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "48.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000017",
+    "scenario_id": "cob_other_coverage",
+    "category": "coordination_of_benefits",
+    "expected_action": "clinic_question",
+    "carc": "22",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "260.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000018",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000019",
+    "scenario_id": "duplicate_distinct_lesion",
+    "category": "duplicate",
+    "expected_action": "appeal",
+    "carc": "18",
+    "rarcs": [
+      "M86"
+    ],
+    "level": "line",
+    "line_number": 4,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000020",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000021",
+    "scenario_id": "timely_filing_expired",
+    "category": "timely_filing",
+    "expected_action": "no_action",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "275.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000023",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000024",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000025",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000026",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J3301",
+    "denied_amount": "48.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000028",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "308.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000029",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000031",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000032",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11602",
+    "denied_amount": "450.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000035",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "EV004",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000036",
+    "scenario_id": "duplicate_true",
+    "category": "duplicate",
+    "expected_action": "no_action",
+    "carc": "18",
+    "rarcs": [
+      "N522"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "355.00",
+    "payer_id": "CMA02",
+    "injection_planted": true,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000037",
+    "scenario_id": "bundling_unsupported",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000038",
+    "scenario_id": "missing_attachment_252",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "252",
+    "rarcs": [
+      "N225"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "275.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000039",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11602",
+    "denied_amount": "450.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000040",
+    "scenario_id": "cob_other_coverage",
+    "category": "coordination_of_benefits",
+    "expected_action": "clinic_question",
+    "carc": "22",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "495.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000041",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J3301",
+    "denied_amount": "24.00",
+    "payer_id": "NW001",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000042",
+    "scenario_id": "modifier_invalid_combination",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "N519"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11104",
+    "denied_amount": "195.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000044",
+    "scenario_id": "cob_wrong_payer",
+    "category": "coordination_of_benefits",
+    "expected_action": "corrected_claim",
+    "carc": "109",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "146.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000045",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "95.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000046",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "48.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000047",
+    "scenario_id": "cob_other_coverage",
+    "category": "coordination_of_benefits",
+    "expected_action": "clinic_question",
+    "carc": "22",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "315.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000048",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000049",
+    "scenario_id": "timely_filing_expired",
+    "category": "timely_filing",
+    "expected_action": "no_action",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "410.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000051",
+    "scenario_id": "duplicate_distinct_lesion",
+    "category": "duplicate",
+    "expected_action": "appeal",
+    "carc": "18",
+    "rarcs": [
+      "M86"
+    ],
+    "level": "line",
+    "line_number": 4,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000052",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000053",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000054",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17110",
+    "denied_amount": "105.97",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000057",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "36.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000058",
+    "scenario_id": "duplicate_distinct_lesion",
+    "category": "duplicate",
+    "expected_action": "appeal",
+    "carc": "18",
+    "rarcs": [
+      "M86"
+    ],
+    "level": "line",
+    "line_number": 4,
+    "procedure_code": "11104",
+    "denied_amount": "195.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000061",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "185.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000062",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11404",
+    "denied_amount": "480.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000064",
+    "scenario_id": "missing_info_unprocessable",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "MA130"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "260.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000065",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "715.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000066",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000068",
+    "scenario_id": "duplicate_distinct_lesion",
+    "category": "duplicate",
+    "expected_action": "appeal",
+    "carc": "18",
+    "rarcs": [
+      "M86"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000069",
+    "scenario_id": "missing_attachment_252",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "252",
+    "rarcs": [
+      "N225"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "330.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000070",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "24.00",
+    "payer_id": "EV004",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000071",
+    "scenario_id": "auth_number_not_on_claim",
+    "category": "authorization",
+    "expected_action": "corrected_claim",
+    "carc": "15",
+    "rarcs": [
+      "M62"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "475.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000074",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "213.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000077",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99214",
+    "denied_amount": "215.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000078",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000079",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "17110",
+    "denied_amount": "180.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000080",
+    "scenario_id": "duplicate_true",
+    "category": "duplicate",
+    "expected_action": "no_action",
+    "carc": "18",
+    "rarcs": [
+      "N522"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "315.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000082",
+    "scenario_id": "cob_wrong_payer",
+    "category": "coordination_of_benefits",
+    "expected_action": "corrected_claim",
+    "carc": "109",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "410.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000085",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "36.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000087",
+    "scenario_id": "bundling_ncci_236",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "236",
+    "rarcs": [
+      "N20"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "17110",
+    "denied_amount": "180.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000088",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11042",
+    "denied_amount": "260.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000089",
+    "scenario_id": "duplicate_distinct_lesion",
+    "category": "duplicate",
+    "expected_action": "appeal",
+    "carc": "18",
+    "rarcs": [
+      "M86"
+    ],
+    "level": "line",
+    "line_number": 4,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000091",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000092",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "475.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000093",
+    "scenario_id": "cob_wrong_payer",
+    "category": "coordination_of_benefits",
+    "expected_action": "corrected_claim",
+    "carc": "109",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "145.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000094",
+    "scenario_id": "timely_filing_in_window",
+    "category": "timely_filing",
+    "expected_action": "appeal",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "715.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000095",
+    "scenario_id": "modifier_invalid_combination",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "N519"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11400",
+    "denied_amount": "230.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000098",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000099",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "17110",
+    "denied_amount": "144.33",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000100",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "415.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000101",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11900",
+    "denied_amount": "110.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000102",
+    "scenario_id": "missing_attachment_252",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "252",
+    "rarcs": [
+      "N225"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "275.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000103",
+    "scenario_id": "bundling_ncci_236",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "236",
+    "rarcs": [
+      "N20"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17110",
+    "denied_amount": "180.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000104",
+    "scenario_id": "bundling_unsupported",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000105",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "290.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000106",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "290.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000107",
+    "scenario_id": "other_non_covered",
+    "category": "other",
+    "expected_action": "clinic_question",
+    "carc": "96",
+    "rarcs": [
+      "N130"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17111",
+    "denied_amount": "260.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000108",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "260.00",
+    "payer_id": "CMA02",
+    "injection_planted": true,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000110",
+    "scenario_id": "duplicate_true",
+    "category": "duplicate",
+    "expected_action": "no_action",
+    "carc": "18",
+    "rarcs": [
+      "N522"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "275.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000111",
+    "scenario_id": "cob_other_coverage",
+    "category": "coordination_of_benefits",
+    "expected_action": "clinic_question",
+    "carc": "22",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "185.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000112",
+    "scenario_id": "bundling_unsupported",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000113",
+    "scenario_id": "cob_other_coverage",
+    "category": "coordination_of_benefits",
+    "expected_action": "clinic_question",
+    "carc": "22",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "500.00",
+    "payer_id": "BH003",
+    "injection_planted": true,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000116",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11400",
+    "denied_amount": "230.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000117",
+    "scenario_id": "bundling_unsupported",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000118",
+    "scenario_id": "other_non_covered",
+    "category": "other",
+    "expected_action": "clinic_question",
+    "carc": "96",
+    "rarcs": [
+      "N130"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "96372",
+    "denied_amount": "45.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000119",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "17110",
+    "denied_amount": "129.21",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000120",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99214",
+    "denied_amount": "215.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000121",
+    "scenario_id": "missing_info_unprocessable",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "MA130"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "330.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000122",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000123",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "NW001",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000124",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000126",
+    "scenario_id": "bundling_ncci_236",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "236",
+    "rarcs": [
+      "N20"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "17110",
+    "denied_amount": "180.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000127",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99212",
+    "denied_amount": "95.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000128",
+    "scenario_id": "timely_filing_in_window",
+    "category": "timely_filing",
+    "expected_action": "appeal",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "315.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000132",
+    "scenario_id": "auth_number_not_on_claim",
+    "category": "authorization",
+    "expected_action": "corrected_claim",
+    "carc": "15",
+    "rarcs": [
+      "M62"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "296.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000133",
+    "scenario_id": "duplicate_distinct_lesion",
+    "category": "duplicate",
+    "expected_action": "appeal",
+    "carc": "18",
+    "rarcs": [
+      "M86"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000135",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "410.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000136",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "296.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000137",
+    "scenario_id": "bundling_unsupported",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000139",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17111",
+    "denied_amount": "206.25",
+    "payer_id": "BH003",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000141",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "635.00",
+    "payer_id": "BH003",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000142",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "320.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000143",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "535.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000144",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "48.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000145",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "213.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000146",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000148",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11603",
+    "denied_amount": "540.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000149",
+    "scenario_id": "auth_number_not_on_claim",
+    "category": "authorization",
+    "expected_action": "corrected_claim",
+    "carc": "15",
+    "rarcs": [
+      "M62"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "145.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000150",
+    "scenario_id": "missing_attachment_252",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "252",
+    "rarcs": [
+      "N225"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "185.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000152",
+    "scenario_id": "bundling_ncci_236",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "236",
+    "rarcs": [
+      "N20"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "17110",
+    "denied_amount": "180.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000153",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "145.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000154",
+    "scenario_id": "other_non_covered",
+    "category": "other",
+    "expected_action": "clinic_question",
+    "carc": "96",
+    "rarcs": [
+      "N130"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11042",
+    "denied_amount": "260.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000155",
+    "scenario_id": "duplicate_true",
+    "category": "duplicate",
+    "expected_action": "no_action",
+    "carc": "18",
+    "rarcs": [
+      "N522"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "465.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000156",
+    "scenario_id": "duplicate_true",
+    "category": "duplicate",
+    "expected_action": "no_action",
+    "carc": "18",
+    "rarcs": [
+      "N522"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "345.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000158",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000160",
+    "scenario_id": "duplicate_true",
+    "category": "duplicate",
+    "expected_action": "no_action",
+    "carc": "18",
+    "rarcs": [
+      "N522"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "355.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000161",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000163",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "150.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000165",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "475.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000166",
+    "scenario_id": "auth_number_not_on_claim",
+    "category": "authorization",
+    "expected_action": "corrected_claim",
+    "carc": "15",
+    "rarcs": [
+      "M62"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "145.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000167",
+    "scenario_id": "missing_attachment_252",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "252",
+    "rarcs": [
+      "N225"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "345.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000169",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "140.00",
+    "payer_id": "EV004",
+    "injection_planted": true,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000170",
+    "scenario_id": "timely_filing_in_window",
+    "category": "timely_filing",
+    "expected_action": "appeal",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "275.00",
+    "payer_id": "EV004",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000172",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "475.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000173",
+    "scenario_id": "elig_patient_not_found",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "31",
+    "rarcs": [
+      "N382"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "290.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000174",
+    "scenario_id": "missing_info_unprocessable",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "MA130"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "380.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000175",
+    "scenario_id": "timely_filing_in_window",
+    "category": "timely_filing",
+    "expected_action": "appeal",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "215.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000176",
+    "scenario_id": "med_necessity_wart_destruction",
+    "category": "medical_necessity",
+    "expected_action": "appeal",
+    "carc": "50",
+    "rarcs": [
+      "N115"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17110",
+    "denied_amount": "104.30",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000177",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "415.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000178",
+    "scenario_id": "bundling_unsupported",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000179",
+    "scenario_id": "auth_number_not_on_claim",
+    "category": "authorization",
+    "expected_action": "corrected_claim",
+    "carc": "15",
+    "rarcs": [
+      "M62"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "480.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000180",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000181",
+    "scenario_id": "missing_documentation_n29",
+    "category": "missing_information",
+    "expected_action": "clinic_question",
+    "carc": "16",
+    "rarcs": [
+      "N29"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "345.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000182",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "J3301",
+    "denied_amount": "36.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000183",
+    "scenario_id": "timely_filing_in_window",
+    "category": "timely_filing",
+    "expected_action": "appeal",
+    "carc": "29",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "278.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000184",
+    "scenario_id": "modifier_25_missing",
+    "category": "modifier",
+    "expected_action": "corrected_claim",
+    "carc": "4",
+    "rarcs": [
+      "M78"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "99213",
+    "denied_amount": "150.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000186",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "NW001",
+    "injection_planted": true,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000187",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "96372",
+    "denied_amount": "45.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000188",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11602",
+    "denied_amount": "450.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000189",
+    "scenario_id": "auth_missing",
+    "category": "authorization",
+    "expected_action": "appeal",
+    "carc": "197",
+    "rarcs": [
+      "N54"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11602",
+    "denied_amount": "450.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000190",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J0702",
+    "denied_amount": "18.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000192",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "17000",
+    "denied_amount": "140.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000194",
+    "scenario_id": "missing_ndc",
+    "category": "missing_information",
+    "expected_action": "corrected_claim",
+    "carc": "16",
+    "rarcs": [
+      "M119"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "J3301",
+    "denied_amount": "48.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000195",
+    "scenario_id": "bundling_ncci_236",
+    "category": "bundling",
+    "expected_action": "no_action",
+    "carc": "236",
+    "rarcs": [
+      "N20"
+    ],
+    "level": "line",
+    "line_number": 3,
+    "procedure_code": "17110",
+    "denied_amount": "180.00",
+    "payer_id": "NW001",
+    "injection_planted": true,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000196",
+    "scenario_id": "diagnosis_inconsistent",
+    "category": "medical_necessity",
+    "expected_action": "corrected_claim",
+    "carc": "11",
+    "rarcs": [
+      "M76"
+    ],
+    "level": "line",
+    "line_number": 1,
+    "procedure_code": "11406",
+    "denied_amount": "640.00",
+    "payer_id": "NW001",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": false
+  },
+  {
+    "claim_control_number": "CLM000198",
+    "scenario_id": "cob_wrong_payer",
+    "category": "coordination_of_benefits",
+    "expected_action": "corrected_claim",
+    "carc": "109",
+    "rarcs": [
+      "N4"
+    ],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "278.00",
+    "payer_id": "EV004",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000199",
+    "scenario_id": "bundling_separate_sites",
+    "category": "bundling",
+    "expected_action": "appeal",
+    "carc": "97",
+    "rarcs": [
+      "M15"
+    ],
+    "level": "line",
+    "line_number": 2,
+    "procedure_code": "11102",
+    "denied_amount": "165.00",
+    "payer_id": "BH003",
+    "injection_planted": false,
+    "has_notes": true,
+    "has_letter": true
+  },
+  {
+    "claim_control_number": "CLM000200",
+    "scenario_id": "elig_coverage_terminated",
+    "category": "eligibility",
+    "expected_action": "clinic_question",
+    "carc": "27",
+    "rarcs": [],
+    "level": "claim",
+    "line_number": null,
+    "procedure_code": null,
+    "denied_amount": "495.00",
+    "payer_id": "CMA02",
+    "injection_planted": false,
+    "has_notes": false,
+    "has_letter": true
+  }
+]

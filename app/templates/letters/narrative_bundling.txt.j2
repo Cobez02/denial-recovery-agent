@@ -1,0 +1,6 @@
+{% block narrative %}
+The services on this claim were denied as bundled into another procedure on the same date of service. The clinical documentation{% if has_excerpts %} quoted below{% endif %} records that the services were separate and distinct procedures, each requiring its own work and not an integral part of the other{% if f.modifier_sentence %}; a replacement claim reports this with {{ f.modifier_sentence }}{% endif %}.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} recognize the distinct procedural services, remove the bundling denial and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

@@ -1,0 +1,56 @@
+{{ today }}
+
+{{ f.payer_name }}
+Appeals and Grievances Department
+
+RE: Appeal of claim denial
+Claim control number: {{ f.claim_control_number }}
+{% if f.payer_claim_control_number %}
+Payer claim number: {{ f.payer_claim_control_number }}
+{% endif %}
+Patient: {{ patient_name }}
+{% if patient_dob %}
+Date of birth: {{ patient_dob }}
+{% endif %}
+{% if member_id %}
+Member ID: {{ member_id }}
+{% endif %}
+Date(s) of service: {{ f.dates_of_service }}
+Rendering provider: {{ rendering_provider }}
+Billed amount: ${{ f.total_charge }}
+Amount in dispute: ${{ f.denied_amount }}
+
+To Whom It May Concern:
+
+We are writing to appeal the denial of the claim referenced above. The services under appeal are:
+
+{% for line in f.lines %}
+  Line {{ line.line_number }}: {{ line.code_with_modifiers }} on {{ line.service_date }}, {{ line.units }} unit(s), ${{ line.charge_amount }}
+{% endfor %}
+
+{% if f.reasons %}
+The remittance{% if f.payment_date %} dated {{ f.payment_date }}{% endif %}{% if f.trace_number %} (trace {{ f.trace_number }}){% endif %} cited the following reason(s):
+
+{% for reason in f.reasons %}
+  {{ reason.label }}: "{{ reason.text }}"
+{% endfor %}
+
+{% endif %}
+{{ narrative }}
+
+{% if excerpts %}
+Supporting clinical documentation:
+
+{% for ex in excerpts %}
+  Clinical note excerpt ({{ ex.date }}): "{{ ex.text }}"
+{% endfor %}
+
+{% endif %}
+{{ request }}
+
+Please contact our billing office with any questions about this appeal. Thank you for your prompt reconsideration.
+
+Sincerely,
+
+Billing Office
+on behalf of {{ rendering_provider }}

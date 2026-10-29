@@ -128,10 +128,10 @@ LX
   CAS (claim level; repeating triplets CAS02-04, 05-07, ... up to 6 groups)
   NM1*QC patient (03 last, 04 first, 08 MI, 09 member id)   NM1*IL insured (optional)   NM1*82 rendering (optional, 09 NPI)
   REF*1L / REF*EA (optional)   DTM*050 received   DTM*232 / DTM*233 statement period
-  AMT*AU (optional)
+  AMT*AU (optional)   MOA / MIA (optional; MOA03-07 and MIA05,20-23 are claim-level RARCs)
+  LQ*HE (claim level RARC, optional; MUST appear before the first SVC - an LQ after an SVC belongs to that service line)
   SVC (01 composite HC:proc:mod1:mod2:mod3:mod4, 02 charge, 03 paid, 04 revenue code, 05 units, 06 original composite)
     DTM*472 service date   CAS (line level)   REF*6R line item control number   AMT*B6   LQ*HE rarc (repeating)
-  LQ*HE (claim level RARC, optional)
 PLB (provider-level adjustments, optional)
 SE GE IEA
 ```
@@ -249,7 +249,7 @@ Metrics (`app/outcomes/metrics.py`): `compute_dashboard(session) -> DashboardMet
 ## 12. Synthetic data — `synthetic/`
 
 - `synthetic/profiles/dermatology.yaml`: example specialty profile (procedures, E/M codes, modifiers, diagnoses, payers with filing/appeal windows, denial scenarios with weights, each scenario listing the CARC/RARC/group/level to emit, the ground-truth category and expected action, note templates, payer letter templates). Phase 0 replaces this with the chosen specialty.
-- `synthetic/generate.py`: `generate(seed, n_claims, out_dir, profile, denial_rate=0.35, injection_rate=0.05) -> Manifest`. Writes `claims_export.csv`, `notes.csv`, `payer_documents.csv`, one or more `remit_*.835`, `labels.json` (every denied claim: control number, category, expected action, scenario id), `manifest.json`. Deterministic for a seed. Names/addresses come from word lists in `synthetic/names.py` (no third-party faker).
+- `synthetic/generate.py`: `generate(seed, n_claims, out_dir, profile, denial_rate=0.75, injection_rate=0.20) -> Manifest` (defaults chosen so the committed 200-claim set carries 150+ labeled denials and 10+ planted letters; pass a lower `denial_rate` for demo batches). Writes `claims_export.csv`, `notes.csv`, `payer_documents.csv`, one or more `remit_*.835`, `labels.json` (every denied claim: control number, category, expected action, scenario id), `manifest.json`. Deterministic for a seed. Names/addresses come from word lists in `synthetic/names.py` (no third-party faker).
 - `synthetic/followup.py`: `generate_followup_835(session, work_items, outcome_plan) -> str` builds a later 835 paying/denying submitted fixes for the full-loop test.
 - `synthetic/fixtures/labeled_set_v1/`: committed output of `generate(seed=20261028, n_claims=200)` with 150+ labeled denials, plus `REVIEW.md` explaining that labels are generator ground truth to be hand-checked.
 

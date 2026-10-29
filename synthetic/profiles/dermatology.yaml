@@ -1,0 +1,848 @@
+# Synthetic specialty profile: dermatology. This is the example profile the plan's Phase 0 replaces
+# with the chosen specialty. Everything here is fictional: the fee schedule is invented, the NPIs
+# pass the check digit but belong to nobody, and the payers, addresses and identifiers do not exist.
+#
+# Loaded by synthetic/profile.py into a Profile dataclass. Templates (notes, letters) use {placeholders}
+# that synthetic/generate.py fills per claim; the full placeholder list is in synthetic/README.md.
+# Letters and notes deliberately contain no phone numbers or e-mail addresses: the redaction scanner
+# treats those as generic identifiers and would refuse to send a prompt that carries them.
+
+name: dermatology
+specialty: Dermatology
+place_of_service: "11"
+referring_rate: 0.30
+benign_note_rate: 0.30
+
+clinic:
+  name: Larkspur Dermatology Associates
+  npi: "1831952738"
+  tax_id: "82-5551234"
+  receiver_id: LARKSPURDERM
+  address:
+    line1: 4120 Alder Hollow Road, Suite 210
+    city: Larkspur Falls
+    state: WA
+    zip: "98427"
+
+payers:
+  - payer_id: NW001
+    name: Northwind Health Plan
+    timely_filing_days: 90
+    corrected_claim_days: 90
+    appeal_days: 180
+    member_id_prefix: NW
+    filing_indicator: "12"
+    tax_id: "911234567"
+    address: {line1: PO Box 41020, city: Port Alder, state: OR, zip: "97218"}
+    phone: "8005550117"
+    allowed_ratio: 0.72
+    weight: 30
+    patient_responsibility_rate: 0.40
+    copay_amounts: [25, 30, 40]
+  - payer_id: CMA02
+    name: Cascade Medicare Advantage
+    timely_filing_days: 365
+    corrected_claim_days: 365
+    appeal_days: 60
+    member_id_prefix: CMA
+    filing_indicator: "16"
+    tax_id: "912345678"
+    address: {line1: PO Box 9010, city: Cedar Hollow, state: WA, zip: "98312"}
+    phone: "8005550123"
+    allowed_ratio: 0.58
+    weight: 28
+    patient_responsibility_rate: 0.50
+    copay_amounts: [20, 40]
+  - payer_id: BH003
+    name: Blue Harbor PPO
+    timely_filing_days: 120
+    corrected_claim_days: 120
+    appeal_days: 180
+    member_id_prefix: BH
+    filing_indicator: "12"
+    tax_id: "913456789"
+    address: {line1: 800 Harborlight Way, city: Northam Harbor, state: ME, zip: "04614"}
+    phone: "8005550139"
+    allowed_ratio: 0.78
+    weight: 24
+    patient_responsibility_rate: 0.45
+    copay_amounts: [30, 45]
+  - payer_id: EV004
+    name: Evergreen Medicaid Plan
+    timely_filing_days: 180
+    corrected_claim_days: 180
+    appeal_days: 90
+    member_id_prefix: EV
+    filing_indicator: MC
+    tax_id: "914567890"
+    address: {line1: PO Box 2200, city: Silverbrook, state: OR, zip: "97471"}
+    phone: "8005550161"
+    allowed_ratio: 0.46
+    weight: 18
+    patient_responsibility_rate: 0.0
+    copay_amounts: []
+
+providers:
+  - {first_name: Priya, last_name: Thornquist, credential: MD, npi: "1748293655", weight: 55}
+  - {first_name: Marcus, last_name: Oyelaran, credential: MD, npi: "1928374655", weight: 45}
+
+referring_providers:
+  - {first_name: Helena, last_name: Brackwater, credential: MD, npi: "1582637413"}
+  - {first_name: Tobias, last_name: Fenwright, credential: DO, npi: "1673948521"}
+
+modifiers: ["25", "59", "XS", "XU", "76", "77", "91", "50", "LT", "RT", "JW", "26", "TC"]
+
+# Fee schedule. role: em | procedure | addon | drug | path. kind is free text that scenarios target.
+codes:
+  "99202": {description: "Office visit, new patient, straightforward decision making", charge: 125.00, role: em, kind: em}
+  "99203": {description: "Office visit, new patient, low complexity", charge: 185.00, role: em, kind: em}
+  "99204": {description: "Office visit, new patient, moderate complexity", charge: 275.00, role: em, kind: em}
+  "99205": {description: "Office visit, new patient, high complexity", charge: 365.00, role: em, kind: em}
+  "99211": {description: "Office visit, established patient, minimal", charge: 55.00, role: em, kind: em}
+  "99212": {description: "Office visit, established patient, straightforward", charge: 95.00, role: em, kind: em}
+  "99213": {description: "Office visit, established patient, low complexity", charge: 150.00, role: em, kind: em}
+  "99214": {description: "Office visit, established patient, moderate complexity", charge: 215.00, role: em, kind: em}
+  "99215": {description: "Office visit, established patient, high complexity", charge: 300.00, role: em, kind: em}
+  "11102": {description: "Tangential (shave) biopsy of skin, single lesion", charge: 165.00, role: procedure, kind: biopsy}
+  "11103": {description: "Tangential biopsy of skin, each additional lesion", charge: 85.00, role: addon, kind: biopsy}
+  "11104": {description: "Punch biopsy of skin, single lesion", charge: 195.00, role: procedure, kind: biopsy}
+  "11105": {description: "Punch biopsy of skin, each additional lesion", charge: 95.00, role: addon, kind: biopsy}
+  "17110": {description: "Destruction of benign lesions other than skin tags, up to 14", charge: 180.00, role: procedure, kind: destruction}
+  "17111": {description: "Destruction of benign lesions other than skin tags, 15 or more", charge: 260.00, role: procedure, kind: destruction}
+  "17000": {description: "Destruction of premalignant lesion (actinic keratosis), first lesion", charge: 140.00, role: procedure, kind: destruction_ak}
+  "17003": {description: "Destruction of premalignant lesions, second through 14, each", charge: 35.00, role: addon, kind: destruction_ak, units: [2, 6]}
+  "11400": {description: "Excision benign lesion, trunk/arms/legs, 0.5 cm or less", charge: 230.00, role: procedure, kind: surgery}
+  "11401": {description: "Excision benign lesion, trunk/arms/legs, 0.6 to 1.0 cm", charge: 290.00, role: procedure, kind: surgery}
+  "11402": {description: "Excision benign lesion, trunk/arms/legs, 1.1 to 2.0 cm", charge: 340.00, role: procedure, kind: surgery}
+  "11403": {description: "Excision benign lesion, trunk/arms/legs, 2.1 to 3.0 cm", charge: 410.00, role: procedure, kind: surgery}
+  "11404": {description: "Excision benign lesion, trunk/arms/legs, 3.1 to 4.0 cm", charge: 480.00, role: procedure, kind: surgery}
+  "11406": {description: "Excision benign lesion, trunk/arms/legs, over 4.0 cm", charge: 640.00, role: procedure, kind: surgery}
+  "11600": {description: "Excision malignant lesion, trunk/arms/legs, 0.5 cm or less", charge: 320.00, role: procedure, kind: surgery}
+  "11601": {description: "Excision malignant lesion, trunk/arms/legs, 0.6 to 1.0 cm", charge: 380.00, role: procedure, kind: surgery}
+  "11602": {description: "Excision malignant lesion, trunk/arms/legs, 1.1 to 2.0 cm", charge: 450.00, role: procedure, kind: surgery}
+  "11603": {description: "Excision malignant lesion, trunk/arms/legs, 2.1 to 3.0 cm", charge: 540.00, role: procedure, kind: surgery}
+  "11604": {description: "Excision malignant lesion, trunk/arms/legs, 3.1 to 4.0 cm", charge: 620.00, role: procedure, kind: surgery}
+  "11606": {description: "Excision malignant lesion, trunk/arms/legs, over 4.0 cm", charge: 800.00, role: procedure, kind: surgery}
+  "10060": {description: "Incision and drainage of abscess, simple", charge: 210.00, role: procedure, kind: drainage}
+  "11900": {description: "Intralesional injection, up to and including 7 lesions", charge: 110.00, role: procedure, kind: injection}
+  "11042": {description: "Debridement, subcutaneous tissue, first 20 sq cm", charge: 260.00, role: procedure, kind: debridement}
+  "96910": {description: "Photochemotherapy, tar and ultraviolet B", charge: 145.00, role: procedure, kind: phototherapy}
+  "96920": {description: "Laser treatment for inflammatory skin disease, under 250 sq cm", charge: 320.00, role: procedure, kind: phototherapy}
+  "96372": {description: "Therapeutic injection, subcutaneous or intramuscular", charge: 45.00, role: procedure, kind: injection}
+  "J3301": {description: "Triamcinolone acetonide injection, 10 mg", charge: 12.00, role: drug, kind: drug, ndc: "55555032010", units: [2, 4]}
+  "J0702": {description: "Betamethasone acetate and betamethasone sodium phosphate, 3 mg", charge: 9.00, role: drug, kind: drug, ndc: "55555070301", units: [2, 2]}
+  "88305": {description: "Surgical pathology, level IV, gross and microscopic", charge: 95.00, role: path, kind: pathology}
+
+diagnoses:
+  "L82.1": {description: "Other seborrheic keratosis", sites: [upper back, mid chest, left temple], lesion: "waxy stuck-on papule"}
+  "L57.0": {description: "Actinic keratosis", sites: [scalp, dorsal left hand, forehead, left ear helix], lesion: "rough scaly macule"}
+  "D22.5": {description: "Melanocytic nevi of trunk", sites: [left upper back, right flank, lower abdomen], lesion: "pigmented papule"}
+  "D22.9": {description: "Melanocytic nevi, unspecified", sites: [right shoulder, left thigh], lesion: "pigmented papule"}
+  "D23.5": {description: "Other benign neoplasm of skin of trunk", sites: [mid back, right chest], lesion: "dome-shaped papule"}
+  "C44.91": {description: "Basal cell carcinoma of skin, unspecified", sites: [nasal tip, left cheek, right forearm], lesion: "pearly papule with telangiectasia"}
+  "C44.519": {description: "Basal cell carcinoma of skin of other part of trunk", sites: [upper back, right chest], lesion: "pearly nodule with a rolled border"}
+  "L40.0": {description: "Psoriasis vulgaris", sites: [bilateral elbows, bilateral knees, scalp, lower back], lesion: "erythematous plaque with silvery scale"}
+  "L20.9": {description: "Atopic dermatitis, unspecified", sites: [antecubital fossae, popliteal fossae, neck], lesion: "lichenified eczematous patch"}
+  "B07.9": {description: "Viral wart, unspecified", sites: [plantar right foot, plantar left foot, dorsal right hand, left index finger], lesion: "verrucous papule"}
+  "L72.0": {description: "Epidermal cyst", sites: [posterior neck, upper back, left earlobe], lesion: "mobile subcutaneous nodule with a central punctum"}
+  "L30.9": {description: "Dermatitis, unspecified", sites: [bilateral hands, lower legs], lesion: "scaly erythematous patch"}
+  "L91.0": {description: "Hypertrophic scar (keloid)", sites: [mid chest, right earlobe, left shoulder], lesion: "firm raised scar"}
+  "Z85.828": {description: "Personal history of other malignant neoplasm of skin", sites: [full skin surface], lesion: "no new suspicious lesion"}
+  "D48.5": {description: "Neoplasm of uncertain behavior of skin", sites: [right shoulder, left calf, mid back], lesion: "irregular pigmented lesion"}
+  "L72.3": {description: "Sebaceous cyst", sites: [left cheek, scalp, upper back], lesion: "cystic nodule"}
+  "L57.8": {description: "Other skin changes due to chronic exposure to nonionizing radiation", sites: [face, dorsal forearms], lesion: "solar elastosis"}
+  "L02.91": {description: "Cutaneous abscess, unspecified", sites: [left axilla, right buttock, posterior thigh], lesion: "fluctuant tender nodule"}
+  "L98.499": {description: "Non-pressure chronic ulcer of skin of other sites, unspecified severity", sites: [right lateral ankle, left shin], lesion: "chronic ulcer with a fibrinous base"}
+
+# Encounter templates: which codes one visit combines. Tags are what scenarios require. An E/M is
+# present with em_probability (scenarios can force it); a procedure slot is present with probability.
+encounters:
+  - id: new_patient_eval
+    weight: 10
+    tags: [em_only]
+    em_codes: ["99203", "99204"]
+    em_probability: 1.0
+    em_modifier_25: false
+    procedures: []
+    diagnosis_groups:
+      - ["L30.9", "L20.9", "L82.1", "L40.0", "D22.9", "L57.8"]
+  - id: established_followup
+    weight: 8
+    tags: [em_only]
+    em_codes: ["99212", "99213", "99214"]
+    em_probability: 1.0
+    em_modifier_25: false
+    procedures: []
+    diagnosis_groups:
+      - ["L40.0", "L20.9", "L30.9", "Z85.828", "L82.1"]
+  - id: biopsy_visit
+    weight: 14
+    tags: [em_plus_procedure, has_procedure, has_biopsy]
+    em_codes: ["99213", "99214"]
+    em_probability: 0.85
+    em_modifier_25: true
+    procedures:
+      - {codes: ["11102"]}
+      - {codes: ["11103"], probability: 0.4}
+      - {codes: ["88305"], probability: 0.5}
+    diagnosis_groups:
+      - ["D48.5", "D22.5", "L82.1", "D23.5", "C44.91"]
+  - id: punch_biopsy_visit
+    weight: 6
+    tags: [em_plus_procedure, has_procedure, has_biopsy]
+    em_codes: ["99213"]
+    em_probability: 0.8
+    em_modifier_25: true
+    procedures:
+      - {codes: ["11104"]}
+      - {codes: ["11105"], probability: 0.3}
+      - {codes: ["88305"], probability: 0.5}
+    diagnosis_groups:
+      - ["D48.5", "L40.0", "L30.9"]
+  - id: wart_destruction
+    weight: 12
+    tags: [em_plus_procedure, has_procedure, has_17110]
+    em_codes: ["99212", "99213"]
+    em_probability: 0.6
+    em_modifier_25: true
+    procedures:
+      - {codes: ["17110", "17110", "17111"]}
+    diagnosis_groups:
+      - ["B07.9"]
+  - id: ak_destruction
+    weight: 10
+    tags: [em_plus_procedure, has_procedure]
+    em_codes: ["99213"]
+    em_probability: 0.5
+    em_modifier_25: true
+    procedures:
+      - {codes: ["17000"]}
+      - {codes: ["17003"], probability: 0.8}
+    diagnosis_groups:
+      - ["L57.0"]
+  - id: benign_excision
+    weight: 7
+    tags: [has_procedure, surgery, auth_sensitive]
+    em_codes: []
+    procedures:
+      - {codes: ["11400", "11401", "11402", "11403", "11404", "11406"]}
+      - {codes: ["88305"], probability: 0.6}
+    diagnosis_groups:
+      - ["L72.0", "D23.5", "L72.3", "D22.5"]
+  - id: malignant_excision
+    weight: 7
+    tags: [has_procedure, surgery, auth_sensitive]
+    em_codes: []
+    procedures:
+      - {codes: ["11600", "11601", "11602", "11603", "11604", "11606"]}
+      - {codes: ["88305"], probability: 0.8}
+    diagnosis_groups:
+      - ["C44.91", "C44.519"]
+  - id: biopsy_and_destruction
+    weight: 8
+    tags: [em_plus_procedure, has_procedure, has_biopsy, has_17110, two_procedures, biopsy_with_destruction]
+    em_codes: ["99213", "99214"]
+    em_probability: 0.6
+    em_modifier_25: true
+    procedures:
+      - {codes: ["11102"], modifiers: ["59"], modifier_probability: 0.5, dx_group: 1}
+      - {codes: ["17110"], dx_group: 2}
+    diagnosis_groups:
+      - ["D48.5", "D22.5", "L82.1"]
+      - ["B07.9"]
+  - id: phototherapy_session
+    weight: 6
+    tags: [has_procedure, phototherapy, auth_sensitive]
+    em_codes: []
+    procedures:
+      - {codes: ["96910", "96910", "96920"]}
+    diagnosis_groups:
+      - ["L40.0"]
+  - id: keloid_injection
+    weight: 7
+    tags: [em_plus_procedure, has_procedure, has_jcode, auth_sensitive]
+    em_codes: ["99213"]
+    em_probability: 0.5
+    em_modifier_25: true
+    procedures:
+      - {codes: ["11900"]}
+      - {codes: ["J3301"]}
+    diagnosis_groups:
+      - ["L91.0"]
+  - id: steroid_injection_dermatitis
+    weight: 5
+    tags: [em_plus_procedure, has_procedure, has_jcode, auth_sensitive]
+    em_codes: ["99213", "99214"]
+    em_probability: 0.7
+    em_modifier_25: true
+    procedures:
+      - {codes: ["96372"]}
+      - {codes: ["J0702"]}
+    diagnosis_groups:
+      - ["L20.9", "L30.9"]
+  - id: abscess_drainage
+    weight: 5
+    tags: [em_plus_procedure, has_procedure]
+    em_codes: ["99213"]
+    em_probability: 0.5
+    em_modifier_25: true
+    procedures:
+      - {codes: ["10060"]}
+    diagnosis_groups:
+      - ["L02.91"]
+  - id: wound_debridement
+    weight: 4
+    tags: [has_procedure]
+    em_codes: []
+    procedures:
+      - {codes: ["11042"]}
+    diagnosis_groups:
+      - ["L98.499"]
+
+# Denial scenarios. level: claim | line. amount: full (whole charge denied with the CARC) or allowed
+# (CO-45 contractual on the non-allowed part, the CARC on the allowed part). target picks the denied
+# line; requires_tags restricts the encounter; claim_setup alters the claim before adjudication.
+# Ground truth = category + expected_action. Notes are what the clinic would supply; letters are
+# what the payer would send (untrusted data).
+scenarios:
+  - id: elig_coverage_terminated
+    description: Coverage ended before the date of service; claim denied in full.
+    category: eligibility
+    expected_action: clinic_question
+    weight: 8
+    carc: "27"
+    rarcs: []
+    group: CO
+    level: claim
+    letter: >-
+      Our records show that the member's coverage under this plan ended before the date of service
+      shown above. {carc_quote} Please verify the member's current coverage and submit the claim to
+      the responsible carrier.
+
+  - id: elig_patient_not_found
+    description: The payer cannot find the patient as a member with the identifier submitted.
+    category: eligibility
+    expected_action: clinic_question
+    weight: 5
+    carc: "31"
+    rarcs: ["N382"]
+    group: CO
+    level: claim
+    letter: >-
+      We were unable to locate the patient as a member of this plan using the identifier and date of
+      birth submitted. {carc_quote} {rarc_quote} Please verify the member ID and resubmit.
+
+  - id: auth_missing
+    description: No prior authorization on file for a drug, surgery or phototherapy line.
+    category: authorization
+    expected_action: appeal
+    weight: 7
+    carc: "197"
+    rarcs: ["N54"]
+    group: CO
+    level: line
+    target: {kinds: [drug, surgery, phototherapy]}
+    requires_tags: [auth_sensitive]
+    claim_setup: {prior_auth: absent}
+    note_count: [2, 3]
+    notes:
+      - >-
+        {service_date}: {diagnosis} ({diagnosis_code}) involving the {site}. Conservative therapy over
+        the preceding 12 weeks did not achieve adequate control. {procedure} ({procedure_code}) is
+        medically necessary; risks, benefits and alternatives were reviewed and the patient consents.
+      - >-
+        Assessment: {diagnosis_code} {diagnosis}, moderate to severe, affecting the {site} with an
+        estimated body surface area of {bsa} percent. Plan: {procedure} ({procedure_code}) today; the
+        office will request retrospective authorization from {payer_name} if required.
+      - >-
+        Exam of the {site} shows {lesion} with associated pruritus and sleep disturbance that
+        interferes with daily activities. Proceeding with {procedure} ({procedure_code}).
+    letter: >-
+      No prior authorization was on file for the service billed on line {line_number}
+      ({procedure_code}). {carc_quote} {rarc_quote} A retrospective review may be requested within the
+      appeal period with supporting clinical documentation.
+
+  - id: auth_number_not_on_claim
+    description: An authorization exists on the claim record but the payer did not receive it.
+    category: authorization
+    expected_action: corrected_claim
+    weight: 5
+    carc: "15"
+    rarcs: ["M62"]
+    group: CO
+    level: claim
+    requires_tags: [auth_sensitive]
+    claim_setup: {prior_auth: present}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Billing note: prior authorization {prior_auth_number} was obtained from {payer_name} on
+        {auth_date} for {procedure_code}; the authorization confirmation is on file in the chart.
+    letter: >-
+      The claim did not include a valid authorization reference for the services billed. {carc_quote}
+      {rarc_quote} If an authorization was obtained, submit a corrected claim that includes the
+      authorization number.
+
+  - id: modifier_25_missing
+    description: E/M billed with a same-day procedure without modifier 25.
+    category: modifier
+    expected_action: corrected_claim
+    weight: 9
+    carc: "4"
+    rarcs: ["M78"]
+    group: CO
+    level: line
+    target: {roles: [em]}
+    requires_tags: [em_plus_procedure]
+    claim_setup: {force_em: true, strip_em_modifier_25: true}
+    note_count: [2, 2]
+    notes:
+      - >-
+        {em_code} visit: {first_name} {last_name} presents with a new complaint of a {lesion} on the
+        {site2}, present for about three months and separate from the lesion treated today. History,
+        examination and medical decision making for this problem are documented separately from the
+        procedure note.
+      - >-
+        Procedure note: {procedure} ({procedure_code}) performed on the {site} after informed consent;
+        hemostasis achieved and wound care instructions given. The evaluation and management service
+        today was significant and separately identifiable from the procedure.
+    letter: >-
+      The evaluation and management service on line {line_number} ({line_code}) was billed on the same
+      date as {procedure_code} without the modifier required to identify it as a separate service.
+      {carc_quote} {rarc_quote}
+
+  - id: modifier_invalid_combination
+    description: A procedure line carries an invalid modifier combination (59 with XS).
+    category: modifier
+    expected_action: corrected_claim
+    weight: 4
+    carc: "4"
+    rarcs: ["N519"]
+    group: CO
+    level: line
+    target: {roles: [procedure]}
+    requires_tags: [has_procedure]
+    claim_setup: {set_target_modifiers: ["59", "XS"]}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Procedure note: {procedure} ({procedure_code}) of a {size_mm} mm {lesion} on the {site},
+        performed at a separate anatomic site from any other procedure today; separate preparation and
+        separate consent documented.
+    letter: >-
+      Line {line_number} ({procedure_code}) was submitted with modifiers that cannot be reported
+      together. {carc_quote} {rarc_quote} Please review the modifiers billed and submit a corrected
+      claim.
+
+  - id: duplicate_true
+    description: The whole claim duplicates a claim already processed.
+    category: duplicate
+    expected_action: no_action
+    weight: 5
+    carc: "18"
+    rarcs: ["N522"]
+    group: CO
+    level: claim
+    letter: >-
+      This claim duplicates a claim previously processed under payer claim number
+      {original_payer_ccn}. {carc_quote} {rarc_quote} No additional payment is due; the original
+      determination stands.
+
+  - id: duplicate_distinct_lesion
+    description: A second lesion billed as a second line of the same code is denied as a duplicate; the notes show a distinct lesion.
+    category: duplicate
+    expected_action: appeal
+    weight: 5
+    carc: "18"
+    rarcs: ["M86"]
+    group: CO
+    level: line
+    target: {roles: [procedure], kinds: [biopsy]}
+    requires_tags: [has_biopsy]
+    claim_setup: {duplicate_target_line: true}
+    note_count: [2, 2]
+    notes:
+      - >-
+        Two separate lesions were treated today. Lesion 1: a {size_mm} mm {lesion} on the {site}.
+        Lesion 2: a {size_mm2} mm {lesion} on the {site2}. Each lesion was sampled separately with its
+        own specimen container and its own consent.
+      - >-
+        Pathology requisition lists two specimens, labeled A ({site}) and B ({site2}), both submitted
+        after {procedure} ({procedure_code}).
+    letter: >-
+      The service on line {line_number} ({procedure_code}) duplicates a service already paid on this
+      claim for the same date. {carc_quote} {rarc_quote}
+
+  - id: timely_filing_expired
+    description: Claim submitted well after the payer's filing window; nothing to recover.
+    category: timely_filing
+    expected_action: no_action
+    weight: 4
+    carc: "29"
+    rarcs: []
+    group: CO
+    level: claim
+    claim_setup: {timely_filing: outside}
+    letter: >-
+      The claim was first received on {received_date}, after the plan's filing limit of
+      {timely_filing_days} days from the date of service. {carc_quote}
+
+  - id: timely_filing_in_window
+    description: The payer denied for timely filing although the claim was submitted inside the window.
+    category: timely_filing
+    expected_action: appeal
+    weight: 4
+    carc: "29"
+    rarcs: []
+    group: CO
+    level: claim
+    claim_setup: {timely_filing: inside}
+    note_count: [1, 2]
+    notes:
+      - >-
+        Billing note: claim {claim_control_number} for the {service_date} visit was transmitted
+        electronically on {submission_date}; the clearinghouse acceptance report (batch
+        {clearinghouse_batch}) is on file and shows acceptance by {payer_name}.
+      - >-
+        Billing note: no rejection was ever received for claim {claim_control_number}; the
+        clearinghouse batch {clearinghouse_batch} acceptance report dated {submission_date} is attached
+        to the account.
+    letter: >-
+      The claim was received after the plan's filing limit of {timely_filing_days} days from the date
+      of service. {carc_quote}
+
+  - id: med_necessity_wart_destruction
+    description: Wart destruction denied as not medically necessary; the notes document symptoms and failed therapy.
+    category: medical_necessity
+    expected_action: appeal
+    weight: 7
+    carc: "50"
+    rarcs: ["N115"]
+    group: CO
+    level: line
+    amount: allowed
+    target: {codes: ["17110", "17111"]}
+    requires_tags: [has_17110]
+    note_count: [2, 3]
+    notes:
+      - >-
+        {first_name} {last_name} reports painful warts on the {site} for six months with pain on
+        walking and standing. Over-the-counter salicylic acid 17 percent applied nightly for ten weeks
+        without improvement.
+      - >-
+        Exam: {count} verrucous papules on the {site}, several with pinpoint bleeding on paring and
+        tender to lateral pressure. The lesions are increasing in number and interfere with work and
+        exercise.
+      - >-
+        Plan: cryotherapy destruction of {count} lesions ({procedure_code}). Risks, benefits and
+        alternatives discussed; the patient elects treatment given persistent symptoms and failure of
+        conservative therapy.
+    letter: >-
+      The service on line {line_number} ({procedure_code}) was reviewed against the plan's medical
+      policy and was not found to be medically necessary based on the information submitted.
+      {carc_quote} {rarc_quote}
+
+  - id: diagnosis_inconsistent
+    description: The diagnosis transmitted on the claim does not support the procedure; the chart documents the right one.
+    category: medical_necessity
+    expected_action: corrected_claim
+    weight: 5
+    carc: "11"
+    rarcs: ["M76"]
+    group: CO
+    level: line
+    target: {roles: [procedure]}
+    requires_tags: [has_procedure]
+    claim_setup: {swap_diagnosis_inconsistent: true}
+    note_count: [1, 2]
+    notes:
+      - >-
+        Assessment: {documented_diagnosis} ({documented_diagnosis_code}) of the {site}. Procedure:
+        {procedure} ({procedure_code}) performed today for this diagnosis.
+      - >-
+        Clinical impression documented at the visit: {documented_diagnosis_code}
+        {documented_diagnosis}; the diagnosis transmitted on the claim does not match the chart.
+    letter: >-
+      The diagnosis code submitted for line {line_number} ({procedure_code}) does not support the
+      procedure billed. {carc_quote} {rarc_quote}
+
+  - id: bundling_separate_sites
+    description: Biopsy bundled into same-day destruction; the notes document separate sites.
+    category: bundling
+    expected_action: appeal
+    weight: 5
+    carc: "97"
+    rarcs: ["M15"]
+    group: CO
+    level: line
+    target: {codes: ["11102"]}
+    requires_tags: [biopsy_with_destruction]
+    claim_setup: {strip_target_modifiers: true}
+    note_count: [2, 2]
+    notes:
+      - >-
+        Shave biopsy ({procedure_code}) of a {size_mm} mm {lesion} on the {site}. This site is separate
+        from the {other_site}, where {other_procedure} ({other_procedure_code}) was performed today.
+      - >-
+        Two distinct anatomic sites were treated: the {site} (biopsy) and the {other_site}
+        (destruction). Separate consent and separate wound care instructions are documented for each
+        site.
+    letter: >-
+      Payment for {procedure_code} on line {line_number} is included in the allowance for
+      {other_procedure_code} performed on the same date. {carc_quote} {rarc_quote}
+
+  - id: bundling_unsupported
+    description: Biopsy bundled into same-day destruction with nothing in the notes supporting a separate site.
+    category: bundling
+    expected_action: no_action
+    weight: 4
+    carc: "97"
+    rarcs: ["M15"]
+    group: CO
+    level: line
+    target: {codes: ["11102"]}
+    requires_tags: [biopsy_with_destruction]
+    claim_setup: {strip_target_modifiers: true}
+    allow_benign_notes: false
+    letter: >-
+      Payment for {procedure_code} on line {line_number} is included in the allowance for
+      {other_procedure_code} performed on the same date. {carc_quote} {rarc_quote}
+
+  - id: bundling_ncci_236
+    description: NCCI edit between two same-day procedures.
+    category: bundling
+    expected_action: no_action
+    weight: 4
+    carc: "236"
+    rarcs: ["N20"]
+    group: CO
+    level: line
+    target: {codes: ["17110"]}
+    requires_tags: [biopsy_with_destruction]
+    allow_benign_notes: false
+    letter: >-
+      {procedure_code} on line {line_number} is not separately payable with {other_procedure_code} on
+      the same date of service under National Correct Coding Initiative edits. {carc_quote}
+      {rarc_quote}
+
+  - id: cob_other_coverage
+    description: The payer believes another plan is primary and needs the primary EOB.
+    category: coordination_of_benefits
+    expected_action: clinic_question
+    weight: 5
+    carc: "22"
+    rarcs: ["N4"]
+    group: CO
+    level: claim
+    letter: >-
+      Our records indicate the member has other coverage that is primary for this date of service.
+      {carc_quote} {rarc_quote} Submit the primary carrier's explanation of benefits for secondary
+      consideration.
+
+  - id: cob_wrong_payer
+    description: Claim sent to the wrong payer; the letter names the responsible plan.
+    category: coordination_of_benefits
+    expected_action: corrected_claim
+    weight: 4
+    carc: "109"
+    rarcs: ["N4"]
+    group: CO
+    level: claim
+    letter_required: true
+    letter: >-
+      This member's coverage for the date of service is administered by {other_payer_name}, not by
+      {payer_name}. {carc_quote} {rarc_quote} Please submit the claim to {other_payer_name} for
+      processing.
+
+  - id: missing_ndc
+    description: Drug line denied for a missing NDC although the claim export carries it.
+    category: missing_information
+    expected_action: corrected_claim
+    weight: 5
+    carc: "16"
+    rarcs: ["M119"]
+    group: CO
+    level: line
+    target: {roles: [drug]}
+    requires_tags: [has_jcode]
+    note_count: [1, 1]
+    notes:
+      - >-
+        Medication administered: {drug}, {units} units, NDC {ndc}, injected into the {site}; the lot
+        number is recorded on the medication administration record.
+    letter: >-
+      The drug on line {line_number} ({procedure_code}) was submitted without a valid National Drug
+      Code. {carc_quote} {rarc_quote} Submit a corrected claim with the NDC, unit of measure and
+      quantity.
+
+  - id: missing_info_unprocessable
+    description: Claim returned as unprocessable; no appeal rights.
+    category: missing_information
+    expected_action: clinic_question
+    weight: 4
+    carc: "16"
+    rarcs: ["MA130"]
+    group: CO
+    level: claim
+    no_appeal_rights: true
+    letter: >-
+      {carc_quote} {rarc_quote}
+
+  - id: missing_documentation_n29
+    description: The payer wants the office note before processing.
+    category: missing_information
+    expected_action: clinic_question
+    weight: 4
+    carc: "16"
+    rarcs: ["N29"]
+    group: CO
+    level: claim
+    letter: >-
+      Clinical documentation is required to process this claim. {carc_quote} {rarc_quote} Submit the
+      office note for the date of service with a copy of this notice.
+
+  - id: missing_attachment_252
+    description: An attachment is required to adjudicate the claim.
+    category: missing_information
+    expected_action: clinic_question
+    weight: 4
+    carc: "252"
+    rarcs: ["N225"]
+    group: CO
+    level: claim
+    letter: >-
+      {carc_quote} {rarc_quote} Submit the requested documentation within 45 days of the date of this
+      notice, referencing the payer claim number.
+
+  - id: other_non_covered
+    description: Service excluded under the benefit plan.
+    category: other
+    expected_action: clinic_question
+    weight: 3
+    carc: "96"
+    rarcs: ["N130"]
+    group: CO
+    level: line
+    target: {roles: [procedure]}
+    requires_tags: [has_procedure]
+    letter: >-
+      The service on line {line_number} ({procedure_code}) is excluded under the member's benefit
+      plan. {carc_quote} {rarc_quote}
+
+# Paraphrased public CARC/RARC descriptions used in letters (app/classify/codes.yaml is the catalog
+# the classifier cites; these are only for the synthetic payer letters).
+code_texts:
+  "1": "Deductible amount."
+  "2": "Coinsurance amount."
+  "3": "Co-payment amount."
+  "4": "The procedure code is inconsistent with the modifier used, or a required modifier is missing."
+  "11": "The diagnosis is inconsistent with the procedure."
+  "15": "The authorization number is missing, invalid, or does not apply to the billed services or provider."
+  "16": "Claim/service lacks information or has submission/billing error(s) which is needed for adjudication."
+  "18": "Exact duplicate claim/service."
+  "22": "This care may be covered by another payer per coordination of benefits."
+  "27": "Expenses incurred after coverage terminated."
+  "29": "The time limit for filing has expired."
+  "31": "Patient cannot be identified as our insured."
+  "45": "Charge exceeds fee schedule/maximum allowable or contracted/legislated fee arrangement."
+  "50": "These are non-covered services because this is not deemed a medical necessity by the payer."
+  "96": "Non-covered charge(s)."
+  "97": "The benefit for this service is included in the payment/allowance for another service/procedure that has already been adjudicated."
+  "109": "Claim/service not covered by this payer/contractor. You must send the claim/service to the correct payer/contractor."
+  "197": "Precertification/authorization/notification/pre-treatment absent."
+  "236": "This procedure or procedure/modifier combination is not compatible with another procedure or procedure/modifier combination provided on the same day according to the National Correct Coding Initiative or workers compensation state regulations/fee schedule requirements."
+  "252": "An attachment/other documentation is required to adjudicate this claim/service."
+  "M15": "Separately billed services/tests have been bundled as they are considered components of the same procedure. Separate payment is not allowed."
+  "M62": "Missing/incomplete/invalid treatment authorization code."
+  "M76": "Missing/incomplete/invalid diagnosis or condition."
+  "M78": "Missing/incomplete/invalid HCPCS modifier."
+  "M86": "Service denied because payment already made for same/similar procedure within set time frame."
+  "M119": "Missing/incomplete/invalid/deactivated/withdrawn National Drug Code (NDC)."
+  "MA130": "Your claim contains incomplete and/or invalid information, and no appeal rights are afforded because the claim is unprocessable. Please submit a new claim with the complete/correct information."
+  "N4": "Missing/Incomplete/Invalid prior Insurance Carrier(s) EOB."
+  "N20": "Service not payable with other service rendered on the same date."
+  "N29": "Missing documentation/orders/notes/summary/report/chart."
+  "N54": "Claim information is inconsistent with pre-certified/authorized services."
+  "N115": "This decision was based on a Local Coverage Determination (LCD). An LCD provides a guide to assist in determining whether a particular item or service is covered."
+  "N130": "Consult plan benefit documents/guidelines for information about restrictions for this service."
+  "N225": "Incomplete/invalid documentation/orders/notes/summary/report/chart."
+  "N382": "Missing/incomplete/invalid patient identifier."
+  "N519": "Invalid combination of HCPCS modifiers."
+  "N522": "Duplicate of a claim processed, or to be processed, as a crossover claim."
+
+# Notes attached to ~30% of claims that have no scenario-specific documentation.
+benign_notes:
+  - >-
+    Patient tolerated the procedure well. Wound care instructions reviewed; return in two weeks or
+    sooner for signs of infection.
+  - >-
+    Routine follow-up for {diagnosis} ({diagnosis_code}). Condition stable on the current regimen;
+    continue and return in three months.
+  - >-
+    Full body skin examination performed today. No atypical lesions identified. Sun protection
+    counseling provided.
+  - >-
+    {first_name} {last_name} seen for {diagnosis}. No new concerns today; medication list reconciled
+    with no changes.
+  - >-
+    Photographs of the {site} were placed in the chart for comparison at the next visit.
+  - >-
+    Discussed daily emollient use and trigger avoidance. Patient verbalized understanding of the plan.
+  - >-
+    Phone note: pathology results reviewed with the patient; benign findings, no further treatment
+    needed at this time.
+
+letters:
+  letter_rate: 0.40
+  portal_rate: 0.20
+  letter_template: |
+    {payer_name}
+    Claims Review Department
+    {payer_address_line1}
+    {payer_city}, {payer_state} {payer_zip}
+
+    {letter_date}
+
+    {clinic_name}
+    Attn: Billing Office
+
+    RE: Notice of claim determination
+    Claim number: {claim_control_number}
+    Payer claim number: {payer_claim_control_number}
+    Member: {patient_last_name}, {patient_first_name}
+    Member ID: {member_id}
+    Date of birth: {dob_mdy}
+    Date of service: {service_date}
+    Rendering provider: {provider}
+    Billed amount: ${total_charge}
+
+    Dear Provider,
+
+    {body}
+
+    {appeal_paragraph}
+
+    Sincerely,
+    Claims Review Department
+    {payer_name}
+  portal_template: |
+    CLAIM STATUS - {payer_name} provider portal
+    Claim: {claim_control_number} | Payer reference: {payer_claim_control_number}
+    Member: {patient_first_name} {patient_last_name} | ID {member_id} | DOB {dob_mdy}
+    Date of service: {service_date} | Billed: ${total_charge} | Paid: ${paid_total}
+    Status: {status_word}
+    Reason: {carc} - {carc_text}
+    {rarc_lines}
+    Notes: {body}
+    {appeal_paragraph}
+  appeal_rights: >-
+    If you disagree with this determination you may submit a written appeal within {appeal_days}
+    days of the date of this notice. Include the claim number, a copy of this notice and the
+    supporting clinical documentation.
+  corrected_claim_rights: >-
+    A corrected claim (frequency code 7) referencing the original claim number must be received
+    within {corrected_claim_days} days of the date of this notice. Written appeals may be submitted
+    within {appeal_days} days.
+  no_appeal_rights: >-
+    No appeal rights are afforded for this determination because the claim is unprocessable. Submit a
+    new claim with complete and correct information.

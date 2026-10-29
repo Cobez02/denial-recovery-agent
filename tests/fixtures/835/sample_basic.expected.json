@@ -1,0 +1,340 @@
+{
+  "interchange_control_number": "000000101",
+  "group_control_number": "101",
+  "transaction_control_number": "0001",
+  "interchange_date": "2026-10-15",
+  "sender_id": "NHP001",
+  "receiver_id": "1234567893",
+  "payment": {
+    "transaction_handling_code": "I",
+    "amount": "460.00",
+    "credit_debit": "C",
+    "method": "ACH",
+    "payment_date": "2026-10-16",
+    "trace_number": "NHP2026101500123",
+    "payer_identifier": "1123456789",
+    "production_date": "2026-10-15"
+  },
+  "payer": {
+    "name": "NORTHWIND HEALTH PLAN",
+    "payer_id": "NHP001",
+    "address_line1": "500 PLAZA DRIVE",
+    "city": "SPRINGFIELD",
+    "state": "IL",
+    "zip": "62701",
+    "contact": "PROVIDER SERVICES"
+  },
+  "payee": {
+    "name": "TEST DERMATOLOGY CLINIC",
+    "npi": "1234567893",
+    "tax_id": "123456789",
+    "address_line1": "100 CLINIC WAY",
+    "city": "SPRINGFIELD",
+    "state": "IL",
+    "zip": "62702"
+  },
+  "claims": [
+    {
+      "sequence": 1,
+      "patient_control_number": "CLM-24001",
+      "claim_status_code": "1",
+      "charge_amount": "270.00",
+      "paid_amount": "230.00",
+      "patient_responsibility": "0.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "NHP-ICN-0001",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "BRIGHTWATER",
+      "patient_first_name": "AVERY",
+      "member_id": "NHP884421001",
+      "insured_last_name": null,
+      "insured_first_name": null,
+      "rendering_provider_npi": "1467812345",
+      "claim_received_date": "2026-10-01",
+      "statement_from": "2026-08-04",
+      "statement_to": "2026-08-04",
+      "coverage_amount": "230.00",
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "99213",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "150.00",
+          "paid_amount": "110.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-08-04",
+          "line_item_control_number": "L-24001-1",
+          "allowed_amount": "110.00",
+          "adjustments": [
+            {
+              "group_code": "CO",
+              "carc": "45",
+              "amount": "40.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        },
+        {
+          "line_number": 2,
+          "procedure_code": "17000",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "120.00",
+          "paid_amount": "120.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-08-04",
+          "line_item_control_number": "L-24001-2",
+          "allowed_amount": "120.00",
+          "adjustments": [],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [],
+      "references": {
+        "1L": "GRP-5521"
+      }
+    },
+    {
+      "sequence": 2,
+      "patient_control_number": "CLM-24002",
+      "claim_status_code": "4",
+      "charge_amount": "210.00",
+      "paid_amount": "0.00",
+      "patient_responsibility": "0.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "NHP-ICN-0002",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "PINECREST",
+      "patient_first_name": "JORDAN",
+      "member_id": "NHP884421002",
+      "insured_last_name": "PINECREST",
+      "insured_first_name": "JORDAN",
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-01",
+      "statement_from": "2026-08-11",
+      "statement_to": "2026-08-11",
+      "coverage_amount": null,
+      "adjustments": [
+        {
+          "group_code": "CO",
+          "carc": "197",
+          "amount": "210.00",
+          "quantity": null
+        }
+      ],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "99214",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "210.00",
+          "paid_amount": "0.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-08-11",
+          "line_item_control_number": "L-24002-1",
+          "allowed_amount": null,
+          "adjustments": [],
+          "remark_codes": []
+        }
+      ],
+      "remark_codes": [
+        "N54"
+      ],
+      "references": {}
+    },
+    {
+      "sequence": 3,
+      "patient_control_number": "CLM-24003",
+      "claim_status_code": "1",
+      "charge_amount": "330.00",
+      "paid_amount": "110.00",
+      "patient_responsibility": "0.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "NHP-ICN-0003",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "RIVERMOOR",
+      "patient_first_name": "CASEY",
+      "member_id": "NHP884421003",
+      "insured_last_name": null,
+      "insured_first_name": null,
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-02",
+      "statement_from": "2026-08-18",
+      "statement_to": "2026-08-18",
+      "coverage_amount": null,
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "99213",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "150.00",
+          "paid_amount": "110.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-08-18",
+          "line_item_control_number": "L-24003-1",
+          "allowed_amount": "110.00",
+          "adjustments": [
+            {
+              "group_code": "CO",
+              "carc": "45",
+              "amount": "40.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        },
+        {
+          "line_number": 2,
+          "procedure_code": "11102",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "180.00",
+          "paid_amount": "0.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-08-18",
+          "line_item_control_number": "L-24003-2",
+          "allowed_amount": null,
+          "adjustments": [
+            {
+              "group_code": "CO",
+              "carc": "4",
+              "amount": "180.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": [
+            "M78"
+          ]
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    },
+    {
+      "sequence": 4,
+      "patient_control_number": "CLM-24004",
+      "claim_status_code": "1",
+      "charge_amount": "255.00",
+      "paid_amount": "145.00",
+      "patient_responsibility": "50.00",
+      "filing_indicator": "12",
+      "payer_claim_control_number": "NHP-ICN-0004",
+      "facility_type_code": "11",
+      "frequency_code": "1",
+      "patient_last_name": "BRIGHTWATER",
+      "patient_first_name": "AVERY",
+      "member_id": "NHP884421001",
+      "insured_last_name": null,
+      "insured_first_name": null,
+      "rendering_provider_npi": null,
+      "claim_received_date": "2026-10-03",
+      "statement_from": "2026-09-02",
+      "statement_to": "2026-09-02",
+      "coverage_amount": null,
+      "adjustments": [],
+      "services": [
+        {
+          "line_number": 1,
+          "procedure_code": "99213",
+          "modifiers": [
+            "25"
+          ],
+          "qualifier": "HC",
+          "charge_amount": "150.00",
+          "paid_amount": "100.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-02",
+          "line_item_control_number": "L-24004-1",
+          "allowed_amount": "150.00",
+          "adjustments": [
+            {
+              "group_code": "PR",
+              "carc": "1",
+              "amount": "50.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": []
+        },
+        {
+          "line_number": 2,
+          "procedure_code": "96372",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "45.00",
+          "paid_amount": "45.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-02",
+          "line_item_control_number": "L-24004-2",
+          "allowed_amount": null,
+          "adjustments": [],
+          "remark_codes": []
+        },
+        {
+          "line_number": 3,
+          "procedure_code": "J3301",
+          "modifiers": [],
+          "qualifier": "HC",
+          "charge_amount": "60.00",
+          "paid_amount": "0.00",
+          "revenue_code": null,
+          "units": "1",
+          "original_procedure_code": null,
+          "service_date": "2026-09-02",
+          "line_item_control_number": "L-24004-3",
+          "allowed_amount": null,
+          "adjustments": [
+            {
+              "group_code": "CO",
+              "carc": "16",
+              "amount": "60.00",
+              "quantity": null
+            }
+          ],
+          "remark_codes": [
+            "MA130",
+            "N29"
+          ]
+        }
+      ],
+      "remark_codes": [],
+      "references": {}
+    }
+  ],
+  "provider_adjustments": [
+    {
+      "provider_id": "1234567893",
+      "fiscal_period_date": "2026-12-31",
+      "reason_code": "WO",
+      "reference": "NHP-ICN-0001",
+      "amount": "25.00"
+    }
+  ],
+  "unparsed_segments": [
+    "REF*EV*1234567893"
+  ],
+  "segment_count": 79
+}

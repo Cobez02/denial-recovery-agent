@@ -1,0 +1,6 @@
+{% block narrative %}
+This claim was denied as a duplicate of a previously processed service. It is not a duplicate: the clinical documentation{% if has_excerpts %} quoted below{% endif %} records a distinct, repeat service on {{ f.dates_of_service }}{% if f.modifier_sentence %}, and a replacement claim reports this with {{ f.modifier_sentence }}{% endif %}.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} remove the duplicate denial and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

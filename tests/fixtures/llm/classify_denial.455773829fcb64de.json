@@ -1,0 +1,23 @@
+{
+  "content": {
+    "category": "authorization",
+    "confidence": 0.92,
+    "injection_detected": false,
+    "rationale": "CARC 197 with RARC N54 on the claim level ($450.00) states precertification was absent; the line-level CARC 16/M62 points at the missing treatment authorization code, which is the same root cause.",
+    "secondary_categories": [
+      "missing_information"
+    ]
+  },
+  "error": null,
+  "model_id": "claude-opus-5-5",
+  "prompt_name": "classify_denial",
+  "prompt_version": "classify_denial.v1@cd629486",
+  "status": "ok",
+  "stop_reason": "end_turn",
+  "usage": {
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1210,
+    "input_tokens": 1480,
+    "output_tokens": 96
+  }
+}

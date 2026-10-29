@@ -1,0 +1,6 @@
+{% block narrative %}
+The denied services were medically necessary for the treatment of the diagnosis code(s) {{ f.diagnosis_list }}. The clinical documentation from the encounter on {{ f.dates_of_service }}{% if has_excerpts %}, quoted below,{% endif %} records the findings and the reason the service was indicated. The services billed ({{ f.codes_list }}) are the appropriate treatment for the documented condition and were provided in accordance with the standard of care.
+{% endblock %}
+{% block request %}
+We request that {{ f.payer_name }} review the documentation, reverse the medical-necessity denial and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

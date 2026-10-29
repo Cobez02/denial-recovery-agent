@@ -1,0 +1,21 @@
+# Keep runtime data, secrets, the local venv and test-only material out of the image.
+.git
+.venv
+data
+.env
+.env.*
+!.env.example
+tests
+synthetic/fixtures
+docs
+scripts
+.github
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+*.835
+*.edi
+*.log

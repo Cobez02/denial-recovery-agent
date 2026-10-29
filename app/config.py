@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     deadline_warn_days: str = "30,14"
     clinic_id: int | None = None
     default_timely_filing_days: int = 90
+    default_corrected_claim_days: int = 90
     default_appeal_days: int = 180
 
     @field_validator("deadline_warn_days")

@@ -1,0 +1,345 @@
+{
+  "payers": [
+    {
+      "payer_id": "CB4321",
+      "name": "Contoso Benefits",
+      "timely_filing_days": 90,
+      "corrected_claim_days": 90,
+      "appeal_days": 180
+    },
+    {
+      "payer_id": "NHP001",
+      "name": "Northwind Health Plan",
+      "timely_filing_days": 90,
+      "corrected_claim_days": 90,
+      "appeal_days": 180
+    }
+  ],
+  "patients": [
+    {
+      "account_number": "ACC-1001",
+      "first_name": "Avery",
+      "last_name": "Brightwater",
+      "dob": "1984-03-12",
+      "sex": "F",
+      "address_line1": "12 Harbor Lane",
+      "city": "Springfield",
+      "state": "IL",
+      "zip": "62701",
+      "member_id": "NHP884421001"
+    },
+    {
+      "account_number": "ACC-1002",
+      "first_name": "Jordan",
+      "last_name": "Pinecrest",
+      "dob": "1979-11-02",
+      "sex": "M",
+      "address_line1": "48 Maple Court",
+      "city": "Springfield",
+      "state": "IL",
+      "zip": "62702",
+      "member_id": "NHP884421002"
+    },
+    {
+      "account_number": "ACC-1003",
+      "first_name": "Casey",
+      "last_name": "Rivermoor",
+      "dob": "1991-06-30",
+      "sex": "U",
+      "address_line1": null,
+      "city": null,
+      "state": null,
+      "zip": null,
+      "member_id": "NHP884421003"
+    },
+    {
+      "account_number": "ACC-1004",
+      "first_name": "Morgan",
+      "last_name": "Fallowfield",
+      "dob": "2001-01-15",
+      "sex": "F",
+      "address_line1": "7 Birch Street",
+      "city": "Shelbyville",
+      "state": "IL",
+      "zip": "62565",
+      "member_id": "CB55012004"
+    }
+  ],
+  "claims": [
+    {
+      "claim_control_number": "CLM-24001",
+      "patient_account_number": "ACC-1001",
+      "payer_id": "NHP001",
+      "frequency_code": "1",
+      "original_claim_control_number": null,
+      "billing_provider_npi": "1234567893",
+      "rendering_provider_npi": "1467812345",
+      "rendering_provider_name": "Riley Oakhurst",
+      "referring_provider_npi": null,
+      "place_of_service": "11",
+      "diagnosis_codes": [
+        "L57.0",
+        "L82.1"
+      ],
+      "prior_auth_number": null,
+      "service_date_from": "2026-08-04",
+      "service_date_to": "2026-08-04",
+      "total_charge": "270.00",
+      "original_submission_date": "2026-08-06",
+      "status": "submitted"
+    },
+    {
+      "claim_control_number": "CLM-24002",
+      "patient_account_number": "ACC-1002",
+      "payer_id": "NHP001",
+      "frequency_code": "1",
+      "original_claim_control_number": null,
+      "billing_provider_npi": "1234567893",
+      "rendering_provider_npi": "1467812345",
+      "rendering_provider_name": "Riley Oakhurst",
+      "referring_provider_npi": "1578123456",
+      "place_of_service": "11",
+      "diagnosis_codes": [
+        "L40.0"
+      ],
+      "prior_auth_number": null,
+      "service_date_from": "2026-08-11",
+      "service_date_to": "2026-08-11",
+      "total_charge": "210.00",
+      "original_submission_date": "2026-08-13",
+      "status": "submitted"
+    },
+    {
+      "claim_control_number": "CLM-24003",
+      "patient_account_number": "ACC-1003",
+      "payer_id": "NHP001",
+      "frequency_code": "1",
+      "original_claim_control_number": null,
+      "billing_provider_npi": "1234567893",
+      "rendering_provider_npi": "1467812345",
+      "rendering_provider_name": "Riley Oakhurst",
+      "referring_provider_npi": null,
+      "place_of_service": "11",
+      "diagnosis_codes": [
+        "D48.5",
+        "L82.1"
+      ],
+      "prior_auth_number": null,
+      "service_date_from": "2026-08-18",
+      "service_date_to": "2026-08-18",
+      "total_charge": "330.00",
+      "original_submission_date": "2026-08-20",
+      "status": "submitted"
+    },
+    {
+      "claim_control_number": "CLM-24004",
+      "patient_account_number": "ACC-1001",
+      "payer_id": "NHP001",
+      "frequency_code": "1",
+      "original_claim_control_number": null,
+      "billing_provider_npi": "1234567893",
+      "rendering_provider_npi": "1467812345",
+      "rendering_provider_name": "Riley Oakhurst",
+      "referring_provider_npi": null,
+      "place_of_service": "11",
+      "diagnosis_codes": [
+        "L70.0",
+        "L30.9"
+      ],
+      "prior_auth_number": null,
+      "service_date_from": "2026-09-02",
+      "service_date_to": "2026-09-02",
+      "total_charge": "255.00",
+      "original_submission_date": "2026-09-04",
+      "status": "submitted"
+    },
+    {
+      "claim_control_number": "CLM-24005",
+      "patient_account_number": "ACC-1004",
+      "payer_id": "CB4321",
+      "frequency_code": "1",
+      "original_claim_control_number": null,
+      "billing_provider_npi": "1234567893",
+      "rendering_provider_npi": "1467812345",
+      "rendering_provider_name": null,
+      "referring_provider_npi": null,
+      "place_of_service": "11",
+      "diagnosis_codes": [
+        "L30.9"
+      ],
+      "prior_auth_number": null,
+      "service_date_from": "2026-09-10",
+      "service_date_to": "2026-09-10",
+      "total_charge": "200.00",
+      "original_submission_date": "2026-09-12",
+      "status": "submitted"
+    },
+    {
+      "claim_control_number": "CLM-24006",
+      "patient_account_number": "ACC-1002",
+      "payer_id": "NHP001",
+      "frequency_code": "7",
+      "original_claim_control_number": "CLM-24002",
+      "billing_provider_npi": "1234567893",
+      "rendering_provider_npi": "1467812345",
+      "rendering_provider_name": "Riley Oakhurst",
+      "referring_provider_npi": "1578123456",
+      "place_of_service": "11",
+      "diagnosis_codes": [
+        "L40.0"
+      ],
+      "prior_auth_number": "PA-77821",
+      "service_date_from": "2026-08-11",
+      "service_date_to": "2026-08-11",
+      "total_charge": "210.00",
+      "original_submission_date": "2026-10-20",
+      "status": "submitted"
+    }
+  ],
+  "lines": [
+    {
+      "claim_control_number": "CLM-24001",
+      "line_number": 1,
+      "service_date": "2026-08-04",
+      "procedure_code": "99213",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "150.00",
+      "diagnosis_pointers": [
+        1,
+        2
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24001-1"
+    },
+    {
+      "claim_control_number": "CLM-24001",
+      "line_number": 2,
+      "service_date": "2026-08-04",
+      "procedure_code": "17000",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "120.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24001-2"
+    },
+    {
+      "claim_control_number": "CLM-24002",
+      "line_number": 1,
+      "service_date": "2026-08-11",
+      "procedure_code": "99214",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "210.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24002-1"
+    },
+    {
+      "claim_control_number": "CLM-24003",
+      "line_number": 1,
+      "service_date": "2026-08-18",
+      "procedure_code": "99213",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "150.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24003-1"
+    },
+    {
+      "claim_control_number": "CLM-24003",
+      "line_number": 2,
+      "service_date": "2026-08-18",
+      "procedure_code": "11102",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "180.00",
+      "diagnosis_pointers": [
+        2
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24003-2"
+    },
+    {
+      "claim_control_number": "CLM-24004",
+      "line_number": 1,
+      "service_date": "2026-09-02",
+      "procedure_code": "99213",
+      "modifiers": [
+        "25"
+      ],
+      "units": "1.00",
+      "charge_amount": "150.00",
+      "diagnosis_pointers": [
+        1,
+        2
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24004-1"
+    },
+    {
+      "claim_control_number": "CLM-24004",
+      "line_number": 2,
+      "service_date": "2026-09-02",
+      "procedure_code": "96372",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "45.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24004-2"
+    },
+    {
+      "claim_control_number": "CLM-24004",
+      "line_number": 3,
+      "service_date": "2026-09-02",
+      "procedure_code": "J3301",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "60.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": "12345678901",
+      "line_item_control_number": "L-24004-3"
+    },
+    {
+      "claim_control_number": "CLM-24005",
+      "line_number": 1,
+      "service_date": "2026-09-10",
+      "procedure_code": "99203",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "200.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": null,
+      "line_item_control_number": null
+    },
+    {
+      "claim_control_number": "CLM-24006",
+      "line_number": 1,
+      "service_date": "2026-08-11",
+      "procedure_code": "99214",
+      "modifiers": [],
+      "units": "1.00",
+      "charge_amount": "210.00",
+      "diagnosis_pointers": [
+        1
+      ],
+      "ndc": null,
+      "line_item_control_number": "L-24006-1"
+    }
+  ]
+}

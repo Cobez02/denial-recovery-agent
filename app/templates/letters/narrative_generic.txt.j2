@@ -1,0 +1,6 @@
+{% block narrative %}
+We respectfully request reconsideration of this denial. The services were rendered on {{ f.dates_of_service }} by {{ f.provider }} for the diagnosis code(s) {{ f.diagnosis_list }} and were billed as {{ f.codes_list }}. The reason(s) quoted above do not reflect the documentation of this encounter{% if has_excerpts %}, which is quoted below{% endif %}.
+{% endblock %}
+{% block request %}
+We ask that {{ f.payer_name }} reverse the denial and reprocess claim {{ f.claim_control_number }} for payment of the ${{ f.denied_amount }} in dispute.
+{% endblock %}

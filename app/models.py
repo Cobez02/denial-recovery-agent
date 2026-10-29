@@ -157,7 +157,9 @@ class Claim(Base):
     )
     original_claim: Mapped[Claim | None] = relationship(remote_side=[id], foreign_keys=[original_claim_id])
     notes: Mapped[list[NoteExcerpt]] = relationship(back_populates="claim", cascade="all, delete-orphan")
-    documents: Mapped[list[PayerDocument]] = relationship(back_populates="claim", cascade="all, delete-orphan")
+    documents: Mapped[list[PayerDocument]] = relationship(
+        back_populates="claim", cascade="all, delete-orphan"
+    )
     work_items: Mapped[list[WorkItem]] = relationship(back_populates="claim")
 
 
@@ -221,11 +223,14 @@ class PayerDocument(Base):
 
 class Remittance(Base):
     __tablename__ = "remittances"
+    __table_args__ = (
+        UniqueConstraint("file_sha256", "transaction_index", name="uq_remittance_file_transaction"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     payer_id: Mapped[int | None] = mapped_column(ForeignKey("payers.id"))
     file_name: Mapped[str] = mapped_column(String(255))
-    file_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    file_sha256: Mapped[str] = mapped_column(String(64))
     transaction_index: Mapped[int] = mapped_column(Integer, default=0)
     trace_number: Mapped[str | None] = mapped_column(String(50))  # TRN02
     payer_identifier: Mapped[str | None] = mapped_column(String(50))  # TRN03
@@ -509,6 +514,7 @@ class ModelCall(Base):
     redaction_counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     request_id: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(10), default="ok")  # ModelCallStatus
+    error: Mapped[str | None] = mapped_column(String(80))  # error code or SDK exception class name
     payload_sha256: Mapped[str | None] = mapped_column(String(64))
 
 

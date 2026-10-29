@@ -14,7 +14,7 @@ uv run pytest tests/test_classifier_set.py -q -s    # one file, with the per-cat
 On this machine (Windows, path with a space) the same thing is
 `"C:/Users/conno/Denial Agent/.venv/Scripts/python.exe" -m pytest tests -q -o addopts=""`.
 
-Counted on Oct 28, 2026 with `pytest tests --co -q`: **793 tests in 27 files**. One of them
+Counted on Oct 29, 2026 with `pytest tests --co -q`: **827 tests in 27 files**. One of them
 (`tests/test_prompt_regression.py::test_live_model_outputs_are_schema_valid_and_faithful`, marker
 `live_llm`) skips unless `ANTHROPIC_API_KEY` and `LLM_PROVIDER=anthropic` are set; nothing else skips.
 The numbers move as the suite grows; the commands above regenerate them.
@@ -29,7 +29,7 @@ The numbers move as the suite grows; the commands above regenerate them.
 | Redaction | 1 onward | Every prompt that reaches the model client during a full synthetic run is scanned for names (the clinic's and the payer's spelling), member ids, account numbers, addresses and every DOB spelling; the guard refuses a payload that still carries one | Zero identifiers in any captured payload | `tests/test_redaction.py`, `tests/test_redaction_e2e.py` |
 | PHI in logs | 1 onward | Log output captured during a full run is scanned raw, and `app.logging_config.MASK_HITS` proves no `app.*` logger ever needed the masking filter; route exceptions, inline jobs, the rq worker and `denial-agent serve` log class names and frames only | Zero identifiers, zero mask hits from application loggers | `tests/test_phi_in_logs.py`, `tests/test_jobs.py`, `tests/test_cli.py` |
 | Injection | 1 onward | What the suite proves: planted letters are flagged on import and on the work item; the classification is the same with and without the letter; a deliberately obedient fake guard that answers with the planted category at confidence 0.99 cannot override the rules (`test_obedient_model_never_overrides_the_rules_on_a_planted_document`); planted text never reaches a proposal, a letter or the audit log; flagged note excerpts are never quoted; prompt-section markers inside a note cannot hijack the model narrative | Classification unchanged; document flagged; nothing planted in the output | `tests/test_injection_unit.py`, `tests/test_injection.py`, `tests/test_playbooks.py`, `tests/test_drafting.py` |
-| End-to-end synthetic | 1 | The 200-claim batch through HTTP only: imports, queue order and injection banner, a review sample, export packages, mark submitted, follow-up 835s recording outcomes, dashboard, every step in the audit log, no identifier in model payloads or logs (`test_1_...` to `test_9_...`, in order) | Whole loop completes; audit chain verifies | `tests/test_end_to_end_synthetic.py` |
+| End-to-end synthetic | 1 | The 200-claim batch through HTTP only: imports, queue order and injection banner, a review sample, export packages, mark submitted, follow-up 835s recording outcomes, take-backs (two paid fixes reversed by later 835s reopen, one of them is paid again), dashboard with the taken-back tile, every step in the audit log, no identifier in model payloads or logs (`test_1_...` to `test_9_...`, `test_6b_...` between 6 and 7, in order) | Whole loop completes; audit chain verifies | `tests/test_end_to_end_synthetic.py` |
 | Shadow comparison | 2 | Agent versus the biller's real decisions | Phase 2 exit targets | `app.outcomes.metrics.category_agreement` + the weekly review (manual) |
 | Live outcomes | 3 | Payer results on submitted fixes | Phase 4 gate | `/dashboard` + the weekly review (manual) |
 
@@ -41,7 +41,7 @@ Other layers the plan implies:
 | Review queue | `tests/test_review_queue.py` | Ordering, pagination with exact totals, every action and its status rule, the note-excerpt gate, export packages (and that an export without the session cookie is refused), the JSON API tokenizing free text, the health-check cache, 20 items cleared over HTTP |
 | Auth / MFA | `tests/test_auth.py` | Wrong password or code rejected, a TOTP code accepted once, lockout, CSRF and origin checks, anonymous uploads refused before the body is read, oversized uploads refused before parsing |
 | Migrations | `tests/test_migrations.py` | `alembic upgrade head` on a fresh SQLite file equals the models (the full `compare_metadata` diff is empty), downgrade and re-upgrade, the Postgres-only audit trigger in the offline SQL |
-| Outcomes and metrics | `tests/test_outcomes.py`, `tests/test_metrics.py` | The outcome rule, the date and payer gates, reversals leaving the item submitted, per-work-item counting by latest outcome |
+| Outcomes and metrics | `tests/test_outcomes.py`, `tests/test_metrics.py` | The outcome rule, the date and payer gates, reversals leaving the item submitted, take-backs reopening a closed item (the two passes, the reopen events, the date-before-outcome gate, what can never be reopened, idempotence, a take-back from an 835 without a payment date still leaving recovered dollars), per-work-item counting by latest outcome, reversed fixes and taken-back dollars |
 | Pipeline, jobs, matching | `tests/test_pipeline.py`, `tests/test_jobs.py`, `tests/test_matching.py` | One proposed work item per label with every citation resolving, savepoint isolation of a failing claim, inline and rq job runners, the worker's masked failures, every matching method |
 | Playbooks and drafting | `tests/test_playbooks.py`, `tests/test_drafting.py` | Every category's behaviour, deadlines counted from the remittance, corrected-claim builder and diff, letters for every category, fact check, PDF fallback |
 | Synthetic data | `tests/test_synthetic.py` | Determinism, the committed fixture reproduced byte for byte, 835 balancing, labels versus adjustments, follow-up amounts following the outcome rule |
@@ -58,11 +58,11 @@ Other layers the plan implies:
 | M5 no identifiers reach the model | `tests/test_redaction_e2e.py::test_no_identifier_reaches_a_model_payload`, `tests/test_end_to_end_synthetic.py::test_9_no_identifier_reaches_the_model_or_the_logs` |
 | M6 every proposal cites the codes and note text it relies on | `tests/test_pipeline.py::test_process_pending_creates_one_proposed_work_item_per_label` (every citation resolves on the 150-item batch), `tests/test_playbooks.py` |
 | M7 a reviewer clears 20 items without touching the database | `tests/test_review_queue.py::test_reviewer_clears_twenty_items_over_http` |
-| M8 full loop, every step logged, audit append-only | `tests/test_end_to_end_synthetic.py`, `tests/test_audit.py`, `tests/test_outcomes.py`, `tests/test_metrics.py` |
+| M8 full loop (take-backs after the close included), every step logged, audit append-only | `tests/test_end_to_end_synthetic.py` (`test_6b_payments_taken_back_and_repaid`), `tests/test_audit.py`, `tests/test_outcomes.py`, `tests/test_metrics.py` |
 
 ## Tests per file
 
-From `pytest tests --co -q` on Oct 28, 2026 (793 in all).
+From `pytest tests --co -q` on Oct 29, 2026 (827 in all).
 
 | File | Tests | Covers |
 |---|---|---|
@@ -74,15 +74,15 @@ From `pytest tests --co -q` on Oct 28, 2026 (793 in all).
 | `tests/test_cli.py` | 31 | every `denial-agent` command, `partial` exit code, placeholder-key refusal, purge VACUUM and unmatched CLPs |
 | `tests/test_codes.py` | 102 | CARC/RARC catalog coverage |
 | `tests/test_drafting.py` | 39 | corrected-claim builder, letters, fact check, model rewrite, PDF fallback |
-| `tests/test_end_to_end_synthetic.py` | 9 | the full loop over HTTP |
+| `tests/test_end_to_end_synthetic.py` | 10 | the full loop over HTTP, take-backs and the re-payment included |
 | `tests/test_injection.py` | 4 | planted letters end to end, obedient model, direct guarded call |
 | `tests/test_injection_unit.py` | 31 | every detector pattern, wrapping and marker neutralisation |
 | `tests/test_jobs.py` | 15 | inline and rq runners, tasks, masked worker |
 | `tests/test_llm_clients.py` | 29 | factory, Anthropic request shape and failure mapping, stub, replay, recording |
 | `tests/test_matching.py` | 11 | each matching method and its refusals |
-| `tests/test_metrics.py` | 10 | dashboard numbers, per-item counting, buckets, category agreement |
+| `tests/test_metrics.py` | 13 | dashboard numbers, per-item counting, reversed fixes and taken-back dollars (totals and JSON), buckets, category agreement |
 | `tests/test_migrations.py` | 4 | upgrade/downgrade, model parity, Postgres trigger SQL |
-| `tests/test_outcomes.py` | 35 | the outcome rule and its gates (patient-responsibility codes, procedure-scoped lines, reversal status) |
+| `tests/test_outcomes.py` | 65 | the outcome rule and its gates (patient-responsibility codes, procedure-scoped lines, reversal status), take-backs reopening closed items and the two passes, what a reversal never reopens, outcomes dated by their remittance when the 835 carries no payment date |
 | `tests/test_parser_golden.py` | 25 | 835 parser golden files and edge cases |
 | `tests/test_phi_in_logs.py` | 3 | raw log scan, route exceptions, uvicorn folding |
 | `tests/test_pipeline.py` | 4 | M3 done-when, one work item per label, audit trail and flags, idempotence and regenerate |
@@ -127,6 +127,12 @@ several outcomes stands for its latest one):
   closed since; an exported package never marked submitted is not a fix;
 - overturn rate = fixes whose latest outcome is `paid` or `partial` / submitted fixes;
 - recovered dollars = the latest outcome's `paid_amount` over fixes paid or partially paid;
+- reversed fixes = submitted fixes whose latest outcome is `reversed` (a payment taken back, or the
+  original adjudication reversed, with the re-adjudication still awaited): in the denominator, counted
+  neither paid nor partial, nothing recovered;
+- taken-back dollars = over those fixes, the `paid_amount` of the most recent paid or partial outcome
+  before the reversal (0 when nothing had been paid); totals only, shown on the dashboard as
+  "Taken back (N fix(es) awaiting re-adjudication)";
 - review time = mean `ReviewAction.review_seconds` / 60, where `review_seconds` = `decided_at` -
   `first_viewed_at` and a reopen clears `first_viewed_at` so the next decision measures the new review;
 - category agreement (Phase 2) = share of work items whose category equals the biller's label

@@ -1209,6 +1209,7 @@ def test_dashboard_page(client, scenario, monkeypatch):
     r = client.get("/dashboard")
     assert r.status_code == 200
     assert "Recovered dollars" in r.text and "Overturn rate" in r.text
+    assert "Taken back (0 fixes awaiting re-adjudication)" in r.text  # no payer reversal in the scenario
     assert '<div class="tile-value">7</div>' in r.text  # work items
     assert "Medical necessity" in r.text and "Northwind Health Plan" in r.text
     # the dashboard never re-hashes the audit log; it points at the audit page, which does

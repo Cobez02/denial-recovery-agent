@@ -86,7 +86,7 @@ session is a signed `HttpOnly`, `SameSite=Strict` cookie that expires after 8 ho
 | `/queue` | The work list: deadline first (none last), then dollars, then confidence; filters for status, category, payer and flag; 100 rows per page with exact totals; deadline badges at 30 and 14 days. Closed and rejected items are hidden unless you pick them. |
 | `/items/{id}` | One denial: claim facts, remittance adjustments with the CARC/RARC text, payer letters (with a warning when planted instructions were found), note excerpts (flagged ones are never quoted), the current proposal with its citations, the corrected-claim before/after diff or the appeal letter. The first view moves the item to `in_review`. Actions: approve, edit (reason required), reject (reason required), attach a quoted note excerpt, regenerate, close, reopen, mark submitted. |
 | `/imports` | Upload a claim export, notes, payer documents or an 835 (20 MB limit), run the pipeline on pending denials, re-match unmatched remittance claims, see every batch and the unmatched CLPs. |
-| `/dashboard` | Items by status, dollars at stake, submitted fixes, overturn rate, recovered dollars, review minutes, by category and by payer, deadline buckets, model calls. |
+| `/dashboard` | Items by status, dollars at stake, submitted fixes, overturn rate, recovered dollars, taken back (payments the payer reversed after the fix was closed, with the number of fixes awaiting their re-adjudication), review minutes, by category and by payer, deadline buckets, model calls. |
 | `/audit` | The append-only audit log, 100 rows per page, filterable by claim or action, with the hash-chain verification result. |
 | `/api/health`, `/api/metrics`, `/api/items/{id}` | JSON. Health is public (database reachable, audit chain verified at most once a minute); the others need the login. The item JSON carries no patient identifiers: free text is tokenized, letters and note text are left out. |
 
@@ -111,10 +111,14 @@ matches a submitted work item (same claim, or the corrected claim's control numb
 outcome: `paid` when no denial adjustment remains on the disputed lines or the claim, or the payment
 reaches 95% of the work item's dollar value; `partial` when something is paid but a denial remains;
 `denied_again` when nothing is paid; `reversed` for CLP02 22. Paid, partial and denied again close
-the item; a reversal leaves it submitted for the re-adjudication that follows. A remittance dated
-before the submission, or from another payer, is ignored. The dashboard counts each work item once,
-by its latest outcome. For a synthetic run, `synthetic.followup.generate_followup_files` writes the
-follow-up 835s (see `synthetic/README.md`).
+the item; a reversal leaves it submitted for the re-adjudication that follows. A reversal that
+arrives after a payment closed the item (a take-back) reopens it: the item returns to submitted,
+the claim to the status its submission gave it (corrected or appealed; otherwise it is left as it
+was), the audit log records the reopen, and the payment leaves recovered dollars (the dashboard
+shows it as taken back) until a later 835 pays the claim again. A remittance dated before the
+submission, or before the payment it would take back, or from another payer, is ignored. The
+dashboard counts each work item once, by its latest outcome. For a synthetic run,
+`synthetic.followup.generate_followup_files` writes the follow-up 835s (see `synthetic/README.md`).
 
 ## Model configuration
 
@@ -163,7 +167,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-793 tests across 27 files at the time of writing, all on SQLite with the stub model client and
+827 tests across 27 files at the time of writing, all on SQLite with the stub model client and
 inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set classifies at 150/150 categories and 150/150 expected actions (bars 0.90 and 0.80;

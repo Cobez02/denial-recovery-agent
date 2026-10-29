@@ -1,7 +1,8 @@
-"""Outcome matching (milestone M8): later 835s answer submitted fixes.
+"""Outcome matching (milestone M8): later 835s answer submitted fixes, and take back their payments.
 
 Every fixture work item was submitted on 2026-07-15 (noon UTC); the denial that created it is
-dated 2026-07-01 and follow-up remittances 2026-08-15 unless a test says otherwise.
+dated 2026-07-01 and follow-up remittances 2026-08-15 unless a test says otherwise. The take-back
+tests pay a fix on 2026-08-01, reverse the payment on 2026-08-20 and pay it again on 2026-09-10.
 """
 
 from __future__ import annotations
@@ -25,19 +26,23 @@ from app.models import (
     Outcome,
     Patient,
     Payer,
+    Proposal,
     Remittance,
     RemittanceClaim,
     RemittanceLine,
     WorkItem,
 )
-from app.outcomes import record_outcome, record_outcomes_for_remittance
+from app.outcomes import compute_dashboard, record_outcome, record_outcomes_for_remittance
 from app.outcomes.matching import (
+    SKIP_BEFORE_OUTCOME,
     SKIP_BEFORE_SUBMISSION,
     SKIP_OTHER_PAYER,
     candidate_work_items,
     classify_outcome,
+    latest_outcome,
     paid_threshold,
     remaining_denial_codes,
+    takeback_candidates,
 )
 
 _seq = count(1)
@@ -727,7 +732,8 @@ def test_remittance_date_falls_back_to_production_date_then_receipt(session, pay
     )
     make_rc(session, received, pcn="CLM-0001-R1", claim=claim, paid="100.00")
     [outcome] = record_outcomes_for_remittance(session, received)
-    assert outcome.result == "paid" and outcome.payment_date is None
+    # The outcome carries the date the gate used: the day the file arrived.
+    assert outcome.result == "paid" and outcome.payment_date == date(2026, 8, 1)
     assert work_item.status == "closed"
 
 
@@ -779,3 +785,536 @@ def test_appeal_answered_under_the_original_control_number_needs_the_claims_paye
     make_rc(session, own, pcn="CLM-APPEAL", claim=claim, paid="100.00")
     [outcome] = record_outcomes_for_remittance(session, own)
     assert outcome.result == "paid" and work_item.status == "closed"
+
+
+# --------------------------------------------------------------------------------------
+# Take-backs: a reversal after a closing payment reopens the work item
+# --------------------------------------------------------------------------------------
+
+PAID_DATE = date(2026, 8, 1)
+TAKEBACK_DATE = date(2026, 8, 20)
+REPAID_DATE = date(2026, 9, 10)
+CONTRACTUAL = [("CO", "45", "20.00")]
+
+
+def make_proposal(session, work_item, action_type="corrected_claim"):
+    """The current proposal of a fixture item (its action type decides the claim status on reopen)."""
+    proposal = Proposal(
+        version=1,
+        is_current=True,
+        action_type=action_type,
+        summary="synthetic proposal",
+        rationale="synthetic rationale",
+        citations=[],
+        confidence=0.9,
+    )
+    work_item.proposals.append(proposal)
+    session.flush()
+    return proposal
+
+
+def pay(session, payer, claim, *, pcn="CLM-0001-R1", payment_date=PAID_DATE, production_date=None):
+    """A follow-up that pays the corrected claim at the contracted rate: 80.00 paid, CO-45 20.00."""
+    remittance = make_remittance(session, payer, payment_date=payment_date, production_date=production_date)
+    make_rc(session, remittance, pcn=pcn, claim=claim, paid="80.00", adjustments=CONTRACTUAL)
+    return remittance
+
+
+def take_back(session, payer, claim, *, pcn="CLM-0001-R1", payment_date=TAKEBACK_DATE):
+    """A later 835 that reverses that payment: CLP02 22, negative amounts."""
+    remittance = make_remittance(session, payer, payment_date=payment_date)
+    make_rc(session, remittance, pcn=pcn, claim=claim, status_code="22", charge="-100.00", paid="-80.00")
+    return remittance
+
+
+def close_by_payment(session, payer, submitted_item, *, action_type="corrected_claim"):
+    """The fixture item with a proposal of `action_type` (None: no proposal), paid and closed."""
+    claim, _denial, _denial_rc, work_item = submitted_item
+    if action_type is not None:
+        make_proposal(session, work_item, action_type)
+    # What mark_submitted leaves behind: corrected / appealed, or the import's status for the rest.
+    claim.status = {"corrected_claim": "corrected", "appeal": "appealed"}.get(action_type, "denied")
+    [paid] = record_outcomes_for_remittance(session, pay(session, payer, claim))
+    session.commit()
+    assert paid.result == "paid" and work_item.status == "closed" and claim.status == "paid"
+    return claim, work_item, paid
+
+
+def add_paid_outcome(session, payer, claim, work_item, *, pcn):
+    """A paid outcome row written directly (for items in statuses the matcher never closes itself)."""
+    paid_rc = make_rc(
+        session, make_remittance(session, payer, payment_date=PAID_DATE), pcn=pcn, claim=claim, paid="80.00"
+    )
+    session.add(
+        Outcome(
+            work_item=work_item, remittance_claim=paid_rc, result="paid", paid_amount=Decimal("80.00"),
+            payment_date=PAID_DATE,
+        )
+    )  # fmt: skip
+    session.commit()
+
+
+def _reopen_events(session, work_item_id):
+    stmt = (
+        select(AuditLog)
+        .where(AuditLog.action == "work_item_reopened", AuditLog.entity_id == work_item_id)
+        .order_by(AuditLog.id)
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def _audit_count(session):
+    return session.execute(select(func.count(AuditLog.id))).scalar_one()
+
+
+def _results(work_item):
+    return [o.result for o in sorted(work_item.outcomes, key=lambda o: o.id)]
+
+
+def _skip_logged(caplog, reason, *ids):
+    return any(
+        reason in record.getMessage() and all(str(i) in record.getMessage() for i in ids)
+        for record in caplog.records
+        if record.name == LOGGER
+    )
+
+
+@pytest.mark.parametrize(
+    ("action_type", "claim_status_after"),
+    [("corrected_claim", "corrected"), ("appeal", "appealed"), ("clinic_question", "paid"), (None, "paid")],
+)
+def test_a_reversal_after_the_payment_reopens_the_closed_work_item(
+    session, payer, submitted_item, action_type, claim_status_after
+):
+    """Paid in one remittance, taken back in a later one: the item goes back to submitted with the
+    submission facts untouched, the claim to what mark_submitted gave it (left alone when the
+    proposal was not a corrected claim or an appeal), and two audit events say so."""
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item, action_type=action_type)
+    untouched = (
+        work_item.submitted_at,
+        work_item.decided_at,
+        work_item.first_viewed_at,
+        work_item.submitted_claim_control_number,
+    )
+    assert untouched[0] is not None and work_item.closed_at is not None
+    events_before = _audit_count(session)
+
+    [outcome] = record_outcomes_for_remittance(session, take_back(session, payer, claim))
+
+    assert outcome.result == "reversed" and outcome.details["reason"] == "reversal"
+    assert outcome.paid_amount == Decimal("-80.00") and outcome.payment_date == TAKEBACK_DATE
+    assert _results(work_item) == ["paid", "reversed"] and latest_outcome(work_item) is outcome
+    assert work_item.status == "submitted" and work_item.closed_at is None
+    assert (
+        work_item.submitted_at,
+        work_item.decided_at,
+        work_item.first_viewed_at,
+        work_item.submitted_claim_control_number,
+    ) == untouched
+    assert claim.status == claim_status_after
+
+    assert _audit_count(session) == events_before + 2
+    recorded = sorted(_outcome_events(session, work_item.id), key=lambda e: e.id)
+    assert [e.details["result"] for e in recorded] == ["paid", "reversed"]
+    assert "previous_work_item_status" not in recorded[0].details
+    assert recorded[1].details["work_item_status"] == "submitted"
+    assert recorded[1].details["previous_work_item_status"] == "closed"
+    assert recorded[1].details["outcome_id"] == outcome.id and recorded[1].actor_type == "system"
+    [reopened] = _reopen_events(session, work_item.id)
+    assert reopened.id > recorded[1].id
+    assert (reopened.actor_type, reopened.actor_id, reopened.entity_type, reopened.entity_id) == (
+        "system",
+        "outcomes",
+        "work_item",
+        work_item.id,
+    )
+    assert reopened.claim_id == claim.id
+    assert reopened.details == {
+        "previous_status": "closed",
+        "reason": "payer_reversal",
+        "remittance_claim_id": outcome.remittance_claim_id,
+        "remittance_id": outcome.remittance_claim.remittance_id,
+        "outcome_id": outcome.id,
+        "claim_status": claim_status_after,
+    }
+    assert audit.verify_chain(session) is None
+
+
+def test_a_later_payment_closes_the_reopened_work_item_again(session, payer, submitted_item):
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    record_outcomes_for_remittance(session, take_back(session, payer, claim))
+    session.commit()
+    assert work_item.status == "submitted" and claim.status == "corrected"
+
+    [repaid] = record_outcomes_for_remittance(session, pay(session, payer, claim, payment_date=REPAID_DATE))
+
+    assert repaid.result == "paid" and repaid.paid_amount == Decimal("80.00")
+    assert _results(work_item) == ["paid", "reversed", "paid"] and latest_outcome(work_item) is repaid
+    assert work_item.status == "closed" and work_item.closed_at is not None and claim.status == "paid"
+    assert len(_outcome_events(session, work_item.id)) == 3
+    assert len(_reopen_events(session, work_item.id)) == 1  # the reopen is not repeated
+    assert audit.verify_chain(session) is None
+
+
+@pytest.mark.parametrize("reversal_first", [True, False])
+def test_a_take_back_and_a_re_adjudication_in_one_remittance_close_the_item_again(
+    session, payer, submitted_item, reversal_first
+):
+    """CLP02 22 plus a paid CLP02 1 under the same control number, in either order: the take-back
+    reopens the item first (pass one), the payment closes it again (pass two) and, on the same
+    payment date, the row recorded last is the latest outcome. A re-run changes nothing."""
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    followup = make_remittance(session, payer, payment_date=TAKEBACK_DATE)
+    clps = [
+        lambda: make_rc(
+            session,
+            followup,
+            pcn="CLM-0001-R1",
+            claim=claim,
+            status_code="22",
+            charge="-100.00",
+            paid="-80.00",
+        ),
+        lambda: make_rc(
+            session, followup, pcn="CLM-0001-R1", claim=claim, paid="80.00", adjustments=CONTRACTUAL
+        ),
+    ]
+    for build in clps if reversal_first else reversed(clps):
+        build()
+
+    outcomes = record_outcomes_for_remittance(session, followup)
+
+    assert [o.result for o in outcomes] == ["reversed", "paid"]
+    assert _results(work_item) == ["paid", "reversed", "paid"]
+    assert outcomes[0].payment_date == outcomes[1].payment_date == TAKEBACK_DATE
+    assert latest_outcome(work_item) is outcomes[1]
+    assert work_item.status == "closed" and work_item.closed_at is not None and claim.status == "paid"
+    assert len(_reopen_events(session, work_item.id)) == 1
+    session.commit()
+    snapshot = (_outcome_count(session), _audit_count(session))
+    assert record_outcomes_for_remittance(session, followup) == []
+    assert (_outcome_count(session), _audit_count(session)) == snapshot
+    assert work_item.status == "closed" and _results(work_item) == ["paid", "reversed", "paid"]
+    assert audit.verify_chain(session) is None
+
+
+def test_a_reversal_dated_before_the_payment_is_skipped(session, payer, submitted_item, caplog):
+    """A reversal older than the payment it would take back (a backfilled 835) is logged by id and
+    ignored; one dated on the payment's own day is accepted."""
+    claim, work_item, paid = close_by_payment(session, payer, submitted_item)
+    assert paid.payment_date == PAID_DATE
+    earlier = take_back(session, payer, claim, payment_date=date(2026, 7, 25))  # after the submission
+    rc = earlier.claims[0]
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert record_outcomes_for_remittance(session, earlier) == []
+    assert work_item.status == "closed" and _results(work_item) == ["paid"] and claim.status == "paid"
+    assert not _reopen_events(session, work_item.id)
+    assert _skip_logged(caplog, SKIP_BEFORE_OUTCOME, rc.id, work_item.id)
+    assert SKIP_BEFORE_OUTCOME == "remittance_before_outcome"
+
+    [outcome] = record_outcomes_for_remittance(
+        session, take_back(session, payer, claim, payment_date=PAID_DATE)
+    )
+    assert outcome.result == "reversed" and work_item.status == "submitted"
+
+
+def test_an_undated_payment_is_dated_by_its_remittance_for_the_take_back_gate(session, payer, submitted_item):
+    """A payment from an 835 without BPR16 is dated by the production date when it is recorded, and
+    the take-back gate compares against that date."""
+    claim, _denial, _denial_rc, work_item = submitted_item
+    make_proposal(session, work_item)
+    [paid] = record_outcomes_for_remittance(
+        session, pay(session, payer, claim, payment_date=None, production_date=PAID_DATE)
+    )
+    session.commit()
+    assert paid.payment_date == PAID_DATE and work_item.status == "closed"
+
+    assert (
+        record_outcomes_for_remittance(
+            session, take_back(session, payer, claim, payment_date=date(2026, 7, 25))
+        )
+        == []
+    )
+    assert work_item.status == "closed"
+    [outcome] = record_outcomes_for_remittance(
+        session, take_back(session, payer, claim, payment_date=PAID_DATE)
+    )
+    assert outcome.result == "reversed" and work_item.status == "submitted"
+
+
+def test_an_outcome_row_without_a_date_is_dated_by_its_remittance_for_the_take_back_gate(
+    session, clinic, payer, patient
+):
+    """An outcome row that carries no payment date (written directly, or before outcomes were dated
+    by their remittance) is dated by its remittance claim's remittance for the gate."""
+    claim = make_claim(session, clinic, payer, patient, "CLM-UNDATED")
+    denial = make_remittance(session, payer, payment_date=DENIAL_DATE)
+    denial_rc = make_rc(session, denial, pcn="CLM-UNDATED", claim=claim, status_code="4", is_denial=True)
+    work_item = make_work_item(session, claim, denial_rc, status="closed", submitted_ccn="CLM-UNDATED-R1")
+    make_proposal(session, work_item)
+    undated = make_remittance(session, payer, payment_date=None, production_date=PAID_DATE)
+    paid_rc = make_rc(
+        session, undated, pcn="CLM-UNDATED-R1", claim=claim, paid="80.00", adjustments=CONTRACTUAL
+    )
+    session.add(
+        Outcome(
+            work_item=work_item, remittance_claim=paid_rc, result="paid", paid_amount=Decimal("80.00"),
+            payment_date=None,
+        )
+    )  # fmt: skip
+    session.commit()
+    assert latest_outcome(work_item).payment_date is None
+
+    earlier = take_back(session, payer, claim, pcn="CLM-UNDATED-R1", payment_date=date(2026, 7, 25))
+    assert takeback_candidates(session, earlier.claims[0]) == []
+    assert record_outcomes_for_remittance(session, earlier) == [] and work_item.status == "closed"
+    [outcome] = record_outcomes_for_remittance(
+        session, take_back(session, payer, claim, pcn="CLM-UNDATED-R1", payment_date=PAID_DATE)
+    )
+    assert outcome.result == "reversed" and work_item.status == "submitted"
+
+
+@pytest.mark.parametrize("dated_by", ["production_date", "receipt"])
+def test_an_undated_take_back_is_dated_by_its_remittance_and_leaves_recovered_dollars(
+    session, payer, submitted_item, dated_by
+):
+    """An 835 whose BPR16 is missing or malformed still takes the payment back: the reversal is dated
+    the way the gate dated its remittance (the production date, else the day the file arrived), so it
+    is the latest outcome and the dashboard stops counting the payment as recovered."""
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    before = compute_dashboard(session, verify_audit=False)
+    assert (before.paid_fixes, before.reversed_fixes, before.recovered_dollars) == (1, 0, Decimal("80.00"))
+    if dated_by == "production_date":
+        undated = make_remittance(session, payer, payment_date=None, production_date=TAKEBACK_DATE)
+    else:
+        received_at = datetime(TAKEBACK_DATE.year, TAKEBACK_DATE.month, TAKEBACK_DATE.day, 9, 0, tzinfo=UTC)
+        undated = make_remittance(session, payer, payment_date=None, received_at=received_at)
+    rc = make_rc(
+        session, undated, pcn="CLM-0001-R1", claim=claim, status_code="22", charge="-100.00", paid="-80.00"
+    )
+    assert [(wi.id, how) for wi, how in takeback_candidates(session, rc)] == [(work_item.id, "claim_id")]
+
+    [outcome] = record_outcomes_for_remittance(session, undated)
+    session.commit()
+
+    assert outcome.result == "reversed" and outcome.payment_date == TAKEBACK_DATE
+    assert work_item.status == "submitted" and work_item.closed_at is None and claim.status == "corrected"
+    assert _results(work_item) == ["paid", "reversed"] and latest_outcome(work_item) is outcome
+    after = compute_dashboard(session, verify_audit=False)
+    assert (after.submitted_fixes, after.paid_fixes, after.reversed_fixes) == (1, 0, 1)
+    assert (after.recovered_dollars, after.taken_back_dollars) == (Decimal("0"), Decimal("80.00"))
+    assert after.overturn_rate == 0.0
+
+
+def test_a_payment_re_sent_for_a_closed_item_records_nothing(session, payer, submitted_item):
+    """A non-reversal CLP never matches a closed item (the payer re-delivering the payment, say)."""
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    again = pay(session, payer, claim, payment_date=TAKEBACK_DATE)
+    assert takeback_candidates(session, again.claims[0]) == []
+    assert record_outcomes_for_remittance(session, again) == []
+    assert _results(work_item) == ["paid"] and work_item.status == "closed" and _outcome_count(session) == 1
+
+
+def test_a_take_back_matched_by_the_submitted_control_number_links_the_clp(session, payer, submitted_item):
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    takeback = make_remittance(session, payer, payment_date=TAKEBACK_DATE)
+    rc = make_rc(
+        session, takeback, pcn="CLM-0001-R1", claim=None, status_code="22", charge="-100.00", paid="-80.00"
+    )
+    assert [(wi.id, how) for wi, how in takeback_candidates(session, rc)] == [(work_item.id, "submitted_ccn")]
+    [outcome] = record_outcomes_for_remittance(session, takeback)
+    assert outcome.details["match"] == "submitted_ccn" and outcome.result == "reversed"
+    assert rc.claim_id == claim.id and rc.match_method == "submitted_ccn"
+    assert work_item.status == "submitted" and claim.status == "corrected"
+
+
+def test_a_take_back_resets_the_corrected_claims_own_row_too(session, clinic, payer, patient, submitted_item):
+    """When the corrected claim was imported as a claim of its own, the payment set both rows to
+    paid and the take-back returns both to corrected: every claim the outcome touches."""
+    claim, _, _, work_item = submitted_item
+    corrected = make_claim(session, clinic, payer, patient, "CLM-0001-R1", frequency_code="7", original=claim)
+    make_proposal(session, work_item, "corrected_claim")
+    claim.status = "corrected"
+    paid_remit = make_remittance(session, payer, payment_date=PAID_DATE)
+    make_rc(session, paid_remit, pcn="CLM-0001-R1", claim=corrected, paid="80.00", adjustments=CONTRACTUAL)
+    [paid] = record_outcomes_for_remittance(session, paid_remit)
+    session.commit()
+    assert paid.result == "paid" and paid.details["match"] == "submitted_ccn"
+    assert work_item.status == "closed" and (claim.status, corrected.status) == ("paid", "paid")
+
+    takeback = make_remittance(session, payer, payment_date=TAKEBACK_DATE)
+    rc = make_rc(
+        session,
+        takeback,
+        pcn="CLM-0001-R1",
+        claim=corrected,
+        status_code="22",
+        charge="-100.00",
+        paid="-80.00",
+    )
+    assert [(wi.id, how) for wi, how in takeback_candidates(session, rc)] == [(work_item.id, "submitted_ccn")]
+    [outcome] = record_outcomes_for_remittance(session, takeback)
+
+    assert outcome.result == "reversed" and work_item.status == "submitted"
+    assert (claim.status, corrected.status) == ("corrected", "corrected")
+    [event] = _reopen_events(session, work_item.id)
+    assert event.details["claim_status"] == "corrected"
+
+
+def test_an_item_closed_by_hand_is_not_reopened_by_a_reversal(session, clinic, payer, patient):
+    claim = make_claim(session, clinic, payer, patient, "CLM-HAND")
+    denial = make_remittance(session, payer, payment_date=DENIAL_DATE)
+    denial_rc = make_rc(session, denial, pcn="CLM-HAND", claim=claim, status_code="4", is_denial=True)
+    work_item = make_work_item(session, claim, denial_rc, status="closed", submitted_ccn="CLM-HAND-R1")
+    work_item.closed_at = SUBMITTED_AT
+    session.commit()
+    takeback = take_back(session, payer, claim, pcn="CLM-HAND-R1")
+    assert takeback_candidates(session, takeback.claims[0]) == []
+    assert record_outcomes_for_remittance(session, takeback) == []
+    assert work_item.status == "closed" and _outcome_count(session) == 0 and claim.status == "denied"
+
+
+def test_an_item_closed_without_a_submission_is_not_reopened_by_a_reversal(session, clinic, payer, patient):
+    """A payment on an item the reviewer closed without ever marking it submitted is nobody's fix
+    (`submitted_at` must be set), so a reversal of that payment does not reopen it."""
+    claim = make_claim(session, clinic, payer, patient, "CLM-NOSUB")
+    denial = make_remittance(session, payer, payment_date=DENIAL_DATE)
+    denial_rc = make_rc(session, denial, pcn="CLM-NOSUB", claim=claim, status_code="4", is_denial=True)
+    work_item = make_work_item(session, claim, denial_rc, status="closed", submitted_at=None)
+    work_item.closed_at = SUBMITTED_AT
+    assert work_item.submitted_at is None
+    add_paid_outcome(session, payer, claim, work_item, pcn="CLM-NOSUB")
+    takeback = take_back(session, payer, claim, pcn="CLM-NOSUB")
+    assert takeback_candidates(session, takeback.claims[0]) == []
+    assert record_outcomes_for_remittance(session, takeback) == []
+    assert work_item.status == "closed" and _results(work_item) == ["paid"] and _outcome_count(session) == 1
+    assert not _reopen_events(session, work_item.id)
+
+
+def test_an_item_denied_again_is_not_reopened_by_a_reversal(session, payer, submitted_item):
+    claim, _, _, work_item = submitted_item
+    denied = make_remittance(session, payer, payment_date=PAID_DATE)
+    make_rc(session, denied, pcn="CLM-0001-R1", claim=claim, status_code="4", paid="0.00", is_denial=True)
+    [outcome] = record_outcomes_for_remittance(session, denied)
+    session.commit()
+    assert outcome.result == "denied_again" and work_item.status == "closed"
+    assert record_outcomes_for_remittance(session, take_back(session, payer, claim)) == []
+    assert (
+        work_item.status == "closed" and _results(work_item) == ["denied_again"] and claim.status == "denied"
+    )
+    assert not _reopen_events(session, work_item.id)
+
+
+def test_an_item_closed_after_a_reversal_is_not_reopened_by_another_reversal(session, payer, submitted_item):
+    """A reversal recorded while the fix was submitted, then the item closed by hand: its latest
+    outcome is already a reversal, so a later CLP02 22 (the payer re-sending it, say) is not a
+    take-back and the item stays closed."""
+    claim, _, _, work_item = submitted_item
+    make_proposal(session, work_item)
+    claim.status = "corrected"
+    [first] = record_outcomes_for_remittance(
+        session, take_back(session, payer, claim, payment_date=PAID_DATE)
+    )
+    assert first.result == "reversed" and work_item.status == "submitted"
+    work_item.status = "closed"
+    work_item.closed_at = SUBMITTED_AT
+    session.commit()
+
+    later = take_back(session, payer, claim)
+    assert takeback_candidates(session, later.claims[0]) == []
+    assert record_outcomes_for_remittance(session, later) == []
+    assert (
+        work_item.status == "closed" and _results(work_item) == ["reversed"] and claim.status == "corrected"
+    )
+    assert not _reopen_events(session, work_item.id)
+
+
+def test_a_reversal_for_a_submitted_item_still_takes_the_old_path(session, payer, submitted_item):
+    """The fix was never closed: the reversal is recorded, the item stays submitted, the claim status
+    is untouched and no reopen event is written. A second reversal behaves the same."""
+    claim, _, _, work_item = submitted_item
+    make_proposal(session, work_item)
+    claim.status = "corrected"
+    before = _audit_count(session)
+    [outcome] = record_outcomes_for_remittance(session, take_back(session, payer, claim))
+    assert outcome.result == "reversed" and work_item.status == "submitted" and claim.status == "corrected"
+    assert _audit_count(session) == before + 1 and not _reopen_events(session, work_item.id)
+    [event] = _outcome_events(session, work_item.id)
+    assert "previous_work_item_status" not in event.details
+    [again] = record_outcomes_for_remittance(
+        session, take_back(session, payer, claim, payment_date=REPAID_DATE)
+    )
+    assert again.result == "reversed" and work_item.status == "submitted"
+    assert not _reopen_events(session, work_item.id) and _results(work_item) == ["reversed", "reversed"]
+
+
+@pytest.mark.parametrize("status", ["new", "proposed", "in_review", "approved", "rejected", "exported"])
+def test_only_closed_items_can_be_taken_back(session, clinic, payer, patient, status):
+    """A paid outcome on an item in any other status (submitted_at set, so the status alone decides)
+    is not taken back by a reversal; nor does the reversal match it the old way."""
+    claim = make_claim(session, clinic, payer, patient, f"CLM-TB-{status}")
+    denial = make_remittance(session, payer, payment_date=DENIAL_DATE)
+    denial_rc = make_rc(
+        session, denial, pcn=claim.claim_control_number, claim=claim, status_code="4", is_denial=True
+    )
+    work_item = make_work_item(session, claim, denial_rc, status=status)
+    work_item.submitted_at = SUBMITTED_AT
+    add_paid_outcome(session, payer, claim, work_item, pcn=claim.claim_control_number)
+    takeback = take_back(session, payer, claim, pcn=claim.claim_control_number)
+    assert takeback_candidates(session, takeback.claims[0]) == []
+    assert record_outcomes_for_remittance(session, takeback) == []
+    assert work_item.status == status and _outcome_count(session) == 1
+
+
+def test_the_payer_gate_applies_to_take_backs_too(session, payer, other_payer, submitted_item, caplog):
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    foreign = take_back(session, other_payer, claim, pcn="CLM-0001")  # the original number, another payer
+    rc = foreign.claims[0]
+    with caplog.at_level(logging.INFO, logger=LOGGER):
+        assert record_outcomes_for_remittance(session, foreign) == []
+    assert work_item.status == "closed" and _results(work_item) == ["paid"]
+    assert _skip_logged(caplog, SKIP_OTHER_PAYER, rc.id, work_item.id)
+
+    redirected = take_back(session, other_payer, claim)  # names the corrected claim: accepted
+    [outcome] = record_outcomes_for_remittance(session, redirected)
+    assert outcome.result == "reversed" and work_item.status == "submitted"
+
+
+def test_the_originating_remittance_claim_never_takes_its_own_item_back(session, clinic, payer, patient):
+    """A work item created from a CLP02 22 is not reopened by that same CLP, whatever its date."""
+    claim = make_claim(session, clinic, payer, patient, "CLM-ORIG")
+    origin = make_remittance(session, payer, payment_date=TAKEBACK_DATE)
+    origin_rc = make_rc(
+        session, origin, pcn="CLM-ORIG", claim=claim, status_code="22", charge="-100.00", paid="-80.00"
+    )
+    work_item = make_work_item(session, claim, origin_rc, status="closed", submitted_ccn="CLM-ORIG-R1")
+    add_paid_outcome(session, payer, claim, work_item, pcn="CLM-ORIG-R1")
+    assert takeback_candidates(session, origin_rc) == []
+    assert record_outcomes_for_remittance(session, origin) == []
+    assert work_item.status == "closed" and _outcome_count(session) == 1
+
+
+def test_a_second_run_on_the_take_back_remittance_changes_nothing(session, payer, submitted_item):
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    takeback = take_back(session, payer, claim)
+    first = record_outcomes_for_remittance(session, takeback)
+    session.commit()
+    snapshot = (_outcome_count(session), _audit_count(session), work_item.status, claim.status)
+    assert len(first) == 1 and snapshot[0] == 2 and snapshot[2:] == ("submitted", "corrected")
+
+    assert record_outcomes_for_remittance(session, takeback) == []
+
+    assert (_outcome_count(session), _audit_count(session), work_item.status, claim.status) == snapshot
+    assert len(_reopen_events(session, work_item.id)) == 1
+    assert audit.verify_chain(session) is None
+
+
+def test_record_outcome_reopens_a_closed_item_it_is_handed_a_reversal_for(session, payer, submitted_item):
+    """record_outcome records what it is given: a reversal for a closed item is a take-back, once."""
+    claim, work_item, _paid = close_by_payment(session, payer, submitted_item)
+    rc = take_back(session, payer, claim).claims[0]
+    outcome = record_outcome(session, work_item, rc)
+    assert outcome.result == "reversed" and outcome.payment_date == TAKEBACK_DATE
+    assert work_item.status == "submitted" and work_item.closed_at is None and claim.status == "corrected"
+    assert record_outcome(session, work_item, rc).id == outcome.id
+    assert _outcome_count(session) == 2 and len(_reopen_events(session, work_item.id)) == 1

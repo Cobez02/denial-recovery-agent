@@ -5,8 +5,17 @@ latest one, so a reversal followed by a re-adjudication counts once):
     submitted fixes    = work items the reviewer marked submitted (submitted_at), open or closed since
     overturn rate      = (fixes whose latest outcome is paid or partial) / submitted fixes
     recovered dollars  = sum of the latest outcome's paid_amount over fixes paid or partially paid
+    reversed fixes     = submitted fixes whose latest outcome is a reversal: the payer took a payment
+                         back (or reversed the original adjudication) and the re-adjudication is
+                         still awaited; they stay in the denominator and count neither paid nor
+                         partial, so a take-back lowers recovered dollars and the overturn rate
+    taken-back dollars = over those fixes, the paid_amount of the most recent paid or partial
+                         outcome before the reversal (0 when nothing had been paid)
     review time        = mean ReviewAction.review_seconds / 60
     category agreement = share of work items whose category equals the biller's label
+
+`latest_outcome` lives in app.outcomes.matching (the take-back rule needs the same definition) and
+is re-exported here.
 """
 
 from __future__ import annotations
@@ -22,7 +31,8 @@ from sqlalchemy.orm import Session, selectinload
 from app import audit
 from app.config import get_settings
 from app.enums import OutcomeResult, WorkItemStatus
-from app.models import Claim, ModelCall, Outcome, ReviewAction, WorkItem
+from app.models import Claim, ModelCall, ReviewAction, WorkItem
+from app.outcomes.matching import latest_outcome, ordered_outcomes
 from app.schemas import CategoryMetric, DashboardMetrics, DeadlineBucket
 
 ZERO = Decimal("0")
@@ -47,16 +57,25 @@ def is_submitted_fix(work_item: WorkItem) -> bool:
     return str(work_item.status) in SUBMITTED_STATUSES and work_item.submitted_at is not None
 
 
-def latest_outcome(work_item: WorkItem) -> Outcome | None:
-    """The outcome that stands for the work item: the latest payment date, then the last recorded."""
-    outcomes = list(work_item.outcomes)
-    if not outcomes:
-        return None
-    return max(outcomes, key=lambda outcome: (outcome.payment_date or date.min, outcome.id or 0))
+def taken_back_dollars(work_item: WorkItem) -> Decimal:
+    """What the payer took back from a reversed fix: the paid_amount of the most recent paid or
+    partial outcome before the reversal that stands for the work item (same ordering as
+    :func:`latest_outcome`); 0 when the latest outcome is not a reversal or nothing had been paid."""
+    outcomes = ordered_outcomes(work_item)
+    if not outcomes or str(outcomes[-1].result) != OutcomeResult.REVERSED:
+        return ZERO
+    for outcome in reversed(outcomes[:-1]):
+        if str(outcome.result) in RECOVERED_RESULTS:
+            return Decimal(outcome.paid_amount or 0)
+    return ZERO
 
 
 class _Group:
-    """Accumulator behind one CategoryMetric (per category, per payer, or everything)."""
+    """Accumulator behind one CategoryMetric (per category, per payer, or everything).
+
+    `reversed` and `taken_back_dollars` are gathered for every group but surface only in the totals
+    (DashboardMetrics.reversed_fixes / taken_back_dollars); CategoryMetric has no such columns.
+    """
 
     def __init__(self, key: str) -> None:
         self.key = key
@@ -66,7 +85,9 @@ class _Group:
         self.paid = 0
         self.partial = 0
         self.denied_again = 0
+        self.reversed = 0
         self.recovered_dollars = ZERO
+        self.taken_back_dollars = ZERO
 
     def add(self, work_item: WorkItem) -> None:
         self.items += 1
@@ -85,6 +106,9 @@ class _Group:
             self.partial += 1
         elif result == OutcomeResult.DENIED_AGAIN:
             self.denied_again += 1
+        elif result == OutcomeResult.REVERSED:
+            self.reversed += 1
+            self.taken_back_dollars += taken_back_dollars(work_item)
         if result in RECOVERED_RESULTS:
             self.recovered_dollars += Decimal(outcome.paid_amount or 0)
 
@@ -202,6 +226,8 @@ def compute_dashboard(
         denied_again=totals.denied_again,
         overturn_rate=totals.overturn_rate,
         recovered_dollars=totals.recovered_dollars,
+        reversed_fixes=totals.reversed,
+        taken_back_dollars=totals.taken_back_dollars,
         avg_review_minutes=avg_review_minutes,
         reviewed_items=reviewed_items,
         by_category=_grouped(items, lambda wi: str(wi.category) if wi.category else None),
@@ -285,4 +311,5 @@ __all__ = [
     "is_submitted_fix",
     "labels_from_json",
     "latest_outcome",
+    "taken_back_dollars",
 ]

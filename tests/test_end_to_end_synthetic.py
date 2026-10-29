@@ -15,7 +15,9 @@ The phases run in file order and each one builds on the state the previous ones 
 6. follow-up 835s that pay, partially pay, deny again or reverse each submitted fix; outcomes
    (a reversal leaves the fix submitted for the re-adjudication; a partial payment and a claim
    denied again are new denials that re-enter the queue)
-7. the dashboard page and the JSON metrics
+6b. the payer takes two of those payments back in later 835s (the closed fixes reopen, their claims
+   go back to corrected or appealed) and then pays one of them again (closed again)
+7. the dashboard page and the JSON metrics, take-backs included
 8. the audit log: every step recorded, rows append-only, chain intact, visible on /audit
 9. the PHI guard: zero batch identifiers in any model payload or log record of the whole run
 
@@ -175,6 +177,12 @@ class Flow:
     followup_files: list[str] = field(default_factory=list)
     re_denials: list[int] = field(default_factory=list)  # work items the follow-up denials created
     reversed_items: list[int] = field(default_factory=list)  # fixes reversed, still submitted
+    taken_back: list[int] = field(default_factory=list)  # closed fixes whose payment a later 835 took back
+    takeback_files: list[str] = field(default_factory=list)
+    repay_files: list[str] = field(default_factory=list)
+    repaid: int | None = None  # the taken-back fix a later 835 paid again (closed again)
+    taken_back_pending: int | None = None  # the taken-back fix still awaiting its re-adjudication
+    taken_back_dollars: Decimal = Decimal("0")  # what the payer took back from that fix
 
     @property
     def client(self) -> Any:
@@ -1076,33 +1084,215 @@ def test_6_followup_remittances_record_outcomes(flow: Flow) -> None:
 
 
 # --------------------------------------------------------------------------------------
+# 6b. Payments taken back after the close; one of them paid again
+# --------------------------------------------------------------------------------------
+
+TAKEBACK_LAG_DAYS = 45  # the take-back 835 is dated after the first follow-up (FOLLOWUP_LAG_DAYS)
+REPAY_LAG_DAYS = 60
+
+
+def _outcome_rows(session: Any, item_id: int) -> list[Outcome]:
+    stmt = select(Outcome).where(Outcome.work_item_id == item_id).order_by(Outcome.id)
+    return list(session.execute(stmt).scalars())
+
+
+def _events(session: Any, action: str, item_id: int) -> list[AuditLog]:
+    stmt = (
+        select(AuditLog)
+        .where(AuditLog.action == action, AuditLog.entity_type == "work_item", AuditLog.entity_id == item_id)
+        .order_by(AuditLog.id)
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def _pick_take_backs(flow: Flow) -> list[int]:
+    """Two fixes the first follow-up paid, from two payers when the plan allows."""
+    paid = [item_id for item_id in sorted(flow.submitted) if flow.plan[item_id] == PLAN_PAID]
+    assert len(paid) >= 2, paid
+    payer_of = {item_id: _item(flow, item_id).claim.payer_id for item_id in paid}
+    first = paid[0]
+    second = next((item_id for item_id in paid[1:] if payer_of[item_id] != payer_of[first]), paid[1])
+    return [first, second]
+
+
+def _upload_followup(flow: Flow, name: str, text: str, *, expected_claims: int) -> ImportBatch:
+    """Upload one later 835 that creates no work item (reversals and payments are not denials)."""
+    job = _upload(flow, "835", name, text.encode("utf-8"))
+    flow.uploads[name] = job
+    _fresh(flow)
+    batch = flow.session.get(ImportBatch, job["batch_id"])
+    assert batch.status == "done" and job["batch_status"] == "done" and job["pipeline"] == "ok", name
+    assert job["work_items_created"] == 0 and batch.counts["denials"] == 0, name
+    assert batch.counts["claims"] == batch.counts["matched"] == batch.counts["outcomes"] == expected_claims, (
+        name
+    )
+    assert batch.counts["unmatched"] == 0, name
+    return batch
+
+
+def test_6b_payments_taken_back_and_repaid(flow: Flow) -> None:
+    _require(flow, "followup")
+    client, session = flow.client, flow.session
+    chosen = _pick_take_backs(flow)
+    _fresh(flow)
+    work_items = [session.get(WorkItem, item_id) for item_id in chosen]
+    payer_of = {wi.id: wi.claim.payer.payer_id for wi in work_items}
+    before = {
+        wi.id: (wi.submitted_at, wi.submitted_claim_control_number, str(wi.current_proposal.action_type))
+        for wi in work_items
+    }
+    first_payment = {wi.id: Decimal(_outcome_rows(session, wi.id)[0].paid_amount) for wi in work_items}
+    assert all(wi.status == "closed" and wi.claim.status == "paid" for wi in work_items)
+    assert all(amount > 0 for amount in first_payment.values())
+    outcomes_before, items_before = _count(session, Outcome), _count(session, WorkItem)
+    takeback_date = flow.run.today + timedelta(days=TAKEBACK_LAG_DAYS)
+    assert takeback_date > _outcome_rows(session, chosen[0])[0].payment_date
+    files = generate_followup_files(session, work_items, dict.fromkeys(chosen, PLAN_REVERSED), takeback_date)
+    assert set(files) == set(payer_of.values())
+    flow.takeback_files = sorted(files)
+    for payer_id in sorted(files):
+        _upload_followup(
+            flow,
+            f"followup_takeback_{payer_id}.835",
+            files[payer_id],
+            expected_claims=sum(1 for item_id in chosen if payer_of[item_id] == payer_id),
+        )
+    # A reversal is not a denial: nothing re-enters the queue; one reversed outcome per fix.
+    assert _count(session, WorkItem) == items_before
+    assert _count(session, Outcome) == outcomes_before + len(chosen)
+
+    for item_id in chosen:
+        work_item = session.get(WorkItem, item_id)
+        rows = _outcome_rows(session, item_id)
+        assert [str(o.result) for o in rows] == [PLAN_PAID, PLAN_REVERSED], item_id
+        reversal = rows[-1]
+        assert reversal.payment_date == takeback_date, item_id
+        assert Decimal(reversal.paid_amount) == -first_payment[item_id], item_id
+        assert reversal.details["match"] == "claim_id" and reversal.details["reason"] == "reversal", item_id
+        assert reversal.remittance_claim.claim_status_code == "22", item_id
+        assert reversal.remittance_claim.remittance.file_name == f"followup_takeback_{payer_of[item_id]}.835"
+        # Back to submitted: closed_at cleared, the submission facts untouched, the claim as the
+        # submission left it.
+        assert work_item.status == "submitted" and work_item.closed_at is None, item_id
+        submitted_at, ccn, action_type = before[item_id]
+        assert work_item.submitted_at == submitted_at, item_id
+        assert work_item.submitted_claim_control_number == ccn, item_id
+        claim_status = "corrected" if action_type == str(ActionType.CORRECTED_CLAIM) else "appealed"
+        assert work_item.claim.status == claim_status, item_id
+        # The audit trail: the outcome event says where the item came from, the reopen event why.
+        recorded = _events(session, "outcome_recorded", item_id)
+        assert len(recorded) == 2 and (recorded[-1].actor_type, recorded[-1].actor_id) == (
+            "system",
+            "outcomes",
+        )
+        assert recorded[-1].details["result"] == "reversed", item_id
+        assert recorded[-1].details["work_item_status"] == "submitted", item_id
+        assert recorded[-1].details["previous_work_item_status"] == "closed", item_id
+        [reopened] = _events(session, "work_item_reopened", item_id)
+        assert (reopened.actor_type, reopened.actor_id, reopened.claim_id) == (
+            "system",
+            "outcomes",
+            work_item.claim_id,
+        )
+        assert reopened.id > recorded[-1].id
+        assert reopened.details == {
+            "previous_status": "closed",
+            "reason": "payer_reversal",
+            "remittance_claim_id": reversal.remittance_claim_id,
+            "remittance_id": reversal.remittance_claim.remittance_id,
+            "outcome_id": reversal.id,
+            "claim_status": claim_status,
+        }
+        # The item page lists both outcomes and offers the actions a submitted item has again.
+        page = client.get(f"/items/{item_id}")
+        assert page.status_code == 200 and "<h3>Outcomes</h3>" in page.text, item_id
+        for outcome in rows:
+            assert f"{label_text(outcome.result)} · paid {money(outcome.paid_amount)}" in page.text, item_id
+        assert "No actions are available" not in page.text and "re-download" in page.text, item_id
+    # The queue lists them as submitted again, and no longer as closed.
+    assert set(_queue_ids(flow, "/queue?status=submitted")) == set(flow.reversed_items) | set(chosen)
+    assert not set(chosen) & set(_queue_ids(flow, "/queue?status=closed"))
+
+    # One of them is paid again by a later 835: closed again, with the new payment as its latest
+    # outcome; the other waits in the submitted list with the reversal as its latest outcome.
+    repaid, pending = chosen
+    repay_date = flow.run.today + timedelta(days=REPAY_LAG_DAYS)
+    files = generate_followup_files(session, [session.get(WorkItem, repaid)], {repaid: PLAN_PAID}, repay_date)
+    assert list(files) == [payer_of[repaid]]
+    flow.repay_files = sorted(files)
+    _upload_followup(
+        flow, f"followup_repay_{payer_of[repaid]}.835", files[payer_of[repaid]], expected_claims=1
+    )
+    work_item = session.get(WorkItem, repaid)
+    rows = _outcome_rows(session, repaid)
+    assert [str(o.result) for o in rows] == [PLAN_PAID, PLAN_REVERSED, PLAN_PAID]
+    assert rows[-1].payment_date == repay_date and Decimal(rows[-1].paid_amount) == first_payment[repaid]
+    assert work_item.status == "closed" and work_item.closed_at is not None
+    assert work_item.claim.status == "paid"
+    assert len(_events(session, "work_item_reopened", repaid)) == 1  # the reopen is not repeated
+    assert len(_events(session, "outcome_recorded", repaid)) == 3
+    page = client.get(f"/items/{repaid}")
+    assert page.status_code == 200 and "No actions are available" in page.text
+    other = session.get(WorkItem, pending)
+    assert other.status == "submitted" and other.closed_at is None
+    assert [str(o.result) for o in _outcome_rows(session, pending)] == [PLAN_PAID, PLAN_REVERSED]
+    assert set(_queue_ids(flow, "/queue?status=submitted")) == set(flow.reversed_items) | {pending}
+    assert repaid in set(_queue_ids(flow, "/queue?status=closed"))
+    assert _count(session, Outcome) == outcomes_before + len(chosen) + 1
+    assert _count(session, WorkItem) == items_before
+    assert audit.verify_chain(session) is None
+
+    flow.taken_back = list(chosen)
+    flow.repaid, flow.taken_back_pending = repaid, pending
+    flow.taken_back_dollars = first_payment[pending]
+    flow.done.add("takeback")
+
+
+# --------------------------------------------------------------------------------------
 # 7. Dashboard and metrics
 # --------------------------------------------------------------------------------------
 
 
 def test_7_dashboard_and_metrics(flow: Flow) -> None:
-    _require(flow, "followup")
+    _require(flow, "followup", "takeback")
     client, session = flow.client, flow.session
     _fresh(flow)
     outcomes = list(session.execute(select(Outcome).order_by(Outcome.id)).scalars())
-    # Recovered dollars = what the payer paid on the fixes the plan paid or partially paid; the
-    # plan, not the recorded result, says which outcomes count, so the metric is checked against
-    # the test's own expectation.
-    paid_by_plan = [o for o in outcomes if flow.plan[o.work_item_id] in (PLAN_PAID, PLAN_PARTIAL)]
+    # Recovered dollars = what the payer paid on the fixes the plan paid or partially paid, each by
+    # its latest outcome: the first follow-up's payment, except for the fix whose payment was taken
+    # back and not paid again (nothing) and the fix paid again (its new payment). The plan and
+    # phase 6b, not the recorded results, say which outcomes count, so the metric is checked
+    # against the test's own expectation.
+    first_outcome: dict[int, Outcome] = {}
+    for outcome in outcomes:
+        first_outcome.setdefault(outcome.work_item_id, outcome)
+    paid_by_plan = [
+        first_outcome[item_id]
+        for item_id in sorted(flow.submitted)
+        if flow.plan[item_id] in (PLAN_PAID, PLAN_PARTIAL) and item_id not in flow.taken_back
+    ]
     assert paid_by_plan and all(Decimal(o.paid_amount) > 0 for o in paid_by_plan)
-    recovered = sum((Decimal(o.paid_amount) for o in paid_by_plan), Decimal("0"))
+    repaid_outcome = [o for o in outcomes if o.work_item_id == flow.repaid][-1]
+    assert str(repaid_outcome.result) == PLAN_PAID and Decimal(repaid_outcome.paid_amount) > 0
+    recovered = sum((Decimal(o.paid_amount) for o in paid_by_plan), Decimal(repaid_outcome.paid_amount))
     planned = Counter(flow.plan.values())
     submitted = len(flow.submitted)
-    overturn = round((planned[PLAN_PAID] + planned[PLAN_PARTIAL]) / submitted, 4)
-    assert recovered > 0 and 0 < overturn < 1
+    paid_fixes = planned[PLAN_PAID] - 1  # the fix still taken back counts neither paid nor partial
+    reversed_fixes = planned[PLAN_REVERSED] + 1  # the plan's reversals plus the fix still taken back
+    taken_back = flow.taken_back_dollars
+    overturn = round((paid_fixes + planned[PLAN_PARTIAL]) / submitted, 4)
+    assert recovered > 0 and 0 < overturn < 1 and taken_back > 0
 
     page = client.get("/dashboard")
     assert page.status_code == 200
     assert (
         "Recovered dollars" in page.text and f'<div class="tile-value">{money(recovered)}</div>' in page.text
     )
+    assert f'<div class="tile-value">{money(taken_back)}</div>' in page.text
+    fixes_word = "fix" if reversed_fixes == 1 else "fixes"
+    assert f"Taken back ({reversed_fixes} {fixes_word} awaiting re-adjudication)" in page.text
     assert f'<div class="tile-value">{pct(overturn)}</div>' in page.text
-    assert f"({planned[PLAN_PARTIAL] + planned[PLAN_PAID]} of {submitted} submitted fixes)" in page.text
+    assert f"({planned[PLAN_PARTIAL] + paid_fixes} of {submitted} submitted fixes)" in page.text
     # The dashboard never re-hashes the whole audit log; it points at the audit page (phase 8
     # verifies the chain there) and never claims a chain it did not check.
     assert 'href="/audit"' in page.text and "BROKEN" not in page.text
@@ -1112,8 +1302,10 @@ def test_7_dashboard_and_metrics(flow: Flow) -> None:
     total = EXPECTED_DENIALS + len(flow.re_denials)
     assert data["total_work_items"] == total == _count(session, WorkItem)
     assert data["submitted_fixes"] == submitted
-    assert data["paid_fixes"] == planned[PLAN_PAID] and data["partial_fixes"] == planned[PLAN_PARTIAL]
+    assert data["paid_fixes"] == paid_fixes and data["partial_fixes"] == planned[PLAN_PARTIAL]
     assert data["denied_again"] == planned[PLAN_DENIED_AGAIN]
+    assert data["reversed_fixes"] == reversed_fixes
+    assert Decimal(data["taken_back_dollars"]) == taken_back
     assert data["overturn_rate"] == overturn
     assert Decimal(data["recovered_dollars"]) == recovered
     review_seconds = [
@@ -1130,14 +1322,17 @@ def test_7_dashboard_and_metrics(flow: Flow) -> None:
     by_status = Counter(str(wi.status) for wi in items)
     assert {k: v for k, v in data["items_by_status"].items() if v} == dict(by_status)
     assert sum(data["items_by_status"].values()) == total
-    # Reversed fixes are still submitted (pending the re-adjudication); everything else that was
-    # submitted is closed by its outcome.
-    assert by_status["submitted"] == len(flow.reversed_items) == planned[PLAN_REVERSED] > 0
-    assert by_status["closed"] == submitted - len(flow.reversed_items) + flow.counts["work_item_closed"]
+    # Reversed fixes and the fix still taken back are submitted (pending the re-adjudication);
+    # everything else that was submitted is closed by its outcome, the re-paid fix among them.
+    assert by_status["submitted"] == len(flow.reversed_items) + 1 == reversed_fixes > 0
+    assert by_status["closed"] == submitted - by_status["submitted"] + flow.counts["work_item_closed"]
     assert by_status["rejected"] == len(flow.rejected)
     assert by_status["exported"] == len(flow.exported) - submitted
-    # Dollars at stake: the open items (not closed, not rejected), also what the deadline buckets hold.
+    # Dollars at stake: the open items (not closed, not rejected), also what the deadline buckets
+    # hold; the taken-back fix is open again, the re-paid one is not.
     open_items = [wi for wi in items if str(wi.status) not in ("closed", "rejected")]
+    open_ids = {wi.id for wi in open_items}
+    assert flow.taken_back_pending in open_ids and flow.repaid not in open_ids
     at_stake = sum((Decimal(wi.dollar_value) for wi in open_items), Decimal("0"))
     assert len(open_items) == total - by_status["closed"] - by_status["rejected"] > 0
     assert Decimal(data["dollars_at_stake"]) == at_stake > 0
@@ -1151,7 +1346,7 @@ def test_7_dashboard_and_metrics(flow: Flow) -> None:
         assert {row["key"] for row in rows} == expected_keys, key
         assert sum(row["items"] for row in rows) == total, key
         assert sum(row["submitted"] for row in rows) == submitted, key
-        assert sum(row["paid"] for row in rows) == planned[PLAN_PAID], key
+        assert sum(row["paid"] for row in rows) == paid_fixes, key
         assert sum(row["partial"] for row in rows) == planned[PLAN_PARTIAL], key
         assert sum(row["denied_again"] for row in rows) == planned[PLAN_DENIED_AGAIN], key
         assert sum((Decimal(row["recovered_dollars"]) for row in rows), Decimal("0")) == recovered, key
@@ -1175,7 +1370,9 @@ def test_8_every_step_is_in_the_audit_log(flow: Flow) -> None:
     counts = _action_counts(session)
     uploads = len(flow.uploads)
     followups = [name for name in flow.uploads if name.startswith("followup_")]
-    assert len(followups) == len(flow.followup_files) + 1  # one per payer, plus the duplicate upload
+    # One per payer, plus the duplicate upload, plus the take-back files and the re-payment.
+    assert len(followups) == len(flow.followup_files) + 1 + len(flow.takeback_files) + len(flow.repay_files)
+    assert len(flow.takeback_files) >= 1 and len(flow.repay_files) == 1
     assert uploads == 3 + EXPECTED_REMIT_FILES + len(followups)
     assert counts["import_requested"] == counts["import_job_finished"] == uploads
     assert counts["import_completed"] == _count(session, ImportBatch) == uploads
@@ -1187,7 +1384,6 @@ def test_8_every_step_is_in_the_audit_log(flow: Flow) -> None:
     for action in (
         "work_item_approved",
         "work_item_rejected",
-        "work_item_reopened",
         "work_item_closed",
         "proposal_edited",
         "proposal_regenerated",
@@ -1196,8 +1392,19 @@ def test_8_every_step_is_in_the_audit_log(flow: Flow) -> None:
         "work_item_submitted",
     ):
         assert counts[action] == flow.counts[action] > 0, (action, counts[action], flow.counts[action])
+    # Reopens: the reviewer's second look and the system's take-backs, told apart by actor type.
+    reopened_by = Counter(
+        session.execute(select(AuditLog.actor_type).where(AuditLog.action == "work_item_reopened")).scalars()
+    )
+    assert reopened_by == {"user": flow.counts["work_item_reopened"], "system": len(flow.taken_back)}
+    assert counts["work_item_reopened"] == flow.counts["work_item_reopened"] + len(flow.taken_back) > 1
     assert counts["proposal_regenerate_requested"] == flow.counts["proposal_regenerated"]
-    assert counts["outcome_recorded"] == _count(session, Outcome) == len(flow.submitted)
+    # One outcome per submitted fix, one per take-back, one for the re-payment.
+    assert (
+        counts["outcome_recorded"]
+        == _count(session, Outcome)
+        == len(flow.submitted) + len(flow.taken_back) + 1
+    )
     assert counts["login_success"] == 1 and counts["user_created"] == 1
     assert counts["model_call"] == _count(session, ModelCall) == len(flow.run.payloads) > 0
     assert counts["model_call_blocked"] == 0 and counts["model_call_failed"] == 0
@@ -1206,7 +1413,15 @@ def test_8_every_step_is_in_the_audit_log(flow: Flow) -> None:
     assert len(rows) == sum(counts.values())
     assert all(row.actor_type in {"user", "agent", "system"} and row.actor_id for row in rows)
     assert all(row.hash and len(row.hash) == 64 for row in rows)
-    assert {row.actor_id for row in rows if row.action in REVIEW_EVENTS} == {f"user:{reviewer.id}"}
+    # Review events are the reviewer's, except the reopens the outcomes matcher wrote for take-backs.
+    assert {row.actor_id for row in rows if row.action in REVIEW_EVENTS and row.actor_type == "user"} == {
+        f"user:{reviewer.id}"
+    }
+    system_reviews = [row for row in rows if row.action in REVIEW_EVENTS and row.actor_type != "user"]
+    assert {(row.actor_type, row.actor_id, row.action) for row in system_reviews} == {
+        ("system", "outcomes", "work_item_reopened")
+    }
+    assert len(system_reviews) == len(flow.taken_back)
     assert {(row.actor_type, row.actor_id) for row in rows if row.action in FIRST_RUN_EVENTS} == {
         ("agent", "pipeline")
     }

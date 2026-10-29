@@ -9,6 +9,7 @@
 
 <div class="tiles">
   <div class="tile"><div class="tile-value">{{ m.recovered_dollars|money }}</div><div class="tile-label">Recovered dollars</div></div>
+  <div class="tile"><div class="tile-value">{{ m.taken_back_dollars|money }}</div><div class="tile-label">Taken back ({{ m.reversed_fixes }} fix{% if m.reversed_fixes != 1 %}es{% endif %} awaiting re-adjudication)</div></div>
   <div class="tile"><div class="tile-value">{{ m.overturn_rate|pct }}</div><div class="tile-label">Overturn rate ({{ m.paid_fixes + m.partial_fixes }} of {{ m.submitted_fixes }} submitted fixes)</div></div>
   <div class="tile"><div class="tile-value">{{ m.dollars_at_stake|money }}</div><div class="tile-label">Dollars at stake (open items)</div></div>
   <div class="tile"><div class="tile-value">{{ m.total_work_items }}</div><div class="tile-label">Work items</div></div>

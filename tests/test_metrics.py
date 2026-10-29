@@ -7,7 +7,9 @@ from decimal import Decimal
 
 import pytest
 
+import app.outcomes
 from app import audit
+from app.api.routes import metrics_json
 from app.models import (
     Claim,
     ModelCall,
@@ -19,13 +21,14 @@ from app.models import (
     ReviewAction,
     WorkItem,
 )
-from app.outcomes import category_agreement, compute_dashboard
+from app.outcomes import category_agreement, compute_dashboard, matching
 from app.outcomes.metrics import (
     deadline_label,
     deadline_labels,
     is_submitted_fix,
     labels_from_json,
     latest_outcome,
+    taken_back_dollars,
 )
 from app.schemas import DashboardMetrics
 
@@ -33,6 +36,7 @@ TODAY = date(2026, 10, 28)
 NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
 PAID_ON = date(2026, 9, 1)
 PAID_LATER = date(2026, 9, 15)
+PAID_AGAIN = date(2026, 9, 30)
 
 
 class Builder:
@@ -207,6 +211,27 @@ def dataset(session, clinic):
             submitted=True, decided=True,
             outcomes=[("paid", "90.00", PAID_ON), ("partial", "30.00", PAID_LATER)],
         ),
+        # Paid, then taken back by a later 835 (the take-back reopened it): a reversed fix, open
+        # again, 80.00 taken back, nothing recovered. (wi10 is the other reversed fix: its only
+        # outcome is the reversal of the original adjudication, so nothing was taken back.)
+        "wi13": b.item(
+            category="modifier", payer="Blue Synthetic", status="submitted", dollars="80.00",
+            deadline=TODAY + timedelta(days=40), submitted=True, decided=True,
+            outcomes=[("paid", "80.00", PAID_ON), ("reversed", "-80.00", PAID_LATER)],
+        ),
+        # Paid, taken back, paid again: one paid fix, recovered once, not a reversed fix.
+        "wi14": b.item(
+            category="modifier", payer="Blue Synthetic", status="closed", dollars="70.00",
+            submitted=True, decided=True,
+            outcomes=[("paid", "70.00", PAID_ON), ("reversed", "-70.00", PAID_LATER), ("paid", "70.00", PAID_AGAIN)],
+        ),
+        # Paid, then re-adjudicated as partial, then taken back: the most recent payment before the
+        # reversal (30.00) is what was taken back.
+        "wi15": b.item(
+            category="authorization", payer="Acme Synthetic", status="submitted", dollars="100.00",
+            deadline=TODAY + timedelta(days=5), submitted=True, decided=True,
+            outcomes=[("paid", "80.00", PAID_ON), ("partial", "30.00", PAID_LATER), ("reversed", "-30.00", PAID_AGAIN)],
+        ),
     }  # fmt: skip
     session.add_all(
         [
@@ -228,21 +253,30 @@ def dataset(session, clinic):
 def test_dashboard_numbers(session, dataset):
     m = compute_dashboard(session, today=TODAY)
     assert isinstance(m, DashboardMetrics)
-    assert m.total_work_items == 12
+    assert m.total_work_items == 15
     assert m.items_by_status == {
         "new": 1, "proposed": 2, "in_review": 0, "approved": 0,
-        "rejected": 1, "exported": 0, "submitted": 2, "closed": 6,
+        "rejected": 1, "exported": 0, "submitted": 4, "closed": 7,
     }  # fmt: skip
-    assert m.dollars_at_stake == Decimal("880.00")
-    # wi1, wi2, wi3, wi7, wi9, wi10, wi12 were marked submitted; wi11 was closed without a submission.
-    assert m.submitted_fixes == 7
-    # Per work item by its latest outcome: wi1 + wi9 paid, wi2 + wi12 partial, wi7 denied again;
-    # wi10 (reversed, pending) is in the denominator only; wi11's payment is nobody's fix.
-    assert (m.paid_fixes, m.partial_fixes, m.denied_again) == (2, 2, 1)
-    assert m.overturn_rate == round(4 / 7, 4)
-    assert m.recovered_dollars == Decimal("100.00") + Decimal("50.00") + Decimal("80.00") + Decimal("30.00")
+    # Open items: wi3, wi4, wi6, wi8, wi10 (880.00) plus the taken-back wi13 and wi15, open again.
+    assert m.dollars_at_stake == Decimal("1060.00")
+    # wi1, wi2, wi3, wi7, wi9, wi10, wi12, wi13, wi14, wi15 were marked submitted; wi11 was closed
+    # without a submission.
+    assert m.submitted_fixes == 10
+    # Per work item by its latest outcome: wi1 + wi9 + wi14 paid, wi2 + wi12 partial, wi7 denied
+    # again; wi10, wi13 and wi15 (reversed, pending) are in the denominator only; wi11's payment is
+    # nobody's fix.
+    assert (m.paid_fixes, m.partial_fixes, m.denied_again) == (3, 2, 1)
+    assert m.overturn_rate == round(5 / 10, 4)
+    assert m.recovered_dollars == Decimal("100.00") + Decimal("50.00") + Decimal("80.00") + Decimal(
+        "30.00"
+    ) + Decimal("70.00")
+    # The take-backs: wi13 (80.00 paid, then reversed), wi15 (80.00, then 30.00, then reversed: the
+    # 30.00 is what was taken back) and wi10 (reversed before anything was paid: nothing).
+    assert m.reversed_fixes == 3
+    assert m.taken_back_dollars == Decimal("80.00") + Decimal("30.00")
     assert m.avg_review_minutes == 3.0
-    assert m.reviewed_items == 8
+    assert m.reviewed_items == 11
     assert (m.model_calls, m.model_input_tokens, m.model_output_tokens) == (2, 150, 30)
     assert m.audit_chain_ok is True
     assert m.generated_at.tzinfo is not None
@@ -250,7 +284,33 @@ def test_dashboard_numbers(session, dataset):
 
 def test_dashboard_without_audit_verification(session, dataset):
     m = compute_dashboard(session, today=TODAY, verify_audit=False)
-    assert m.audit_chain_ok is None and m.submitted_fixes == 7
+    assert m.audit_chain_ok is None and m.submitted_fixes == 10
+
+
+def test_taken_back_dollars_is_the_last_payment_before_the_reversal(session, dataset):
+    """Finding: what a reversed fix had been paid, 0 when nothing was, 0 when the fix is not reversed."""
+    assert taken_back_dollars(dataset["wi13"]) == Decimal("80.00")
+    assert taken_back_dollars(dataset["wi15"]) == Decimal("30.00")  # the partial 30.00, not the 80.00
+    assert taken_back_dollars(dataset["wi10"]) == Decimal("0")  # reversed before any payment
+    assert taken_back_dollars(dataset["wi14"]) == Decimal("0")  # paid again: not reversed any more
+    assert taken_back_dollars(dataset["wi1"]) == Decimal("0")
+    assert taken_back_dollars(dataset["wi4"]) == Decimal("0")  # no outcome at all
+    assert latest_outcome(dataset["wi13"]).result == "reversed"
+    assert latest_outcome(dataset["wi14"]).result == "paid"
+    assert latest_outcome(dataset["wi15"]).result == "reversed"
+
+
+def test_metrics_json_carries_the_take_back_fields(session, dataset):
+    data = metrics_json(compute_dashboard(session, today=TODAY, verify_audit=False))
+    assert data["reversed_fixes"] == 3
+    assert Decimal(data["taken_back_dollars"]) == Decimal("110.00")
+    assert Decimal(data["recovered_dollars"]) == Decimal("330.00")
+    assert all("reversed" not in row and "taken_back_dollars" not in row for row in data["by_category"])
+
+
+def test_latest_outcome_is_one_definition():
+    """The matcher and the metrics share one latest_outcome; the old import paths keep working."""
+    assert latest_outcome is matching.latest_outcome is app.outcomes.latest_outcome
 
 
 def test_counts_are_per_work_item_by_latest_outcome(session, dataset):
@@ -265,10 +325,19 @@ def test_counts_are_per_work_item_by_latest_outcome(session, dataset):
     assert is_submitted_fix(reversed_only) and is_submitted_fix(reversed_then_paid)
     assert not is_submitted_fix(never_submitted) and not is_submitted_fix(dataset["wi4"])
 
+    taken_back, repaid, partial_then_taken_back = dataset["wi13"], dataset["wi14"], dataset["wi15"]
+    assert latest_outcome(taken_back).result == "reversed" and is_submitted_fix(taken_back)
+    assert (
+        latest_outcome(repaid).result == "paid"
+        and latest_outcome(partial_then_taken_back).result == "reversed"
+    )
+
     m = compute_dashboard(session, today=TODAY)
     modifier = next(c for c in m.by_category if c.key == "modifier")
-    assert (modifier.items, modifier.submitted, modifier.paid, modifier.partial) == (4, 4, 2, 2)
-    assert modifier.recovered_dollars == Decimal("260.00")  # 100 + 50 + 80 + 30, never 90 + 30 or 80 twice
+    assert (modifier.items, modifier.submitted, modifier.paid, modifier.partial) == (6, 6, 3, 2)
+    # 100 + 50 + 80 + 30 + 70: never 90 + 30, never 80 twice, nothing for the taken-back wi13 and the
+    # re-paid wi14 only once.
+    assert modifier.recovered_dollars == Decimal("330.00")
     bundling = next(c for c in m.by_category if c.key == "bundling")
     assert (bundling.items, bundling.submitted, bundling.paid, bundling.recovered_dollars) == (
         1,
@@ -295,39 +364,44 @@ def test_by_category_and_payer(session, dataset):
 
     assert [c.key for c in m.by_category] == [
         "eligibility",
+        "authorization",
+        "modifier",
         "other",
         "missing_information",
-        "authorization",
         "bundling",
-        "modifier",
     ]
     cats = {c.key: c for c in m.by_category}
+    # The taken-back wi13 is open again: its 80.00 is at stake for the modifier category.
     assert (cats["modifier"].items, cats["modifier"].dollars_at_stake, cats["modifier"].submitted) == (
-        4,
-        Decimal("0"),
-        4,
+        6,
+        Decimal("80.00"),
+        6,
     )
     assert (cats["modifier"].paid, cats["modifier"].partial, cats["modifier"].recovered_dollars) == (
+        3,
         2,
-        2,
-        Decimal("260.00"),
+        Decimal("330.00"),
     )
-    assert cats["modifier"].overturn_rate == 1.0
+    assert cats["modifier"].overturn_rate == pytest.approx(5 / 6)  # wi13, taken back: denominator only
     assert (cats["eligibility"].items, cats["eligibility"].dollars_at_stake) == (3, Decimal("820.00"))
     assert cats["eligibility"].submitted == 2 and cats["eligibility"].overturn_rate == 0.0
-    assert cats["authorization"].denied_again == 1 and cats["authorization"].overturn_rate == 0.0
+    assert (cats["authorization"].items, cats["authorization"].dollars_at_stake) == (3, Decimal("100.00"))
+    assert cats["authorization"].submitted == 2 and cats["authorization"].overturn_rate == 0.0
+    assert cats["authorization"].denied_again == 1 and cats["authorization"].recovered_dollars == Decimal("0")
     assert cats["other"].overturn_rate is None
 
     assert [p.key for p in m.by_payer] == ["Acme Synthetic", "Blue Synthetic"]
     payers = {p.key: p for p in m.by_payer}
-    assert (payers["Blue Synthetic"].items, payers["Blue Synthetic"].submitted) == (6, 4)
-    assert (payers["Blue Synthetic"].paid, payers["Blue Synthetic"].partial) == (2, 2)
-    assert payers["Blue Synthetic"].recovered_dollars == Decimal("260.00")
+    assert (payers["Blue Synthetic"].items, payers["Blue Synthetic"].submitted) == (8, 6)
+    assert (payers["Blue Synthetic"].paid, payers["Blue Synthetic"].partial) == (3, 2)
+    assert payers["Blue Synthetic"].recovered_dollars == Decimal("330.00")
+    assert payers["Blue Synthetic"].dollars_at_stake == Decimal("80.00")
     assert (payers["Acme Synthetic"].items, payers["Acme Synthetic"].dollars_at_stake) == (
-        6,
-        Decimal("880.00"),
+        7,
+        Decimal("980.00"),
     )
-    assert payers["Acme Synthetic"].submitted == 3 and payers["Acme Synthetic"].denied_again == 1
+    assert payers["Acme Synthetic"].submitted == 4 and payers["Acme Synthetic"].denied_again == 1
+    assert payers["Acme Synthetic"].recovered_dollars == Decimal("0")
 
 
 def test_deadline_buckets(session, dataset, settings):
@@ -336,9 +410,10 @@ def test_deadline_buckets(session, dataset, settings):
     assert [b.label for b in m.deadline_buckets] == ["overdue", "<=14 days", "<=30 days", ">30 days", "none"]
     buckets = {b.label: (b.items, b.dollars) for b in m.deadline_buckets}
     assert buckets["overdue"] == (1, Decimal("10.00"))
-    assert buckets["<=14 days"] == (1, Decimal("300.00"))
+    assert buckets["<=14 days"] == (2, Decimal("400.00"))  # wi3 and the taken-back wi15, open again
     assert buckets["<=30 days"] == (1, Decimal("400.00"))
-    assert buckets[">30 days"] == (1, Decimal("120.00"))  # the reversed, still-submitted fix is open
+    # The reversed, still-submitted wi10 and the taken-back wi13 are open.
+    assert buckets[">30 days"] == (2, Decimal("200.00"))
     assert buckets["none"] == (1, Decimal("50.00"))
 
 

@@ -23,13 +23,38 @@ payers do not keep SVC order between adjudications. paid, partial and denied_aga
 item and set the claim status (paid, partial, denied); a reversal leaves the claim status as the
 submission left it (corrected or appealed) until the re-adjudication arrives. An `outcome_recorded`
 audit event is appended for every outcome. A CLP answers a work item only when its remittance is
-dated (payment date, else production date, else the day it was received) on or after the day the
-fix was submitted and, for a same-claim match, comes from the claim's payer or from a payer the
-file did not name; a CLP that carries the corrected claim's own control number is accepted from
-any payer, because a corrected claim may have been redirected to the payer a letter named. Older
-or foreign CLPs are skipped and logged by id. Everything is idempotent: re-running on the same
-remittance changes nothing. A work item's own originating remittance claim never counts as its
-outcome.
+dated (payment date, else production date, else the day it was received: :func:`remittance_date`,
+the date every outcome then carries as its `payment_date`) on or after the day the fix was
+submitted and, for a same-claim match, comes from the claim's payer or from a payer the file did
+not name; a CLP that carries the corrected claim's own control number is accepted from any payer,
+because a corrected claim may have been redirected to the payer a letter named. Older or foreign
+CLPs are skipped and logged by id. Everything is idempotent: re-running on the same remittance
+changes nothing. A work item's own originating remittance claim never counts as its outcome.
+
+Take-backs. A payer can take back a payment it already made on a fix: a CLP02 22 in a later 835 for
+a work item that a paid or partial outcome closed. Such a reversal reopens the item. A reversal CLP
+(and only a reversal) also has closed work items as candidates (:func:`takeback_candidates`): items
+that were submitted, whose latest outcome (by payment date, then id: :func:`latest_outcome`) is paid
+or partial, that match the two usual ways, that the CLP did not itself create, that pass the same
+date and payer gates, and whose closing outcome is dated (its payment date, else the date of its
+remittance) on or before the reversal's remittance; a reversal dated earlier is skipped and logged
+by id as `remittance_before_outcome`. Items closed by hand (no outcome) or by a second denial, and
+items whose latest outcome is already a reversal, are never reopened. Recording the take-back
+(:func:`record_outcome`) adds the reversed outcome, dated by its remittance like every outcome (so
+a take-back from an 835 without a payment date still outranks the payment it reverses and leaves
+the dashboard's recovered dollars), returns the work item to `submitted` with `closed_at` cleared
+(the submission facts stay as they were) and the claim to the status the submission gave it
+(corrected or appealed, from the current proposal's action type; otherwise left alone), appends the
+usual `outcome_recorded` event carrying `previous_work_item_status` and a second event
+`work_item_reopened` (reason `payer_reversal`, actor `outcomes`). The dashboard then counts the fix
+as reversed, no longer as recovered, until a later 835 pays it again.
+
+Within one remittance :func:`record_outcomes_for_remittance` runs two passes: first every reversal
+CLP against the closed items it can reopen, then every CLP in the usual order (non-reversals first,
+reversals last) against the submitted items. A file that only takes a payment back leaves the item
+submitted with the reversal as its latest outcome; a file that takes it back and re-adjudicates the
+same claim closes the item again with the new payment as its latest outcome. One outcome per (work
+item, CLP) pair (:func:`existing_outcome`) keeps both passes and every re-run idempotent.
 """
 
 from __future__ import annotations
@@ -44,7 +69,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app import audit
-from app.enums import ActorType, ClaimStatus, OutcomeResult, WorkItemStatus
+from app.enums import ActionType, ActorType, ClaimStatus, OutcomeResult, WorkItemStatus
 from app.ingest.denials import (
     DENIED_CLAIM_STATUS,
     AdjustmentInput,
@@ -59,15 +84,22 @@ OUTCOMES_ACTOR = "outcomes"
 PAID_THRESHOLD = Decimal("0.95")
 REVERSAL_STATUS_CODE = "22"
 MATCHABLE_STATUSES: tuple[str, ...] = (str(WorkItemStatus.SUBMITTED),)
+# Statuses a reversal CLP may reopen (see takeback_candidates); nothing else matches a closed item.
+TAKEBACK_STATUSES: tuple[str, ...] = (str(WorkItemStatus.CLOSED),)
 # Results that end the work item; a reversal leaves it submitted (see the module docstring).
 CLOSING_RESULTS: frozenset[OutcomeResult] = frozenset(
     {OutcomeResult.PAID, OutcomeResult.PARTIAL, OutcomeResult.DENIED_AGAIN}
 )
+# Results a later reversal can take back: a closed item's latest outcome must be one of these.
+TAKEBACK_RESULTS: frozenset[OutcomeResult] = frozenset({OutcomeResult.PAID, OutcomeResult.PARTIAL})
 MATCH_CLAIM_ID = "claim_id"
 MATCH_SUBMITTED_CCN = "submitted_ccn"
 # Why a candidate work item was not given an outcome (logged with the ids, stored nowhere).
 SKIP_BEFORE_SUBMISSION = "remittance_before_submission"
 SKIP_OTHER_PAYER = "other_payer"
+SKIP_BEFORE_OUTCOME = "remittance_before_outcome"
+# The reason the work_item_reopened audit event carries when a take-back reopens an item.
+REOPEN_REASON = "payer_reversal"
 
 # Claim status a closing result sets. A reversal is not in the map: the claim keeps the status the
 # submission gave it (corrected or appealed) while the fix is still in flight.
@@ -75,6 +107,12 @@ CLAIM_STATUS_FOR_RESULT: dict[OutcomeResult, ClaimStatus] = {
     OutcomeResult.PAID: ClaimStatus.PAID,
     OutcomeResult.PARTIAL: ClaimStatus.PARTIAL,
     OutcomeResult.DENIED_AGAIN: ClaimStatus.DENIED,
+}
+# Claim status mark_submitted gives the claim for each action type (app.review.service); a take-back
+# returns the claim to it. Other action types leave the claim status alone, there too.
+CLAIM_STATUS_FOR_SUBMISSION: dict[str, ClaimStatus] = {
+    str(ActionType.CORRECTED_CLAIM): ClaimStatus.CORRECTED,
+    str(ActionType.APPEAL): ClaimStatus.APPEALED,
 }
 
 _CENTS = Decimal("0.01")
@@ -211,6 +249,46 @@ def remittance_date(remittance: Remittance | None) -> date | None:
     return received.date() if received is not None else None
 
 
+def outcome_sort_key(outcome: Outcome) -> tuple[date, int]:
+    """Oldest first: the payment date (an undated outcome never outranks a dated one), then the id."""
+    return (outcome.payment_date or date.min, outcome.id or 0)
+
+
+def ordered_outcomes(work_item: WorkItem) -> list[Outcome]:
+    """A work item's outcomes oldest first, by payment date and then by the order they were recorded."""
+    return sorted(work_item.outcomes, key=outcome_sort_key)
+
+
+def latest_outcome(work_item: WorkItem) -> Outcome | None:
+    """The outcome that stands for the work item: the latest payment date, then the last recorded."""
+    outcomes = ordered_outcomes(work_item)
+    return outcomes[-1] if outcomes else None
+
+
+def outcome_date(outcome: Outcome) -> date | None:
+    """When the payer adjudicated an outcome: its payment date, else the date of its remittance.
+
+    :func:`record_outcome` dates every outcome it writes, so the fallback only serves rows that
+    carry no date (written directly, or before outcomes were dated by their remittance).
+    """
+    if outcome.payment_date is not None:
+        return outcome.payment_date
+    rc = outcome.remittance_claim
+    return remittance_date(rc.remittance) if rc is not None else None
+
+
+def submitted_claim_status(work_item: WorkItem) -> ClaimStatus | None:
+    """The claim status the submission gave the claim (as mark_submitted sets it), or None.
+
+    `corrected` for a corrected claim, `appealed` for an appeal, None for any other action type or
+    when the work item has no proposal: the claim status is then left alone.
+    """
+    proposal = work_item.current_proposal
+    if proposal is None:
+        return None
+    return CLAIM_STATUS_FOR_SUBMISSION.get(str(proposal.action_type))
+
+
 def names_corrected_claim(work_item: WorkItem, rc: RemittanceClaim) -> bool:
     """CLP01 is the control number the clinic gave the corrected claim (not the original claim's)."""
     pcn = (rc.patient_control_number or "").strip()
@@ -243,13 +321,9 @@ def skip_reason(work_item: WorkItem, rc: RemittanceClaim) -> str | None:
     return None
 
 
-def candidate_work_items(session: Session, rc: RemittanceClaim) -> list[tuple[WorkItem, str]]:
-    """Submitted work items this CLP can answer, with how each matched.
-
-    Match methods: "claim_id" (same claim) or "submitted_ccn" (CLP01 equals the control number of
-    the corrected claim the clinic submitted for the work item). Work items the remittance cannot
-    answer (see :func:`skip_reason`) are left out and logged by id.
-    """
+def _matching_work_items(session: Session, rc: RemittanceClaim, statuses: tuple[str, ...]) -> list[WorkItem]:
+    """Work items in `statuses` on the CLP's claim or carrying CLP01 as their submitted control
+    number, by id, without the work item the CLP itself created (a denial is not its own outcome)."""
     conditions = []
     if rc.claim_id is not None:
         conditions.append(WorkItem.claim_id == rc.claim_id)
@@ -258,25 +332,69 @@ def candidate_work_items(session: Session, rc: RemittanceClaim) -> list[tuple[Wo
         conditions.append(WorkItem.submitted_claim_control_number == pcn)
     if not conditions:
         return []
-    stmt = (
-        select(WorkItem)
-        .where(or_(*conditions), WorkItem.status.in_(MATCHABLE_STATUSES))
-        .order_by(WorkItem.id)
-    )
+    stmt = select(WorkItem).where(or_(*conditions), WorkItem.status.in_(statuses)).order_by(WorkItem.id)
+    return [wi for wi in session.execute(stmt).scalars() if wi.remittance_claim_id != rc.id]
+
+
+def _match_method(work_item: WorkItem, rc: RemittanceClaim) -> str:
+    if rc.claim_id is not None and work_item.claim_id == rc.claim_id:
+        return MATCH_CLAIM_ID
+    return MATCH_SUBMITTED_CCN
+
+
+def candidate_work_items(session: Session, rc: RemittanceClaim) -> list[tuple[WorkItem, str]]:
+    """Submitted work items this CLP can answer, with how each matched.
+
+    Match methods: "claim_id" (same claim) or "submitted_ccn" (CLP01 equals the control number of
+    the corrected claim the clinic submitted for the work item). Work items the remittance cannot
+    answer (see :func:`skip_reason`) are left out and logged by id. Closed items are never
+    candidates here; a reversal reaches them through :func:`takeback_candidates`.
+    """
     matched: list[tuple[WorkItem, str]] = []
-    for work_item in session.execute(stmt).scalars():
-        if work_item.remittance_claim_id == rc.id:
-            continue  # the denial that created the work item is not its outcome
+    for work_item in _matching_work_items(session, rc, MATCHABLE_STATUSES):
         skipped = skip_reason(work_item, rc)
         if skipped is not None:
             log.info("remittance claim %s skipped for work item %s: %s", rc.id, work_item.id, skipped)
             continue
-        how = (
-            MATCH_CLAIM_ID
-            if rc.claim_id is not None and work_item.claim_id == rc.claim_id
-            else MATCH_SUBMITTED_CCN
-        )
-        matched.append((work_item, how))
+        matched.append((work_item, _match_method(work_item, rc)))
+    return matched
+
+
+def takeback_candidates(session: Session, rc: RemittanceClaim) -> list[tuple[WorkItem, str]]:
+    """Closed work items whose payment this reversal CLP takes back, with how each matched.
+
+    Empty for anything but a CLP02 22. A closed item qualifies when it was submitted, its latest
+    outcome (:func:`latest_outcome`) is paid or partial, the CLP matches it the two usual ways
+    without being its own originating CLP, the gates of :func:`skip_reason` pass, and the reversal's
+    remittance is dated on or after that outcome (:func:`outcome_date`); an earlier one is skipped
+    and logged by id as `remittance_before_outcome`. Items closed by hand (no outcome), closed by a
+    second denial, or whose latest outcome is already a reversal are not candidates.
+    """
+    if (rc.claim_status_code or "").strip() != REVERSAL_STATUS_CODE:
+        return []
+    dated = remittance_date(rc.remittance)
+    matched: list[tuple[WorkItem, str]] = []
+    for work_item in _matching_work_items(session, rc, TAKEBACK_STATUSES):
+        if work_item.submitted_at is None:
+            continue  # closed without ever being submitted: not a fix
+        latest = latest_outcome(work_item)
+        if latest is None or str(latest.result) not in TAKEBACK_RESULTS:
+            log.debug(
+                "remittance claim %s cannot reopen work item %s: latest outcome %s",
+                rc.id,
+                work_item.id,
+                latest.result if latest is not None else None,
+            )
+            continue
+        skipped = skip_reason(work_item, rc)
+        if skipped is None:
+            closed_on = outcome_date(latest)
+            if dated is not None and closed_on is not None and dated < closed_on:
+                skipped = SKIP_BEFORE_OUTCOME
+        if skipped is not None:
+            log.info("remittance claim %s skipped for work item %s: %s", rc.id, work_item.id, skipped)
+            continue
+        matched.append((work_item, _match_method(work_item, rc)))
     return matched
 
 
@@ -298,10 +416,16 @@ def record_outcome(
 ) -> Outcome:
     """Record the outcome of `rc` for `work_item`; returns the existing row when already recorded.
 
-    Closes the work item and sets the claim status unless the result is a reversal (the item stays
-    submitted and the claim keeps the status its submission gave it), then appends an
-    `outcome_recorded` audit event. The caller decides whether `rc` may answer the work item
-    (:func:`candidate_work_items` does); this records what it is given.
+    `payment_date` defaults to the remittance's date (:func:`remittance_date`: BPR16, else the
+    production date, else the day the file arrived), the date the gates compared, so every outcome
+    is dated and :func:`latest_outcome` orders it after the outcomes it follows.
+    Closes the work item and sets the claim status unless the result is a reversal: a reversal for a
+    submitted item leaves it submitted and the claim as its submission left it, a reversal for a
+    closed item (a take-back) returns it to submitted with `closed_at` cleared and the claim to the
+    status the submission gave it (:func:`submitted_claim_status`). Appends an `outcome_recorded`
+    audit event, and for a take-back a `work_item_reopened` event too. The caller decides whether
+    `rc` may answer the work item (:func:`candidate_work_items` and :func:`takeback_candidates` do);
+    this records what it is given.
     """
     if work_item.id is None or rc.id is None:
         session.flush()
@@ -309,8 +433,11 @@ def record_outcome(
     if existing is not None:
         return existing
 
-    if payment_date is None and rc.remittance is not None:
-        payment_date = rc.remittance.payment_date
+    if payment_date is None:
+        # The remittance's date, as the gates date it (BPR16, else the production date, else the day
+        # the file arrived): an outcome from an 835 without a payment date is still ordered after the
+        # outcomes it follows (latest_outcome orders by payment date, then id).
+        payment_date = remittance_date(rc.remittance)
 
     result, details = classify_outcome(rc, work_item.dollar_value, reasons=work_item.all_reasons)
     details["match"] = match or (MATCH_CLAIM_ID if rc.claim_id == work_item.claim_id else MATCH_SUBMITTED_CCN)
@@ -329,11 +456,16 @@ def record_outcome(
     )
     session.add(outcome)
 
+    previous_status = str(work_item.status)
     closes = result in CLOSING_RESULTS
+    reopens = result == OutcomeResult.REVERSED and previous_status in TAKEBACK_STATUSES
     if closes:
         work_item.status = str(WorkItemStatus.CLOSED)
         work_item.closed_at = now
-    claim_status = CLAIM_STATUS_FOR_RESULT.get(result)
+    elif reopens:
+        work_item.status = str(WorkItemStatus.SUBMITTED)
+        work_item.closed_at = None
+    claim_status = submitted_claim_status(work_item) if reopens else CLAIM_STATUS_FOR_RESULT.get(result)
     if claim_status is not None:
         for claim in _claims_for(work_item, rc):
             claim.status = str(claim_status)
@@ -343,6 +475,19 @@ def record_outcome(
         rc.match_method = rc.match_method or MATCH_SUBMITTED_CCN
     session.flush()
 
+    event_details: dict[str, Any] = {
+        "result": str(result),
+        "paid_amount": str(paid),
+        "remittance_claim_id": rc.id,
+        "remittance_id": rc.remittance_id,
+        "outcome_id": outcome.id,
+        "match": details["match"],
+        "reason": details["reason"],
+        "remaining_denials": details["remaining_denials"],
+        "work_item_status": str(work_item.status),
+    }
+    if reopens:
+        event_details["previous_work_item_status"] = previous_status
     audit.record(
         session,
         actor_type=ActorType.SYSTEM,
@@ -351,24 +496,32 @@ def record_outcome(
         entity_type="work_item",
         entity_id=work_item.id,
         claim_id=work_item.claim_id,
-        details={
-            "result": str(result),
-            "paid_amount": str(paid),
-            "remittance_claim_id": rc.id,
-            "remittance_id": rc.remittance_id,
-            "outcome_id": outcome.id,
-            "match": details["match"],
-            "reason": details["reason"],
-            "remaining_denials": details["remaining_denials"],
-            "work_item_status": str(work_item.status),
-        },
+        details=event_details,
     )
+    if reopens:
+        audit.record(
+            session,
+            actor_type=ActorType.SYSTEM,
+            actor_id=actor_id,
+            action="work_item_reopened",
+            entity_type="work_item",
+            entity_id=work_item.id,
+            claim_id=work_item.claim_id,
+            details={
+                "previous_status": previous_status,
+                "reason": REOPEN_REASON,
+                "remittance_claim_id": rc.id,
+                "remittance_id": rc.remittance_id,
+                "outcome_id": outcome.id,
+                "claim_status": str(work_item.claim.status) if work_item.claim is not None else None,
+            },
+        )
     log.info(
         "outcome %s recorded for work item %s from remittance claim %s (%s)",
         result,
         work_item.id,
         rc.id,
-        "closed" if closes else "still submitted",
+        "closed" if closes else ("reopened" if reopens else "still submitted"),
     )
     return outcome
 
@@ -376,26 +529,42 @@ def record_outcome(
 def record_outcomes_for_remittance(
     session: Session, remittance: Remittance, *, actor_id: str = OUTCOMES_ACTOR
 ) -> list[Outcome]:
-    """Record outcomes for every CLP in `remittance` that pays, denies or reverses a submitted fix.
+    """Record outcomes for every CLP in `remittance` that pays, denies or reverses a submitted fix, or
+    takes back the payment of a closed one.
 
-    Reversal CLPs (CLP02 22) are evaluated last so that, when the same 835 reverses a payment and
-    re-adjudicates the claim, the re-adjudication is the recorded outcome.
+    Pass one hands every reversal CLP (CLP02 22) to the closed items it can reopen
+    (:func:`takeback_candidates`). Pass two hands every CLP to the submitted items
+    (:func:`candidate_work_items`), reversals last so that, when the same 835 reverses a payment and
+    re-adjudicates the claim, the re-adjudication is the outcome that stands: an item pass one
+    reopened is closed again by it. A (work item, CLP) pair already recorded is skipped, so a
+    reopened item's reversal is not recorded twice in pass two and a re-run changes nothing.
     """
     created: list[Outcome] = []
-    ordered = sorted(
-        remittance.claims,
-        key=lambda rc: (rc.claim_status_code == REVERSAL_STATUS_CODE, rc.sequence or 0, rc.id or 0),
-    )
+    taken_back = 0
+    dated = remittance_date(remittance)  # every outcome of this file carries the date the gates used
+    by_sequence = sorted(remittance.claims, key=lambda rc: (rc.sequence or 0, rc.id or 0))
+    for rc in by_sequence:
+        for work_item, how in takeback_candidates(session, rc):
+            if existing_outcome(session, work_item, rc) is not None:
+                continue
+            created.append(
+                record_outcome(session, work_item, rc, payment_date=dated, match=how, actor_id=actor_id)
+            )
+            taken_back += 1
+    ordered = sorted(by_sequence, key=lambda rc: rc.claim_status_code == REVERSAL_STATUS_CODE)
     for rc in ordered:
         for work_item, how in candidate_work_items(session, rc):
             if existing_outcome(session, work_item, rc) is not None:
                 continue
             created.append(
-                record_outcome(
-                    session, work_item, rc, payment_date=remittance.payment_date, match=how, actor_id=actor_id
-                )
+                record_outcome(session, work_item, rc, payment_date=dated, match=how, actor_id=actor_id)
             )
-    log.info("remittance %s: %d outcome(s) recorded", remittance.id, len(created))
+    log.info(
+        "remittance %s: %d outcome(s) recorded, %d of them take-backs of closed work items",
+        remittance.id,
+        len(created),
+        taken_back,
+    )
     return created
 
 
@@ -410,21 +579,32 @@ def _claims_for(work_item: WorkItem, rc: RemittanceClaim) -> list[Claim]:
 
 __all__ = [
     "CLAIM_STATUS_FOR_RESULT",
+    "CLAIM_STATUS_FOR_SUBMISSION",
     "CLOSING_RESULTS",
     "MATCHABLE_STATUSES",
     "PAID_THRESHOLD",
+    "REOPEN_REASON",
+    "SKIP_BEFORE_OUTCOME",
     "SKIP_BEFORE_SUBMISSION",
     "SKIP_OTHER_PAYER",
+    "TAKEBACK_RESULTS",
+    "TAKEBACK_STATUSES",
     "candidate_work_items",
     "classify_outcome",
     "disputed_scope",
     "existing_outcome",
+    "latest_outcome",
     "names_corrected_claim",
     "on_disputed_lines",
+    "ordered_outcomes",
+    "outcome_date",
+    "outcome_sort_key",
     "paid_threshold",
     "record_outcome",
     "record_outcomes_for_remittance",
     "remaining_denial_codes",
     "remittance_date",
     "skip_reason",
+    "submitted_claim_status",
+    "takeback_candidates",
 ]

@@ -29,7 +29,7 @@ proof-of-concept gate, roughly 26 weeks to a cloud pilot. Status below is as of 
 | M7 Review queue | Work list sorted by deadline and dollar value; approve, edit or reject with a reason; export package; imports page | A reviewer clears 20 synthetic items without touching the database | `app/review/`, `app/auth/`, `app/templates/` | built and tested (`tests/test_review_queue.py::test_reviewer_clears_twenty_items_over_http`) |
 | M8 Outcomes and audit | Matches later 835s to submitted fixes; dashboard; append-only audit log; login with MFA | Full loop runs on synthetic data, every step logged | `app/outcomes/`, `app/audit/`, `app/api/` | built and tested (`tests/test_end_to_end_synthetic.py`, `tests/test_outcomes.py`, `tests/test_audit.py`) |
 
-`docs/TESTING.md` maps the plan's testing table to the test files (793 tests on Oct 28, 2026, all
+`docs/TESTING.md` maps the plan's testing table to the test files (827 tests on Oct 29, 2026, all
 green on SQLite with the stub model). An adversarial review on the same day produced the fixes now in
 the code (outcome rule, deadlines, note scanning, injection policy, purge-clinic disk cleanup, worker
 and uvicorn log masking, placeholder `SECRET_KEY` refusal, per-payer windows, pagination, TOTP replay

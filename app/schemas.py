@@ -589,6 +589,11 @@ class DashboardMetrics(BaseModel):
     denied_again: int = 0
     overturn_rate: float | None = None
     recovered_dollars: Decimal = Decimal("0")
+    # Submitted fixes whose latest outcome is a reversal: a payment the payer took back (or the
+    # original adjudication reversed) while the re-adjudication is still awaited. Their earlier
+    # payments are no longer in recovered_dollars; taken_back_dollars says how much that was.
+    reversed_fixes: int = 0
+    taken_back_dollars: Decimal = Decimal("0")
     avg_review_minutes: float | None = None
     reviewed_items: int = 0
     by_category: list[CategoryMetric] = Field(default_factory=list)

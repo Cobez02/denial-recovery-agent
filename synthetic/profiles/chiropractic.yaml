@@ -1,0 +1,1363 @@
+# Synthetic specialty profile: chiropractic, the specialty chosen for the pilot on 2026-10-29
+# (docs/SPECIALTY.md lists the payer mix, the denial patterns with their sources and the
+# assumptions the certified coder confirms). Everything here is fictional: the fee schedule is
+# invented, the payers, addresses and identifiers do not exist, and the clinic and provider NPIs
+# pass the check digit and had no record in the CMS NPPES registry when they were checked on
+# 2026-10-30 (the check digit alone cannot tell an unassigned NPI from a real one, so every new
+# synthetic NPI is looked up first; synthetic/README.md, "Rules").
+#
+# Loaded by synthetic/profile.py into a Profile dataclass. Templates (notes, letters) use {placeholders}
+# that synthetic/generate.py fills per claim; the full placeholder list is in synthetic/README.md.
+# Letters and notes deliberately contain no phone numbers or e-mail addresses: the redaction scanner
+# treats those as generic identifiers and would refuse to send a prompt that carries them.
+#
+# Payer billing rules are data: `kind_modifiers` (the modifiers every line of a kind carries for that
+# payer), `noncovered` (line kinds the payer never pays, denied with an informational CAS that creates
+# no work item), `excluded_kinds` (line kinds the clinic does not bill to that payer), `code_map`
+# (codes the payer wants in place of others), `age_bands` (the patients' ages), `sequestration_rate`
+# (CO-253 on paid lines), `ordering_provider_kinds` (line kinds whose claims carry the ordering
+# provider) and `letters` (the payer's own letter paragraphs). Scenarios name the payers they are
+# realistic for (`requires_payers`).
+#
+# Regions: every diagnosis and every CMT detail names its spinal (or extremity) region, and the CMT
+# slot of each encounter pairs the diagnoses by region (`pair_regions`): one subluxation level and the
+# condition of the same region per treated region, two pairs at most (a service line points to four
+# diagnoses at most, CMS-1500 Item 24E, so for 3-5 regions the two most pertinent pairs go on the line
+# and the record holds the rest). The
+# segment a note names for a level is the segment the CMT detail says was adjusted there.
+
+name: chiropractic
+specialty: Chiropractic
+place_of_service: "11"
+referring_rate: 0.0
+benign_note_rate: 0.30
+
+clinic:
+  name: Alder Creek Family Chiropractic
+  npi: "1975310867"
+  tax_id: "83-5559012"
+  receiver_id: ALDERCREEKCHIRO
+  address:
+    line1: 2250 Birchwater Lane, Suite 4
+    city: Thistle Creek
+    state: ID
+    zip: "83614"
+
+payers:
+  # A traditional Medicare Part B contractor: spinal CMT with AT only; everything else a chiropractor
+  # bills is statutorily non-covered (GY, PR-96 N425). 12-month filing limit, reopenings within a
+  # year (no replacement claims), redetermination within 120 days. Beneficiaries are mostly 65 and
+  # over; a minority are under 65 (disability or ESRD entitlement). 2% sequestration on payments.
+  # Medicare does not recognise 97014 (G0283 is billed instead) and wants the ordering provider on
+  # every radiology claim, the chiropractor's own films included.
+  - payer_id: GBMB1
+    name: Great Basin Medicare Part B
+    timely_filing_days: 365
+    corrected_claim_days: 365
+    appeal_days: 120
+    member_id_prefix: GB
+    filing_indicator: MB
+    tax_id: "921234567"
+    address: {line1: PO Box 7100, city: Harrowgate, state: MN, zip: "55318"}
+    phone: "8005550171"
+    allowed_ratio: 0.50
+    weight: 34
+    patient_responsibility_rate: 0.60
+    copay_amounts: []
+    age_bands:
+      - {range: [65, 92], weight: 88}
+      - {range: [40, 64], weight: 12}
+    sequestration_rate: 0.02
+    code_map: {"97014": "G0283"}
+    ordering_provider_kinds: [xray]
+    kind_modifiers:
+      cmt: ["AT"]
+      therapy: ["GP", "GY"]
+      xray: ["GY"]
+      em: ["GY"]
+      extraspinal: ["GY"]
+    noncovered:
+      - {kinds: [therapy, xray, em, extraspinal], group: PR, carc: "96", rarcs: ["N425"]}
+    letters:
+      corrected_claim_rights: >-
+        Medicare does not accept replacement claims (frequency code 7): a clerical error on this
+        claim is corrected by a reopening request within one year of the date of this notice, and a
+        claim returned as unprocessable, or one that belongs to another plan, is submitted as a new
+        claim. Requests for redetermination may be submitted within {appeal_days} days.
+  # A Medicare Advantage plan: the Medicare CMT benefit (AT) plus a supplemental routine benefit that
+  # pays E/M and therapies (GP, NCCI bundling, modifier 25); X-rays and extraspinal CMT non-covered;
+  # a plan of care must be authorized after six visits or eight weeks. Reconsideration 60 days after
+  # receipt, receipt presumed five days after the notice. Medicare billing rules (G0283, the ordering
+  # provider on radiology) and the 2% sequestration apply.
+  - payer_id: GPMA2
+    name: Granite Peak Medicare Advantage
+    timely_filing_days: 365
+    corrected_claim_days: 365
+    appeal_days: 65
+    member_id_prefix: GP
+    filing_indicator: "16"
+    tax_id: "922345678"
+    address: {line1: PO Box 9400, city: Cedar Hollow, state: WA, zip: "98312"}
+    phone: "8005550182"
+    allowed_ratio: 0.55
+    weight: 22
+    patient_responsibility_rate: 0.50
+    copay_amounts: [20, 30]
+    age_bands:
+      - {range: [65, 92], weight: 92}
+      - {range: [40, 64], weight: 8}
+    sequestration_rate: 0.02
+    code_map: {"97014": "G0283"}
+    ordering_provider_kinds: [xray]
+    kind_modifiers:
+      cmt: ["AT"]
+      therapy: ["GP"]
+      xray: ["GY"]
+      extraspinal: ["GY"]
+    noncovered:
+      - {kinds: [xray, extraspinal], group: PR, carc: "96", rarcs: ["N425"]}
+  # A commercial PPO with a 20-visit annual limit and a delegated utilization-management vendor that
+  # reviews the treatment plan after five visits; GP on physical-medicine codes. Working-age members,
+  # a few still employed past 65.
+  - payer_id: SWPPO3
+    name: Sawtooth Health Plan PPO
+    timely_filing_days: 90
+    corrected_claim_days: 90
+    appeal_days: 180
+    member_id_prefix: SW
+    filing_indicator: "12"
+    tax_id: "923456789"
+    address: {line1: 410 Harborlight Way, city: Port Alder, state: OR, zip: "97218"}
+    phone: "8005550193"
+    allowed_ratio: 0.72
+    weight: 28
+    patient_responsibility_rate: 0.45
+    copay_amounts: [25, 35, 45]
+    age_bands:
+      - {range: [18, 64], weight: 95}
+      - {range: [65, 72], weight: 5}
+    kind_modifiers:
+      therapy: ["GP"]
+  # A state Medicaid plan with a limited chiropractic benefit: CMT (AT) up to 20 per calendar year
+  # without a service authorization, limited E/M with modifier 25, spinal X-rays; adjunctive therapies
+  # and extraspinal manipulation are not covered, so the clinic does not bill them to this payer.
+  # Adults under 65 (a member 65 or over would be dually eligible with Medicare primary).
+  - payer_id: TLMC4
+    name: Timberline Medicaid Plan
+    timely_filing_days: 180
+    corrected_claim_days: 180
+    appeal_days: 60
+    member_id_prefix: TL
+    filing_indicator: MC
+    tax_id: "924567890"
+    address: {line1: PO Box 2600, city: Stonefield, state: PA, zip: "17228"}
+    phone: "8005550164"
+    allowed_ratio: 0.45
+    weight: 16
+    patient_responsibility_rate: 0.0
+    copay_amounts: []
+    age_bands:
+      - {range: [18, 64], weight: 1}
+    kind_modifiers:
+      cmt: ["AT"]
+    excluded_kinds: [therapy, extraspinal]
+
+providers:
+  - {first_name: Rowan, last_name: Halvorsen, credential: DC, npi: "1428573012", weight: 55}
+  - {first_name: Imogen, last_name: Castellane, credential: DC, npi: "1732050806", weight: 45}
+
+# The chiropractor orders the clinic's own X-rays; no outside referring provider is billed. The
+# payers that want the ordering provider on radiology claims get the rendering chiropractor there
+# (`ordering_provider_kinds`); a scenario overrides it with claim_setup referring_provider.
+referring_providers: []
+
+modifiers: ["25", "59", "XS", "XU", "AT", "GA", "GY", "GZ", "GP", "76", "77"]
+
+# Fee schedule. role: em | procedure. kind is free text that scenarios and payer rules target:
+# em, cmt, extraspinal, therapy, xray. `detail` texts are drawn into the notes ({cmt_detail}, ...),
+# one per line; a CMT detail names a segment in as many regions as the code requires (`regions`
+# maps each region to the segment adjusted there). `regions` on a code is the region it covers (an
+# X-ray series), so an encounter's X-ray matches a treated region.
+codes:
+  "99202":
+    description: "Office visit, new patient, straightforward decision making"
+    charge: 150.00
+    role: em
+    kind: em
+    detail:
+      - "new-patient history of onset, PART examination of the spine and straightforward decision making, 20 minutes"
+  "99203":
+    description: "Office visit, new patient, low complexity"
+    charge: 205.00
+    role: em
+    kind: em
+    detail:
+      - "new-patient history (onset, mechanism, aggravating and relieving factors, prior care), PART examination of every spinal region, neurological screen and low-complexity decision making, 30 minutes"
+  "99204":
+    description: "Office visit, new patient, moderate complexity"
+    charge: 285.00
+    role: em
+    kind: em
+    detail:
+      - "new-patient history with radiating symptoms, PART and neurological examination, review of imaging and moderate-complexity decision making, 45 minutes"
+  "99212":
+    description: "Office visit, established patient, straightforward"
+    charge: 95.00
+    role: em
+    kind: em
+    detail:
+      - "problem-focused re-examination of the regions under care, 10 minutes"
+  "99213":
+    description: "Office visit, established patient, low complexity"
+    charge: 120.00
+    role: em
+    kind: em
+    detail:
+      - "re-examination with outcome measures (pain scale, range of motion, functional index) and a revised treatment plan, 20 minutes"
+  "99214":
+    description: "Office visit, established patient, moderate complexity"
+    charge: 170.00
+    role: em
+    kind: em
+    detail:
+      - "re-examination of a new injury with neurological screen, review of imaging and a revised plan, 30 minutes"
+  "98940":
+    description: "Chiropractic manipulative treatment, spinal, 1-2 regions"
+    charge: 60.00
+    role: procedure
+    kind: cmt
+    detail:
+      - text: "cervical region (C5-C6) and thoracic region (T4-T5) adjusted: two spinal regions"
+        regions: {cervical: C5-C6, thoracic: T4-T5}
+      - text: "lumbar region (L4-L5) and pelvic region (left sacroiliac joint) adjusted: two spinal regions"
+        regions: {lumbar: L4-L5, pelvic: left sacroiliac joint}
+      - text: "thoracic region (T6-T7) and lumbar region (L3-L4) adjusted: two spinal regions"
+        regions: {thoracic: T6-T7, lumbar: L3-L4}
+      - text: "cervical region (C2-C3) adjusted: one spinal region"
+        regions: {cervical: C2-C3}
+      - text: "lumbar region (L5-S1) adjusted: one spinal region"
+        regions: {lumbar: L5-S1}
+  "98941":
+    description: "Chiropractic manipulative treatment, spinal, 3-4 regions"
+    charge: 78.00
+    role: procedure
+    kind: cmt
+    detail:
+      - text: "cervical (C5-C6), thoracic (T6-T7) and lumbar (L4-L5) regions adjusted: three spinal regions"
+        regions: {cervical: C5-C6, thoracic: T6-T7, lumbar: L4-L5}
+      - text: "thoracic (T4-T5), lumbar (L3-L4) and pelvic (left sacroiliac joint) regions adjusted: three spinal regions"
+        regions: {thoracic: T4-T5, lumbar: L3-L4, pelvic: left sacroiliac joint}
+      - text: "cervical (C2-C3), thoracic (T8-T9), lumbar (L5-S1) and pelvic (right sacroiliac joint) regions adjusted: four spinal regions"
+        regions: {cervical: C2-C3, thoracic: T8-T9, lumbar: L5-S1, pelvic: right sacroiliac joint}
+  "98942":
+    description: "Chiropractic manipulative treatment, spinal, 5 regions"
+    charge: 98.00
+    role: procedure
+    kind: cmt
+    detail:
+      - text: "cervical (C1-C2), thoracic (T3-T4), lumbar (L5-S1), sacral (S1-S2) and pelvic (right sacroiliac joint) regions adjusted: five spinal regions"
+        regions: {cervical: C1-C2, thoracic: T3-T4, lumbar: L5-S1, sacral: S1-S2, pelvic: right sacroiliac joint}
+      - text: "cervical (C6-C7), thoracic (T5-T6), lumbar (L4-L5), sacral (sacral base) and pelvic (left sacroiliac joint) regions adjusted: five spinal regions"
+        regions: {cervical: C6-C7, thoracic: T5-T6, lumbar: L4-L5, sacral: sacral base, pelvic: left sacroiliac joint}
+  "98943":
+    description: "Chiropractic manipulative treatment, extraspinal, 1 or more regions"
+    charge: 45.00
+    role: procedure
+    kind: extraspinal
+    detail:
+      - text: "right shoulder (glenohumeral joint) adjusted: one extraspinal region"
+        regions: [right shoulder]
+      - text: "left shoulder (acromioclavicular joint) adjusted: one extraspinal region"
+        regions: [left shoulder]
+  "97110":
+    description: "Therapeutic exercise, each 15 minutes"
+    charge: 55.00
+    role: procedure
+    kind: therapy
+    units: [1, 2]
+    detail:
+      - text: "lumbar stabilization, hip hinge and bridging progression, supervised one-on-one, 15 minutes per unit"
+        regions: [lumbar, pelvic]
+      - text: "cervical retraction, scapular retraction and deep neck flexor endurance, supervised one-on-one, 15 minutes per unit"
+        regions: [cervical]
+      - text: "thoracic extension mobility and scapular stabilization, supervised one-on-one, 15 minutes per unit"
+        regions: [thoracic]
+  "97140":
+    description: "Manual therapy techniques, each 15 minutes"
+    charge: 55.00
+    role: procedure
+    kind: therapy
+    units: [1, 2]
+    detail:
+      - "myofascial release and joint mobilization, 15 minutes per unit"
+      - "instrument-assisted soft tissue mobilization, 15 minutes per unit"
+  "97012":
+    description: "Mechanical traction"
+    charge: 32.00
+    role: procedure
+    kind: therapy
+    detail:
+      - "intermittent mechanical traction, an untimed service billed once per visit"
+  "97014":
+    description: "Electrical stimulation, unattended"
+    charge: 32.00
+    role: procedure
+    kind: therapy
+    detail:
+      - "interferential current to the paraspinal muscles, unattended, an untimed service billed once per visit"
+  "G0283":
+    description: "Electrical stimulation, unattended, other than wound care"
+    charge: 32.00
+    role: procedure
+    kind: therapy
+    detail:
+      - "interferential current to the paraspinal muscles, unattended, an untimed service billed once per visit"
+  "97124":
+    description: "Massage, each 15 minutes"
+    charge: 50.00
+    role: procedure
+    kind: therapy
+    detail:
+      - "effleurage and petrissage to the paraspinal muscles, 15 minutes"
+  "97035":
+    description: "Ultrasound, each 15 minutes"
+    charge: 35.00
+    role: procedure
+    kind: therapy
+    detail:
+      - "therapeutic ultrasound to the paraspinal muscles, 1.0 W per square centimetre continuous, 8 minutes (one unit under the 8-minute rule)"
+  "72040":
+    description: "X-ray, cervical spine, 2 or 3 views"
+    charge: 95.00
+    role: procedure
+    kind: xray
+    regions: [cervical]
+    detail:
+      - "cervical spine, AP, lateral and open-mouth odontoid views, 3 views"
+  "72070":
+    description: "X-ray, thoracic spine, 2 views"
+    charge: 100.00
+    role: procedure
+    kind: xray
+    regions: [thoracic]
+    detail:
+      - "thoracic spine, AP and lateral views, 2 views"
+  "72100":
+    description: "X-ray, lumbosacral spine, 2 or 3 views"
+    charge: 105.00
+    role: procedure
+    kind: xray
+    regions: [lumbar, sacral, pelvic]
+    detail:
+      - "lumbosacral spine, AP and lateral views, 2 views"
+
+# `regions` is where the condition is (the pairing key), `sites` the segments or areas a note may
+# name for it when no CMT detail names one, `lesion` the finding. The secondary codes are from the
+# WPS A56273 Groups 2-4 lists (M54.5 is billed as M54.50; M51.36 was split on 2024-10-01 and is
+# billed as M51.360).
+diagnoses:
+  "M99.01": {description: "Segmental and somatic dysfunction of cervical region", regions: [cervical], sites: [C2-C3, C5-C6, C6-C7], lesion: "restricted segmental motion with paraspinal hypertonicity and tenderness"}
+  "M99.02": {description: "Segmental and somatic dysfunction of thoracic region", regions: [thoracic], sites: [T4-T5, T6-T7, T8-T9], lesion: "fixation with tenderness on motion palpation and tissue texture change"}
+  "M99.03": {description: "Segmental and somatic dysfunction of lumbar region", regions: [lumbar], sites: [L3-L4, L4-L5, L5-S1], lesion: "restricted motion with paraspinal spasm and tenderness"}
+  "M99.05": {description: "Segmental and somatic dysfunction of pelvic region", regions: [pelvic], sites: [left sacroiliac joint, right sacroiliac joint], lesion: "asymmetry with restricted motion and tenderness"}
+  "M54.2": {description: "Cervicalgia", regions: [cervical], sites: [cervical spine, suboccipital region], lesion: "neck pain with restricted rotation"}
+  "M54.12": {description: "Radiculopathy, cervical region", regions: [cervical], sites: [cervical spine, right upper extremity], lesion: "radiating arm pain with paresthesia"}
+  "M50.30": {description: "Other cervical disc degeneration, unspecified cervical region", regions: [cervical], sites: [cervical spine], lesion: "degenerative disc changes with restricted motion"}
+  "M47.812": {description: "Spondylosis without myelopathy or radiculopathy, cervical region", regions: [cervical], sites: [cervical spine], lesion: "spondylosis with restricted range of motion"}
+  "S13.4XXA": {description: "Sprain of ligaments of cervical spine, initial encounter", regions: [cervical], sites: [cervical spine], lesion: "acute cervical sprain with guarding"}
+  "M54.6": {description: "Pain in thoracic spine", regions: [thoracic], sites: [mid-thoracic spine, interscapular region], lesion: "thoracic pain with restricted extension"}
+  "S23.3XXA": {description: "Sprain of ligaments of thoracic spine, initial encounter", regions: [thoracic], sites: [thoracic spine], lesion: "acute thoracic sprain with guarding"}
+  "M62.830": {description: "Muscle spasm of back", regions: [thoracic, lumbar], sites: [thoracic paraspinal muscles, lumbar paraspinal muscles], lesion: "palpable muscle spasm with tenderness"}
+  "M54.50": {description: "Low back pain, unspecified", regions: [lumbar, pelvic], sites: [lumbosacral region, lumbar paraspinal muscles], lesion: "low back pain aggravated by flexion"}
+  "M54.16": {description: "Radiculopathy, lumbar region", regions: [lumbar], sites: [lumbar spine, left lower extremity], lesion: "radiating leg pain with a positive straight-leg raise"}
+  "M51.360": {description: "Other intervertebral disc degeneration, lumbar region with discogenic back pain only", regions: [lumbar], sites: [lumbar spine], lesion: "degenerative disc changes with discogenic back pain"}
+  "M47.816": {description: "Spondylosis without myelopathy or radiculopathy, lumbar region", regions: [lumbar], sites: [lumbar spine], lesion: "spondylosis with restricted extension"}
+  "S33.5XXA": {description: "Sprain of ligaments of lumbar spine, initial encounter", regions: [lumbar], sites: [lumbar spine], lesion: "acute lumbar sprain with antalgic posture"}
+  "S33.6XXA": {description: "Sprain of sacroiliac joint, initial encounter", regions: [pelvic], sites: [left sacroiliac joint, right sacroiliac joint], lesion: "acute sacroiliac sprain with a positive provocation test"}
+  # Extremity conditions: the extraspinal manipulation and the manual therapy to a region that was
+  # not manipulated point to these.
+  "M25.511": {description: "Pain in right shoulder", regions: [right shoulder], sites: [right shoulder], lesion: "restricted glenohumeral motion with rotator cuff tenderness"}
+  "M25.512": {description: "Pain in left shoulder", regions: [left shoulder], sites: [left shoulder], lesion: "restricted glenohumeral motion with rotator cuff tenderness"}
+  "M25.551": {description: "Pain in right hip", regions: [right hip], sites: [right hip], lesion: "restricted hip internal rotation with lateral hip tenderness"}
+  "M25.552": {description: "Pain in left hip", regions: [left hip], sites: [left hip], lesion: "restricted hip internal rotation with lateral hip tenderness"}
+  "M25.561": {description: "Pain in right knee", regions: [right knee], sites: [right knee], lesion: "patellofemoral pain with restricted flexion"}
+  "M25.562": {description: "Pain in left knee", regions: [left knee], sites: [left knee], lesion: "patellofemoral pain with restricted flexion"}
+  # Codes no encounter bills: the declared pool the inconsistent-diagnosis scenarios swap onto the
+  # claim (a symptom code the claim led with instead of the subluxation level; the loader rejects a
+  # pool code an encounter bills).
+  "G44.86": {description: "Cervicogenic headache", sites: [suboccipital region], lesion: "headache reproduced by suboccipital palpation"}
+  "G44.209": {description: "Tension-type headache, unspecified, not intractable", sites: [occipital region], lesion: "tension-type headache"}
+  "R51.9": {description: "Headache, unspecified", sites: [head], lesion: "headache"}
+  "M54.9": {description: "Dorsalgia, unspecified", sites: [back], lesion: "back pain"}
+  "M79.10": {description: "Myalgia, unspecified site", sites: [paraspinal muscles], lesion: "muscle pain"}
+
+# Profile-defined placeholders for the notes, drawn once per claim in this order: a list is a choice,
+# {range: [lo, hi]} an integer (a bound may name an earlier integer placeholder), {days_before_service:
+# [lo, hi]} an ISO date that many days before the date of service, {bundle: [...]} one mapping whose
+# placeholders are drawn together (a plan's frequency, length, visit count and re-examination interval
+# always agree: 3 x 2 + 2 x 4 = 14 visits).
+vocabulary:
+  plan:
+    bundle:
+      - {plan_frequency: "three times a week for two weeks, then twice a week", plan_weeks: "6", plan_visits: "14", reexam_visits: "6"}
+      - {plan_frequency: "twice a week", plan_weeks: "4", plan_visits: "8", reexam_visits: "8"}
+      - {plan_frequency: "twice a week", plan_weeks: "6", plan_visits: "12", reexam_visits: "6"}
+      - {plan_frequency: "three times a week", plan_weeks: "4", plan_visits: "12", reexam_visits: "6"}
+  # the visit within the plan; a visit after the first six (the MA plan's review point); the clinic's
+  # own count of the calendar year's visits (below the PPO's 20-visit benefit)
+  visit_number: {range: [3, plan_visits]}
+  pa_visit_number: {range: [7, plan_visits]}
+  year_visit_count: {range: [9, 19]}
+  pain_initial: {range: [7, 9]}
+  pain_now: {range: [2, 5]}
+  rom_initial: {range: [35, 55]}
+  rom_now: {range: [10, 25]}
+  oswestry_initial: {range: [44, 62]}
+  oswestry_now: {range: [18, 32]}
+  ndi_initial: {range: [38, 56]}
+  ndi_now: {range: [14, 28]}
+  initial_treatment_date: {days_before_service: [10, 42]}
+  onset_date: {days_before_service: [43, 84]}
+  mechanism:
+    - "lifting a heavy box"
+    - "a rear-end motor vehicle collision"
+    - "prolonged computer work"
+    - "a fall on an icy sidewalk"
+    - "a weekend of yard work"
+    - "sleeping in an awkward position"
+  work_mechanism:
+    - "lifting a heavy box at work"
+    - "a fall from a ladder at work"
+    - "a repetitive lifting task on the job"
+  technique: ["diversified", "drop-table", "instrument-assisted"]
+  goal_activity:
+    - "full-time work without restriction"
+    - "walking 30 minutes"
+    - "sleeping through the night"
+    - "lifting a grandchild"
+    - "recreational cycling"
+  new_complaint: ["right shoulder", "left knee", "right hip", "left elbow", "right wrist"]
+
+# Encounter templates: what a chiropractic visit log shows. Tags are what scenarios require
+# (`follow_up`: an established patient's visit within a plan of care; `established_em`: an
+# established patient's E/M with CMT; `new_patient`: the initial examination). An E/M is present
+# with em_probability (scenarios can force it); a procedure slot is present with probability.
+# Diagnosis group 1 holds the subluxation levels, group 2 the related neuromusculoskeletal
+# conditions, group 3 an extremity condition where one applies. The CMT slot pairs groups 1 and 2
+# by region (`pair_regions`, at most two pairs); an X-ray slot matches a treated region
+# (`match_regions`); a therapy line points to the condition of the first pair and draws an exercise
+# text for that region; extremity lines point to group 3.
+encounters:
+  - id: initial_exam_with_xrays
+    weight: 10
+    tags: [em_plus_cmt, has_em, has_cmt, has_xray, initial_visit, new_patient]
+    em_codes: ["99203", "99204"]
+    em_probability: 1.0
+    em_modifier_25: true
+    procedures:
+      - {codes: ["98940", "98941"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["72040", "72070", "72100"], dx_groups: [2], match_regions: true}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M47.812", "M50.30", "M54.6", "M54.50", "M47.816", "M51.360"]
+  - id: re_examination_visit
+    weight: 8
+    tags: [em_plus_cmt, has_em, has_cmt, re_exam, follow_up, established_em]
+    em_codes: ["99213", "99214"]
+    em_probability: 1.0
+    em_modifier_25: true
+    procedures:
+      - {codes: ["98940", "98941", "98942"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["97110"], probability: 0.5, dx_groups: [2]}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M54.12", "M54.6", "M62.830", "M54.50", "M54.16", "M51.360"]
+  - id: routine_cmt_only
+    weight: 20
+    tags: [cmt_only, has_cmt, follow_up]
+    em_codes: []
+    procedures:
+      - {codes: ["98940", "98941", "98942"], dx_groups: [1, 2], pair_regions: true}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M54.12", "M50.30", "M54.6", "M54.50", "M54.16", "M51.360", "M47.816"]
+  - id: cmt_with_therapies
+    weight: 18
+    tags: [has_cmt, has_therapy, therapy_exercise, follow_up]
+    em_codes: []
+    procedures:
+      - {codes: ["98940", "98941", "98942"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["97110"], dx_groups: [2]}
+      - {codes: ["97012", "97014", "97035"], probability: 0.7, dx_groups: [2]}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M54.12", "M50.30", "M54.6", "M62.830", "M54.50", "M54.16", "M51.360"]
+  - id: cmt_with_manual_therapy_separate_region
+    weight: 8
+    tags: [has_cmt, has_therapy, manual_therapy_separate_region, follow_up]
+    em_codes: []
+    procedures:
+      - {codes: ["98940", "98941"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["97140"], modifiers: ["XS"], dx_groups: [3]}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M54.6", "M54.50", "M54.16"]
+      - ["M25.511", "M25.512", "M25.551", "M25.552", "M25.561", "M25.562"]
+  # Manual therapy in a manipulated region is never separately payable (NCCI ch. 11 sec. S): the
+  # MA plan and the PPO would deny it, so the encounter only appears with the scenario that says so.
+  - id: cmt_with_manual_therapy_same_region
+    weight: 6
+    scenario_only: true
+    tags: [manual_therapy_same_region]
+    em_codes: []
+    procedures:
+      - {codes: ["98940", "98941"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["97140"], dx_groups: [2]}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M54.6", "M62.830", "M54.50"]
+  - id: exacerbation_visit_with_em
+    weight: 7
+    tags: [em_plus_cmt, has_em, has_cmt, injury, follow_up, established_em]
+    em_codes: ["99213", "99214"]
+    em_probability: 1.0
+    em_modifier_25: true
+    procedures:
+      - {codes: ["98940", "98941"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["97110", "97012", "97014"], probability: 0.5, dx_groups: [2]}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["S13.4XXA", "S23.3XXA", "S33.5XXA", "S33.6XXA"]
+  - id: cmt_with_extraspinal
+    weight: 4
+    tags: [has_cmt, has_extraspinal, follow_up]
+    em_codes: []
+    procedures:
+      - {codes: ["98940", "98941"], dx_groups: [1, 2], pair_regions: true}
+      - {codes: ["98943"], dx_groups: [3]}
+    diagnosis_groups:
+      - ["M99.01", "M99.02", "M99.03", "M99.05"]
+      - ["M54.2", "M54.6", "M54.50", "M54.16"]
+      - ["M25.511", "M25.512"]
+
+# Denial scenarios. level: claim | line. amount: full (whole charge denied with the CARC) or allowed
+# (CO-45 contractual on the non-allowed part, the CARC on the allowed part). target picks the denied
+# line; requires_tags restricts the encounter; requires_payers restricts the payer; claim_setup
+# alters the claim before adjudication. Ground truth = category + expected_action. Notes are what
+# the clinic would supply; letters are what the payer would send (untrusted data). "documented" and
+# "typical" in a description say whether the research shows the exact code pair (docs/SPECIALTY.md).
+scenarios:
+  - id: elig_coverage_terminated
+    description: Coverage ended before the date of service; claim denied in full (documented, 27/N30).
+    category: eligibility
+    expected_action: clinic_question
+    weight: 6
+    carc: "27"
+    rarcs: ["N30"]
+    group: CO
+    level: claim
+    letter: >-
+      Our records show that the member's coverage under this plan ended before the date of service
+      shown above. {carc_quote} {rarc_quote} Please verify the member's current coverage and submit
+      the claim to the responsible carrier.
+
+  - id: elig_ma_enrollee_billed_to_medicare
+    description: The beneficiary was enrolled in a Medicare Advantage plan on the date of service; Part B denies as covered under a managed care plan and the letter names the plan (documented, 24).
+    category: eligibility
+    expected_action: corrected_claim
+    weight: 4
+    carc: "24"
+    rarcs: []
+    group: CO
+    level: claim
+    requires_payers: [GBMB1]
+    other_payer: GPMA2
+    letter_required: true
+    letter: >-
+      Our records show that the beneficiary was enrolled in a Medicare Advantage plan on the date of
+      service, so Medicare Part B cannot pay this claim. {carc_quote} The responsible plan is
+      {other_payer_name}. Please submit the claim to {other_payer_name} under that plan's member
+      identifier.
+
+  - id: auth_ma_plan_of_care_absent
+    description: Medicare Advantage therapy program; a visit after the first six in the episode, the plan of care was never authorized and the notes document the plan and the progress (typical, 197/N54).
+    category: authorization
+    expected_action: appeal
+    weight: 5
+    carc: "197"
+    rarcs: ["N54"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [GPMA2]
+    claim_setup: {prior_auth: absent}
+    note_count: [2, 3]
+    notes:
+      - >-
+        Visit {pa_visit_number} of the planned {plan_visits}: {first_name} {last_name} reports
+        {diagnosis} ({diagnosis_code}) with pain {pain_now}/10 today, down from {pain_initial}/10 at
+        the initial examination on {initial_treatment_date}. Treatment plan: {plan_frequency} for
+        {plan_weeks} weeks with the goal of returning to {goal_activity} without pain; continued care
+        is medically necessary because objective improvement is still being measured.
+      - >-
+        Plan of care on file since {initial_treatment_date}: {cmt_description} ({cmt_code}),
+        {plan_frequency} for {plan_weeks} weeks, re-examination every {reexam_visits} visits with pain
+        scale, range of motion and functional outcome scores. The authorization request for the
+        visits beyond the initial six was not transmitted by the front desk; the clinical need for
+        continued care is documented at every visit.
+      - >-
+        Objective findings today: {lesion} at {site}; range of motion deficit {rom_now} percent,
+        improved from {rom_initial} percent. The patient required continued manipulation to reach
+        the stated functional goals and the care could not be interrupted to wait for a plan-of-care
+        authorization.
+    letter: >-
+      No authorization for the plan of care was on file for the service on line {line_number}
+      ({procedure_code}). {carc_quote} {rarc_quote} Treatment beyond the initial six visits in an
+      eight-week episode requires an authorized plan of care; a retrospective review may be requested
+      within the appeal period with the plan of care and the progress notes.
+
+  - id: auth_number_not_on_claim
+    description: The vendor's or program's authorization exists on the claim record but was not transmitted; CARC 15 is deactivated, so 16 with M62 (typical).
+    category: authorization
+    expected_action: corrected_claim
+    weight: 4
+    carc: "16"
+    rarcs: ["M62"]
+    group: CO
+    level: claim
+    requires_payers: [GPMA2, SWPPO3, TLMC4]
+    claim_setup: {prior_auth: present}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Billing note: authorization {prior_auth_number} was obtained from {payer_name} on {auth_date}
+        for the plan of care covering {cmt_description} ({cmt_code}); the approval is on file in the
+        chart and was not transmitted in the authorization field of the claim.
+    letter: >-
+      The claim did not include a valid authorization reference for the services billed. {carc_quote}
+      {rarc_quote} If an authorization was obtained, submit a corrected claim that includes the
+      authorization number.
+
+  - id: auth_medicaid_service_limit
+    description: More than the 20 manipulations per calendar year the program covers without a service authorization; the visit note on file says nothing about whether one was requested (typical, 119/N640).
+    category: authorization
+    expected_action: clinic_question
+    weight: 4
+    carc: "119"
+    rarcs: ["N640"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [TLMC4]
+    claim_setup: {prior_auth: absent}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Visit note, {service_date}: {cmt_description}, {cmt_detail}, for {diagnosis}
+        ({diagnosis_code}); pain {pain_now}/10. The patient continues the plan of care,
+        {plan_frequency}.
+    letter: >-
+      The spinal manipulation on line {line_number} ({procedure_code}) exceeds the 20 manipulations
+      per calendar year this program covers without a service authorization. {carc_quote}
+      {rarc_quote} Submit a service limits authorization request for visits beyond the limit.
+
+  - id: modifier_at_missing
+    description: Spinal CMT billed without modifier AT is adjudicated as maintenance therapy although the notes document active, corrective treatment (documented, 50/N115).
+    category: modifier
+    expected_action: corrected_claim
+    weight: 7
+    carc: "50"
+    rarcs: ["N115"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [GBMB1, GPMA2]
+    claim_setup: {strip_target_modifiers: [AT]}
+    note_count: [3, 3]
+    notes:
+      - >-
+        {service_date}, visit {visit_number} of {plan_visits}: active treatment of {diagnosis}
+        ({diagnosis_code}). Subjective: pain {pain_now}/10 (initial {pain_initial}/10 on
+        {initial_treatment_date}). PART findings: tenderness and asymmetry at {site} with {lesion};
+        range of motion restricted {rom_now} percent (initially {rom_initial} percent). Assessment:
+        measurable improvement toward the treatment plan goals; the subluxation at {site} remains
+        clinically significant. Plan: {cmt_description}, {cmt_detail}; continue {plan_frequency}.
+      - >-
+        Treatment plan established on {initial_treatment_date}: corrective care {plan_frequency} for
+        {plan_weeks} weeks, goals of pain below 3/10, full range of motion and return to
+        {goal_activity}, measured by pain scale, range of motion and outcome score at each
+        re-examination. Today's visit is active, corrective treatment under that plan, not
+        maintenance care.
+      - >-
+        Segments adjusted today with {technique} technique: {cmt_detail}. Re-examination outcome
+        score improved from {oswestry_initial} to {oswestry_now} percent disability since the start
+        of care; continued improvement is expected.
+    letter: >-
+      The spinal manipulation on line {line_number} ({procedure_code}) was billed without the
+      modifier that identifies active or corrective treatment and was processed as maintenance
+      therapy, which is not covered. {carc_quote} {rarc_quote}
+
+  - id: modifier_at_missing_maintenance_care
+    description: Spinal CMT billed without AT for a patient whose notes document maintenance (supportive) care; AT must never be added to maintenance care, so the denial stands (documented, 50/N115; BPM ch. 15 sec. 240.1.3).
+    category: modifier
+    expected_action: no_action
+    weight: 3
+    carc: "50"
+    rarcs: ["N115"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [cmt_only]
+    requires_payers: [GBMB1, GPMA2]
+    claim_setup: {strip_target_modifiers: [AT]}
+    note_count: [2, 2]
+    notes:
+      - >-
+        Supportive care visit: {first_name} {last_name} is clinically stable with {diagnosis}
+        ({diagnosis_code}); findings unchanged since the last visit and no further objective
+        improvement is expected. Monthly visits continue to prevent deterioration.
+      - >-
+        No Advance Beneficiary Notice is on file for these visits. Procedure: {cmt_description},
+        {cmt_detail}.
+    letter: >-
+      The spinal manipulation on line {line_number} ({procedure_code}) was billed without the
+      modifier that identifies active or corrective treatment and was processed as maintenance
+      therapy, which is not covered. {carc_quote} {rarc_quote}
+
+  - id: modifier_gp_missing
+    description: A physical medicine line billed without the GP therapy modifier the plan requires; M78 is deactivated, so 4 with N822 (typical).
+    category: modifier
+    expected_action: corrected_claim
+    weight: 6
+    carc: "4"
+    rarcs: ["N822"]
+    group: CO
+    level: line
+    target: {kinds: [therapy]}
+    requires_tags: [therapy_exercise]
+    requires_payers: [GPMA2, SWPPO3]
+    claim_setup: {strip_target_modifiers: [GP]}
+    note_count: [1, 2]
+    notes:
+      - >-
+        Physical medicine under the plan of care dated {initial_treatment_date}: {line_description}
+        ({line_code}), {units} unit(s): {line_detail}. Performed after {cmt_description},
+        {cmt_detail}. Response: tolerated well; the home exercise program was reviewed.
+      - >-
+        Plan of care: therapeutic procedures and modalities ({therapy_code}) {plan_frequency} for
+        {plan_weeks} weeks, supervised one-on-one by the treating chiropractor, with the minutes
+        recorded for each timed service and the goal of {goal_activity} without pain.
+    letter: >-
+      The physical medicine service on line {line_number} ({procedure_code}) was billed without the
+      therapy modifier this plan requires on physical medicine and rehabilitation codes. {carc_quote}
+      {rarc_quote} Submit a corrected claim with the required modifier.
+
+  - id: modifier_25_missing_em_with_cmt
+    description: An established patient's E/M billed with same-day CMT without modifier 25 while the notes document a separately identifiable new complaint (typical, 97/N626).
+    category: modifier
+    expected_action: corrected_claim
+    weight: 5
+    carc: "97"
+    rarcs: ["N626"]
+    group: CO
+    level: line
+    target: {roles: [em]}
+    requires_tags: [established_em]
+    requires_payers: [GPMA2, SWPPO3, TLMC4]
+    claim_setup: {force_em: true, strip_em_modifier_25: true}
+    note_count: [2, 2]
+    notes:
+      - >-
+        {em_code} visit: {first_name} {last_name} presents with a new complaint of {new_complaint}
+        pain that began after {mechanism}, apart from the spinal regions under active treatment. A
+        separate history, examination and medical decision making for this new problem are
+        documented, and the treatment plan was changed to add the new region: a significant,
+        separately identifiable evaluation and management service.
+      - >-
+        Procedure note: {cmt_description} ({cmt_code}), {cmt_detail}. The pre-manipulation
+        assessment of the regions already under care is part of the manipulation; the evaluation of
+        the new complaint above was performed and documented separately.
+    letter: >-
+      The evaluation and management service on line {line_number} ({line_code}) was billed on the
+      same date as chiropractic manipulative treatment ({cmt_code}) without the modifier that
+      identifies it as a significant, separately identifiable service. {carc_quote} {rarc_quote}
+
+  - id: duplicate_exact
+    description: The whole claim duplicates a claim already processed (documented, 18/N522; Group OA for every payer, as the X12 usage note for CARC 18 requires).
+    category: duplicate
+    expected_action: no_action
+    weight: 5
+    carc: "18"
+    rarcs: ["N522"]
+    group: OA
+    level: claim
+    letter: >-
+      This claim duplicates a claim previously processed under payer claim number
+      {original_payer_ccn}. {carc_quote} {rarc_quote} No additional payment is due; the original
+      determination stands.
+
+  - id: duplicate_second_cmt_same_day
+    description: A second spinal manipulation the same day after a new injury, billed as a second line of the CMT code; spinal CMT is payable once per patient per day, so the denial stands although the notes document two encounters (typical, 18/M86; Premera CP.PP.390, ND Medicaid).
+    category: duplicate
+    expected_action: no_action
+    weight: 3
+    carc: "18"
+    rarcs: ["M86"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [SWPPO3]
+    claim_setup: {duplicate_target_line: true}
+    note_count: [2, 2]
+    notes:
+      - >-
+        Two separate encounters on {service_date}. Morning visit: {cmt_description} ({cmt_code}),
+        {cmt_detail}, for {diagnosis} ({diagnosis_code}). The patient returned at 4:30 pm after a
+        fall at home with a new acute exacerbation at {site}; a second, separate examination was
+        performed and the spinal manipulation was repeated.
+      - >-
+        Afternoon encounter documented separately: pain {pain_initial}/10 at {site} after the fall,
+        {lesion}; repeat {cmt_description} with {technique} technique, billed as a second line.
+    letter: >-
+      The service on line {line_number} ({procedure_code}) duplicates a service already paid on this
+      claim for the same date. {carc_quote} {rarc_quote}
+
+  - id: timely_filing_expired
+    description: Claim submitted well after the payer's filing window; nothing to recover (documented, 29).
+    category: timely_filing
+    expected_action: no_action
+    weight: 3
+    carc: "29"
+    rarcs: []
+    group: CO
+    level: claim
+    claim_setup: {timely_filing: outside}
+    letter: >-
+      The claim was first received on {received_date}, after the plan's filing limit of
+      {timely_filing_days} days from the date of service. {carc_quote}
+
+  - id: timely_filing_in_window
+    description: The payer denied for timely filing although the claim was accepted inside the window; the clearinghouse report is the proof (documented, 29; not the Medicare contractor, whose timely-filing denials carry no appeal rights).
+    category: timely_filing
+    expected_action: appeal
+    weight: 3
+    carc: "29"
+    rarcs: []
+    group: CO
+    level: claim
+    requires_payers: [GPMA2, SWPPO3, TLMC4]
+    claim_setup: {timely_filing: inside}
+    note_count: [1, 2]
+    notes:
+      - >-
+        Billing note: claim {claim_control_number} for the {service_date} visit was transmitted
+        electronically on {submission_date}; the clearinghouse acceptance report (batch
+        {clearinghouse_batch}) is on file and shows acceptance by {payer_name}.
+      - >-
+        Billing note: no rejection was ever received for claim {claim_control_number}; the
+        clearinghouse batch {clearinghouse_batch} acceptance report dated {submission_date} is attached
+        to the account.
+    letter: >-
+      The claim was received after the plan's filing limit of {timely_filing_days} days from the date
+      of service. {carc_quote}
+
+  - id: med_nec_maintenance_review
+    description: CMT with AT judged maintenance therapy on medical review while the notes document active treatment with measurable improvement (documented, 50/N115; allowed-amount rule).
+    category: medical_necessity
+    expected_action: appeal
+    weight: 7
+    carc: "50"
+    rarcs: ["N115"]
+    group: CO
+    level: line
+    amount: allowed
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [GBMB1, GPMA2]
+    note_count: [3, 3]
+    notes:
+      - >-
+        Medical review response, {service_date}: {first_name} {last_name} is under active corrective
+        care for {diagnosis} ({diagnosis_code}) that began on {initial_treatment_date} after
+        {mechanism}. PART findings today: pain {pain_now}/10 (initial {pain_initial}/10), asymmetry
+        and restricted segmental motion at {site}, {lesion}. This is not maintenance care: the
+        clinical status is still changing and objective improvement is measured at each
+        re-examination.
+      - >-
+        Treatment plan dated {initial_treatment_date}: {plan_frequency} for {plan_weeks} weeks,
+        re-examination every {reexam_visits} visits, goals of pain below 3/10, range of motion within
+        normal limits and return to {goal_activity}. Outcome score improved from {ndi_initial} to
+        {ndi_now} percent; range of motion deficit improved from {rom_initial} to {rom_now} percent;
+        the visit frequency is being reduced as improvement continues.
+      - >-
+        Segments manipulated today ({cmt_code}, {technique} technique): {cmt_detail}. Assessment:
+        measurable functional improvement toward the plan goals; continued active treatment is
+        medically necessary and expected to produce further improvement.
+    letter: >-
+      The spinal manipulation on line {line_number} ({procedure_code}) was reviewed against the
+      local coverage determination and was found to be maintenance therapy based on the records
+      submitted. {carc_quote} {rarc_quote}
+
+  - id: med_nec_um_vendor_review
+    description: The PPO's utilization-management vendor found the visit not medically necessary on peer review while the re-examination documents measurable progress toward the plan's goals (typical, 50/N10).
+    category: medical_necessity
+    expected_action: appeal
+    weight: 4
+    carc: "50"
+    rarcs: ["N10"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [SWPPO3]
+    note_count: [2, 3]
+    notes:
+      - >-
+        Clinical summary for the review organization, {service_date}: {first_name} {last_name} has
+        been under active care for {diagnosis} ({diagnosis_code}) since {initial_treatment_date} after
+        {mechanism}. PART findings today: pain {pain_now}/10 (initial {pain_initial}/10), asymmetry
+        and restricted segmental motion at {site}, {lesion}.
+      - >-
+        Re-examination: Oswestry disability index improved from {oswestry_initial} to {oswestry_now}
+        percent and the range of motion deficit from {rom_initial} to {rom_now} percent; the treatment
+        plan ({plan_frequency} for {plan_weeks} weeks) was modified at the re-examination and the
+        visit frequency is being reduced.
+      - >-
+        Segments adjusted today with {technique} technique: {cmt_detail}. Goals: return to
+        {goal_activity} and pain below 3/10; continued improvement is expected.
+    letter: >-
+      Our review organization reviewed the records for the service on line {line_number}
+      ({procedure_code}) and found that continued care is not medically necessary. {carc_quote}
+      {rarc_quote}
+
+  - id: diagnosis_subluxation_primary_missing
+    description: The claim led with a symptom code instead of the subluxation level; the chart documents the M99.0x level (documented, 50/N115).
+    category: medical_necessity
+    expected_action: corrected_claim
+    weight: 5
+    carc: "50"
+    rarcs: ["N115"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [has_cmt]
+    requires_payers: [GBMB1, GPMA2]
+    claim_setup: {swap_diagnosis_inconsistent: ["G44.86", "G44.209", "R51.9", "M54.9", "M79.10"]}
+    note_count: [1, 2]
+    notes:
+      - >-
+        Assessment: {documented_diagnosis_code} {documented_diagnosis}, demonstrated by PART
+        examination (asymmetry and restricted segmental range of motion with tenderness);
+        {cmt_description} ({cmt_code}) performed today for this subluxation level: {cmt_detail}.
+      - >-
+        The subluxation level documented at every visit is {documented_diagnosis_code}
+        ({documented_diagnosis}); the diagnosis transmitted on the claim does not match the chart and
+        the claim must lead with the subluxation level.
+    letter: >-
+      The diagnosis submitted for line {line_number} ({procedure_code}) is not a subluxation
+      diagnosis payable for chiropractic manipulative treatment under the local coverage
+      determination. {carc_quote} {rarc_quote}
+
+  - id: diagnosis_inconsistent_with_cmt
+    description: The diagnosis transmitted does not support the CMT level billed; the chart documents the subluxation level for the regions adjusted (documented, 11/N657).
+    category: medical_necessity
+    expected_action: corrected_claim
+    weight: 4
+    carc: "11"
+    rarcs: ["N657"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [has_cmt]
+    requires_payers: [GPMA2, SWPPO3, TLMC4]
+    claim_setup: {swap_diagnosis_inconsistent: ["G44.86", "G44.209", "R51.9", "M54.9", "M79.10"]}
+    note_count: [1, 2]
+    notes:
+      - >-
+        Diagnosis pair documented for the regions manipulated: {documented_diagnosis_code}
+        {documented_diagnosis} as the primary code with the related condition; the code transmitted
+        does not support {cmt_code} for the regions adjusted ({cmt_detail}).
+      - >-
+        Clinical impression at the visit: {documented_diagnosis_code} {documented_diagnosis},
+        demonstrated by asymmetry and restricted range of motion on PART examination; the diagnosis
+        transmitted on the claim does not match the chart.
+    letter: >-
+      The diagnosis code submitted for line {line_number} ({procedure_code}) does not support the
+      level of chiropractic manipulative treatment billed. {carc_quote} {rarc_quote}
+
+  - id: bundling_97140_separate_region
+    description: Manual therapy to an extremity bundled into same-day CMT because the claim left off XS; the notes document the region that was not manipulated, so a corrected claim adds XS (typical, 97/M15).
+    category: bundling
+    expected_action: corrected_claim
+    weight: 6
+    carc: "97"
+    rarcs: ["M15"]
+    group: CO
+    level: line
+    target: {codes: ["97140"]}
+    requires_tags: [manual_therapy_separate_region]
+    requires_payers: [GPMA2, SWPPO3]
+    claim_setup: {strip_target_modifiers: [XS, "59"]}
+    note_count: [2, 2]
+    notes:
+      - >-
+        Manual therapy ({therapy_code}), {units} unit(s): {line_detail}, performed on the {site} for
+        {diagnosis} ({diagnosis_code}), a separate region that was not manipulated today. Spinal
+        manipulation ({cmt_code}): {cmt_detail}.
+      - >-
+        Two distinct services in different anatomic regions: the spinal regions received
+        {cmt_description} and the {site} received manual therapy for a separate extremity condition,
+        with the minutes and the technique recorded for the timed service.
+    letter: >-
+      Payment for {procedure_code} on line {line_number} is included in the allowance for
+      {other_procedure_code} performed on the same date. {carc_quote} {rarc_quote}
+
+  - id: bundling_97140_same_region
+    description: Manual therapy in a spinal region that received CMT is never separately reportable; nothing in the notes says otherwise (documented, 236/N20).
+    category: bundling
+    expected_action: no_action
+    weight: 5
+    carc: "236"
+    rarcs: ["N20"]
+    group: CO
+    level: line
+    target: {codes: ["97140"]}
+    requires_tags: [manual_therapy_same_region]
+    requires_payers: [GPMA2, SWPPO3]
+    allow_benign_notes: false
+    letter: >-
+      {procedure_code} on line {line_number} is not separately payable with {other_procedure_code} on
+      the same date of service under National Correct Coding Initiative edits when it is performed in
+      a spinal region that received manipulation. {carc_quote} {rarc_quote}
+
+  - id: cob_other_coverage_primary
+    description: The payer believes another plan is primary and needs the primary EOB; Medicaid is the payer of last resort (typical, 22/N4).
+    category: coordination_of_benefits
+    expected_action: clinic_question
+    weight: 4
+    carc: "22"
+    rarcs: ["N4"]
+    group: CO
+    level: claim
+    requires_payers: [GPMA2, SWPPO3, TLMC4]
+    letter: >-
+      Our records indicate the member has other coverage that is primary for this date of service.
+      {carc_quote} {rarc_quote} Submit the primary carrier's explanation of benefits for secondary
+      consideration.
+
+  - id: cob_medicare_secondary_payer
+    description: Medicare's records show other coverage (an employer group health plan) is primary for the date of service (documented, Noridian 22/N598).
+    category: coordination_of_benefits
+    expected_action: clinic_question
+    weight: 3
+    carc: "22"
+    rarcs: ["N598"]
+    group: CO
+    level: claim
+    requires_payers: [GBMB1]
+    letter: >-
+      Medicare records show that other health care coverage is primary to Medicare for the
+      beneficiary on the date of service. {carc_quote} {rarc_quote} The primary payer's adjudication
+      must accompany any claim to Medicare, and the beneficiary may update the coordination of
+      benefits record if Medicare is in fact primary.
+
+  - id: cob_misrouted_wrong_payer
+    description: Claim sent to the wrong plan; the letter names the responsible plan (typical, 109/N418).
+    category: coordination_of_benefits
+    expected_action: corrected_claim
+    weight: 3
+    carc: "109"
+    rarcs: ["N418"]
+    group: CO
+    level: claim
+    letter_required: true
+    letter: >-
+      This claim was sent to the wrong plan. This member's coverage for the date of service is
+      administered by {other_payer_name}, not by {payer_name}. {carc_quote} {rarc_quote} Please
+      submit the claim to {other_payer_name} for processing.
+
+  - id: cob_work_injury_liability
+    description: An injury diagnosis with a work accident; the health plan says the workers' compensation carrier is liable (documented, 19/N418).
+    category: coordination_of_benefits
+    expected_action: clinic_question
+    weight: 4
+    carc: "19"
+    rarcs: ["N418"]
+    group: CO
+    level: claim
+    requires_tags: [injury]
+    requires_payers: [SWPPO3]
+    note_count: [1, 1]
+    notes:
+      - >-
+        History: {first_name} {last_name} reports the onset of neck and back pain on {onset_date}
+        after {work_mechanism}; today's findings include {lesion} at {site}. The injury intake form
+        records the circumstances of the incident, and the employer's claim number, if one exists, is
+        kept in the chart.
+    letter: >-
+      The diagnosis and the accident information on this claim indicate a work-related injury.
+      {carc_quote} {rarc_quote} This plan is not liable for care related to an injury that arose out
+      of employment; bill the workers' compensation carrier, or submit that carrier's denial for
+      reconsideration.
+
+  - id: missing_initial_treatment_date
+    description: Chiropractic claim returned as unprocessable without the initial treatment date (Item 14 / DTP*454); no appeal rights (documented, 16/MA122 MA130).
+    category: missing_information
+    expected_action: clinic_question
+    weight: 5
+    carc: "16"
+    rarcs: ["MA122", "MA130"]
+    group: CO
+    level: claim
+    requires_tags: [follow_up]
+    requires_payers: [GBMB1, GPMA2]
+    no_appeal_rights: true
+    note_count: [1, 1]
+    notes:
+      - >-
+        Initial treatment date for this episode of care: {initial_treatment_date} (the date of the
+        initial examination). The date was omitted from the claim by the billing software and must be
+        reported on a new claim.
+    letter: >-
+      {carc_quote} {rarc_quote} The date of initiation of the course of treatment (CMS-1500 Item 14
+      or 837P DTP*454) is required on every claim for chiropractic manipulative treatment.
+
+  - id: missing_ordering_provider_xray
+    description: An X-ray line from the chiropractor sent without the ordering provider's name and NPI; the note says the treating chiropractor ordered the films (documented, 16/N264 N265).
+    category: missing_information
+    expected_action: corrected_claim
+    weight: 2
+    carc: "16"
+    rarcs: ["N264", "N265"]
+    group: CO
+    level: line
+    target: {kinds: [xray]}
+    requires_tags: [has_xray]
+    requires_payers: [GBMB1]
+    claim_setup: {referring_provider: absent}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Radiographs ({xray_code}, {xray_detail}) were ordered by the treating chiropractor and taken in
+        the office on {service_date} to document the subluxation; the ordering provider is the
+        rendering chiropractor.
+    letter: >-
+      The radiology service on line {line_number} ({procedure_code}) was submitted without the
+      ordering provider's name and identifier. {carc_quote} {rarc_quote} Resubmit with the ordering
+      provider information.
+
+  - id: missing_records_not_received
+    description: The utilization-management vendor asked for the treatment notes and denied for lack of information (typical, 226/N706).
+    category: missing_information
+    expected_action: clinic_question
+    weight: 4
+    carc: "226"
+    rarcs: ["N706"]
+    group: CO
+    level: claim
+    requires_payers: [GPMA2, SWPPO3]
+    letter: >-
+      The clinical documentation requested for this episode of care was not received by the review
+      deadline. {carc_quote} {rarc_quote} Submit the initial evaluation, the treatment plan and the
+      daily notes with a copy of this notice.
+
+  - id: contractual_gz_maintenance
+    description: Maintenance CMT billed with GZ (no ABN) is auto-denied with the provider liable; nothing to appeal (documented, 50 with no RARC).
+    category: contractual
+    expected_action: no_action
+    weight: 2
+    carc: "50"
+    rarcs: []
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [cmt_only]
+    requires_payers: [GBMB1]
+    claim_setup: {set_target_modifiers: ["GZ"]}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Supportive care visit: {first_name} {last_name} is clinically stable with {diagnosis}
+        ({diagnosis_code}); findings unchanged since the last visit and no further objective
+        improvement is expected. No Advance Beneficiary Notice was obtained before the visit; the
+        service is reported with modifier GZ and the charge cannot be billed to the patient.
+    letter: >-
+      {carc_quote} The service on line {line_number} ({procedure_code}) was billed with modifier GZ,
+      which indicates that the provider expected the item to be denied as not reasonable and
+      necessary and that no Advance Beneficiary Notice is on file. The provider is liable for the
+      charge.
+
+  - id: pr_xray_without_gy
+    description: An X-ray by a chiropractor billed without GY denies as a provider-type exclusion with the patient liable (documented, PR-170; N95 the usual remark).
+    category: patient_responsibility
+    expected_action: no_action
+    weight: 3
+    carc: "170"
+    rarcs: ["N95"]
+    group: PR
+    level: line
+    target: {kinds: [xray]}
+    requires_tags: [has_xray]
+    requires_payers: [GBMB1]
+    claim_setup: {strip_target_modifiers: [GY]}
+    note_count: [1, 1]
+    notes:
+      - >-
+        Radiographs ({xray_code}, {xray_detail}) taken at the initial examination to document the
+        subluxation. X-rays taken by a chiropractor are not a Medicare benefit; the patient was
+        informed in writing before the films were taken that the charge is their responsibility.
+    letter: >-
+      The radiology service on line {line_number} ({procedure_code}) is not payable when performed
+      and billed by this provider type; the beneficiary is responsible for the charge. {carc_quote}
+      {rarc_quote}
+
+  - id: other_ppo_visit_limit
+    description: The plan's chiropractic visit maximum for the calendar year has been reached; the clinic's visit log disagrees with the accumulator (documented, 119/N587).
+    category: other
+    expected_action: clinic_question
+    weight: 9
+    carc: "119"
+    rarcs: ["N587"]
+    group: CO
+    level: line
+    target: {kinds: [cmt]}
+    requires_tags: [follow_up]
+    requires_payers: [SWPPO3]
+    note_count: [1, 1]
+    notes:
+      - >-
+        Billing note: the plan's chiropractic benefit allows 20 visits per calendar year; the clinic's
+        visit log shows this is visit {year_visit_count} of the year for this member, so the plan's
+        accumulator should be verified before any balance is billed to the patient.
+    letter: >-
+      The chiropractic benefit maximum of 20 visits per calendar year has been reached for this
+      member. {carc_quote} {rarc_quote} Visits beyond the benefit maximum are not payable under the
+      member's plan.
+
+# Paraphrased public CARC/RARC descriptions used in letters (app/classify/codes.yaml is the catalog
+# the classifier cites; these are only for the synthetic payer letters).
+code_texts:
+  "1": "Deductible amount."
+  "2": "Coinsurance amount."
+  "3": "Co-payment amount."
+  "4": "The procedure code is inconsistent with the modifier used, or a required modifier is missing."
+  "11": "The diagnosis is inconsistent with the procedure."
+  "16": "Claim/service lacks information or has submission/billing error(s) which is needed for adjudication."
+  "18": "Exact duplicate claim/service."
+  "19": "This is a work-related injury/illness and thus the liability of the Worker's Compensation Carrier."
+  "22": "This care may be covered by another payer per coordination of benefits."
+  "24": "Charges are covered under a capitation agreement/managed care plan."
+  "27": "Expenses incurred after coverage terminated."
+  "29": "The time limit for filing has expired."
+  "45": "Charge exceeds fee schedule/maximum allowable or contracted/legislated fee arrangement."
+  "50": "These are non-covered services because this is not deemed a medical necessity by the payer."
+  "96": "Non-covered charge(s)."
+  "97": "The benefit for this service is included in the payment/allowance for another service/procedure that has already been adjudicated."
+  "109": "Claim/service not covered by this payer/contractor. You must send the claim/service to the correct payer/contractor."
+  "119": "Benefit maximum for this time period or occurrence has been reached."
+  "170": "Payment is denied when performed/billed by this type of provider."
+  "197": "Precertification/authorization/notification/pre-treatment absent."
+  "226": "Information requested from the Billing/Rendering Provider was not provided or not provided timely or was insufficient/incomplete."
+  "236": "This procedure or procedure/modifier combination is not compatible with another procedure or procedure/modifier combination provided on the same day according to the National Correct Coding Initiative or workers compensation state regulations/fee schedule requirements."
+  "253": "Sequestration - reduction in federal payment."
+  "M15": "Separately billed services/tests have been bundled as they are considered components of the same procedure. Separate payment is not allowed."
+  "M62": "Missing/incomplete/invalid treatment authorization code."
+  "M86": "Service denied because payment already made for same/similar procedure within set time frame."
+  "MA122": "Missing/incomplete/invalid initial treatment date."
+  "MA130": "Your claim contains incomplete and/or invalid information, and no appeal rights are afforded because the claim is unprocessable. Please submit a new claim with the complete/correct information."
+  "N4": "Missing/Incomplete/Invalid prior Insurance Carrier(s) EOB."
+  "N10": "Adjustment based on the findings of a review organization/professional consult/manual adjudication/medical advisor/dental advisor/peer review."
+  "N20": "Service not payable with other service rendered on the same date."
+  "N30": "Patient ineligible for this service."
+  "N54": "Claim information is inconsistent with pre-certified/authorized services."
+  "N95": "This provider type/provider specialty may not bill this service."
+  "N115": "This decision was based on a Local Coverage Determination (LCD). An LCD provides a guide to assist in determining whether a particular item or service is covered."
+  "N264": "Missing/incomplete/invalid ordering provider name."
+  "N265": "Missing/incomplete/invalid ordering provider primary identifier."
+  "N418": "Misrouted claim. See the payer's claim submission instructions."
+  "N425": "Statutorily excluded service(s)."
+  "N522": "Duplicate of a claim processed, or to be processed, as a crossover claim."
+  "N587": "Policy benefits have been exhausted."
+  "N598": "Health care policy coverage is primary."
+  "N626": "New or established patient E/M codes are not payable with chiropractic care codes."
+  "N640": "Exceeds number/frequency approved/allowed within time period."
+  "N657": "This should be billed with the appropriate code for these services."
+  "N706": "Missing documentation."
+  "N822": "Missing procedure modifier(s)."
+
+# Notes attached to ~30% of claims that have no scenario-specific documentation. They fit any visit
+# (an initial examination included) and document nothing a playbook could mistake for a fix.
+benign_notes:
+  - >-
+    Patient tolerated the adjustment well. Home stretching program reviewed; return as scheduled.
+  - >-
+    {diagnosis} ({diagnosis_code}) treated today: {cmt_description}, {cmt_detail}.
+  - >-
+    Ice applied for 10 minutes after treatment. Posture and workstation advice reviewed; the patient
+    verbalized understanding.
+  - >-
+    {first_name} {last_name} reports pain {pain_now}/10 after today's treatment and no new concerns.
+  - >-
+    Patient advised to keep the home exercise log and to bring it to the next visit.
+  - >-
+    Phone note: the patient asked about the visit schedule; the front desk confirmed the next
+    appointment.
+
+letters:
+  letter_rate: 0.40
+  portal_rate: 0.20
+  letter_template: |
+    {payer_name}
+    Claims Review Department
+    {payer_address_line1}
+    {payer_city}, {payer_state} {payer_zip}
+
+    {letter_date}
+
+    {clinic_name}
+    Attn: Billing Office
+
+    RE: Notice of claim determination
+    Claim number: {claim_control_number}
+    Payer claim number: {payer_claim_control_number}
+    Member: {patient_last_name}, {patient_first_name}
+    Member ID: {member_id}
+    Date of birth: {dob_mdy}
+    Date of service: {service_date}
+    Rendering provider: {provider}
+    Billed amount: ${total_charge}
+
+    Dear Provider,
+
+    {body}
+
+    {appeal_paragraph}
+
+    Sincerely,
+    Claims Review Department
+    {payer_name}
+  portal_template: |
+    CLAIM STATUS - {payer_name} provider portal
+    Claim: {claim_control_number} | Payer reference: {payer_claim_control_number}
+    Member: {patient_first_name} {patient_last_name} | ID {member_id} | DOB {dob_mdy}
+    Date of service: {service_date} | Billed: ${total_charge} | Paid: ${paid_total}
+    Status: {status_word}
+    Reason: {carc} - {carc_text}
+    {rarc_lines}
+    Notes: {body}
+    {appeal_paragraph}
+  appeal_rights: >-
+    If you disagree with this determination you may submit a written appeal within {appeal_days}
+    days of the date of this notice. Include the claim number, a copy of this notice and the
+    supporting clinical documentation.
+  corrected_claim_rights: >-
+    A corrected claim (frequency code 7) referencing the original claim number must be received
+    within {corrected_claim_days} days of the date of this notice. Written appeals may be submitted
+    within {appeal_days} days.
+  no_appeal_rights: >-
+    No appeal rights are afforded for this determination because the claim is unprocessable. Submit a
+    new claim with complete and correct information.

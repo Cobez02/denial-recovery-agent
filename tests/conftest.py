@@ -118,7 +118,7 @@ def session(engine) -> Iterator:
 def clinic(session, settings):
     from app.models import Clinic
 
-    c = Clinic(name="Test Dermatology Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM")
+    c = Clinic(name="Test Chiropractic Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM")
     session.add(c)
     session.commit()
     settings.clinic_id = c.id

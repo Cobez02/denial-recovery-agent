@@ -1,7 +1,8 @@
 """Helpers shared by the cross-module tests (pipeline, classifier set, redaction, PHI in logs, injection).
 
-Everything here runs against the committed synthetic fixture set ``synthetic/fixtures/labeled_set_v1``
-(``generate(seed=20261028, n_claims=200)``) with the stub model client; nothing is real data.
+Everything here runs against the committed synthetic fixture set ``synthetic/fixtures/labeled_set_v2``
+(``generate(seed=20261028, n_claims=200)``, the chiropractic profile) with the stub model client;
+nothing is real data.
 
 - :func:`load_fixture_batch` imports claims, notes, payer documents and every ``remit_*.835`` from a
   directory, in that order, committing after each file.
@@ -38,7 +39,7 @@ from app.models import Claim, ImportBatch, WorkItem
 from app.schemas import CLAIM_EXPORT_COLUMNS, RenderedPrompt
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FIXTURE_DIR = PROJECT_ROOT / "synthetic" / "fixtures" / "labeled_set_v1"
+FIXTURE_DIR = PROJECT_ROOT / "synthetic" / "fixtures" / "labeled_set_v2"
 
 CLAIMS_FILE = "claims_export.csv"
 NOTES_FILE = "notes.csv"
@@ -247,7 +248,7 @@ def fixture_run(
     payloads: list[RenderedPrompt] = []
     try:
         clinic = Clinic(
-            name="Test Dermatology Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM"
+            name="Test Chiropractic Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM"
         )
         session.add(clinic)
         session.commit()
@@ -406,7 +407,7 @@ def http_run(
         monkeypatch.setattr(clients.StubClient, "complete", _capture)
 
         clinic = Clinic(
-            name="Test Dermatology Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM"
+            name="Test Chiropractic Clinic", npi="1234567893", tax_id="12-3456789", pm_system="TestPM"
         )
         session.add(clinic)
         session.commit()

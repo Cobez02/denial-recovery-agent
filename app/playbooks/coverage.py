@@ -1,11 +1,16 @@
 """Eligibility and coordination-of-benefits playbooks.
 
-Both ask the clinic a question. When a payer document names the payer that should be billed
-("bill <Name>", "primary payer: <Name>"), a corrected claim to that payer is proposed instead, flagged
-`payer_from_document` and `payer_change_unverified` (the X12 payer id and member id must be confirmed
-by the clinic). The document is untrusted data: only a payer name is extracted from it, never an
-instruction, and the extraction is a bounded regular expression that stops at the first lowercase
-word or punctuation.
+Both ask the clinic a question (for a work, auto or liability injury, CARC 19 / 20 / 21, the
+question asks for that carrier, its claim number and the date of injury). When a payer document
+names the payer that should be billed ("bill <Name>", "primary payer: <Name>"), a claim to that payer
+is proposed instead, flagged `payer_from_document` and `payer_change_unverified` (the X12 payer id and
+member id must be confirmed by the clinic). The named payer never received the original claim, so
+the proposal is a new original claim (frequency 1, no original-claim reference) filed under that
+payer's own rules, not a replacement; lines carrying a modifier set for the first payer's rules
+(`payer_specific_modifiers` in modifier_rules.yaml: GY, GA, GZ, AT, GP, ...) are flagged
+`payer_specific_modifiers` for the reviewer to re-derive. The document is untrusted data: only a
+payer name is extracted from it, never an instruction, and the extraction is a bounded regular
+expression that stops at the first lowercase word or punctuation.
 """
 
 from __future__ import annotations
@@ -22,13 +27,25 @@ from app.playbooks.base import (
     dedupe_citations,
     normalize_ws,
 )
+from app.playbooks.modifier import load_modifier_rules
 from app.schemas import (
     ClassificationResult,
+    CorrectedClaim,
     CorrectedClaimChange,
     DenialContext,
     DocumentContext,
     ProposalDraft,
 )
+
+FLAG_NEW_CLAIM_TO_OTHER_PAYER = "new_claim_to_other_payer"
+FLAG_PAYER_SPECIFIC_MODIFIERS = "payer_specific_modifiers"
+FLAG_ACCIDENT_CARRIER = "accident_carrier"
+# CARC -> the carrier a work, liability or no-fault injury redirects the claim to.
+ACCIDENT_CARRIERS: dict[str, str] = {
+    "19": "workers' compensation",
+    "20": "liability",
+    "21": "no-fault (auto / personal injury protection)",
+}
 
 # A payer name: capitalized (or all-caps) words joined by at most a few connectors. A period ends
 # the name (sentence boundary), so text after it, planted or not, is never part of the name.
@@ -187,27 +204,58 @@ class _CoveragePlaybook(Playbook):
                 citation_refs=refs,
             ),
         ]
+        payer_specific = {str(m).upper() for m in load_modifier_rules().get("payer_specific_modifiers", [])}
+        held = [
+            (line, [m for m in line.modifiers if str(m).strip().upper() in payer_specific])
+            for line in ctx.claim.lines
+        ]
+        held = [(line, mods) for line, mods in held if mods]
+        for line, _mods in held:
+            citations.append(
+                self.cite_claim_field(ctx, f"lines[{line.line_number}].modifiers", line.modifiers)
+            )
         question = (
             f"A payer document names {hit.name} as the payer for claim {ctx.claim.claim_control_number} "
             f"(DOS {self.dos_label(ctx)}). Please confirm the patient's coverage with {hit.name} on the date of service, "
-            "the member id, and the X12 payer id to use on the replacement claim."
+            f"the member id, and the X12 payer id to use on the new claim, which is filed under {hit.name}'s own "
+            "timely-filing limit."
         )
-        flags = [FLAG_PAYER_FROM_DOCUMENT, FLAG_PAYER_CHANGE_UNVERIFIED]
+        flags = [FLAG_PAYER_FROM_DOCUMENT, FLAG_PAYER_CHANGE_UNVERIFIED, FLAG_NEW_CLAIM_TO_OTHER_PAYER]
+        if held:
+            listed = "; ".join(
+                f"line {line.line_number} ({line.procedure_code}: {', '.join(mods)})" for line, mods in held
+            )
+            question += (
+                f" These modifiers were set for {ctx.claim.payer_name}'s rules and must be checked against "
+                f"{hit.name}'s before export: {listed}."
+            )
+            flags.append(FLAG_PAYER_SPECIFIC_MODIFIERS)
         return self.build(
             ctx,
             action_type=ActionType.CORRECTED_CLAIM,
-            summary=f"Corrected claim to {hit.name}, the payer named in the payer document",
+            summary=f"New claim to {hit.name}, the payer named in the payer document",
             rationale=(
-                f"Denied for {self.reasons_summary(ctx)}. The payer document names {hit.name} as the payer to bill; the "
-                "replacement claim is addressed to that payer. Not a coding change. The payer id and member id are "
-                "unverified until the clinic confirms them."
+                f"Denied for {self.reasons_summary(ctx)}. The payer document names {hit.name} as the payer to bill. "
+                f"{hit.name} never received the original claim, so this is a new original claim (frequency 1, no "
+                "original-claim reference) addressed to that payer, not a replacement. Not a coding change. The payer "
+                "id and member id are unverified until the clinic confirms them."
+                + (" Payer-specific modifiers are flagged for review." if held else "")
             ),
             citations=dedupe_citations(citations),
-            corrected_claim=build_corrected_claim(ctx, changes),
+            corrected_claim=as_new_claim(build_corrected_claim(ctx, changes)),
             clinic_question=question,
             confidence=0.5,
             flags=flags,
         )
+
+
+def as_new_claim(corrected: CorrectedClaim) -> CorrectedClaim:
+    """The same edits as a new original claim (frequency 1, no original-claim reference): what a
+    payer that never received the first claim needs."""
+    after = dict(corrected.after)
+    after["claim_frequency_code"] = "1"
+    after["original_claim_control_number"] = None
+    return corrected.model_copy(update={"after": after})
 
 
 class EligibilityPlaybook(_CoveragePlaybook):
@@ -229,7 +277,33 @@ class CoordinationOfBenefitsPlaybook(_CoveragePlaybook):
     category = DenialCategory.COORDINATION_OF_BENEFITS
     summary_question = "Ask the clinic for the patient's other-coverage information"
 
+    @staticmethod
+    def accident_carrier(ctx: DenialContext) -> str | None:
+        """The carrier a work, liability or no-fault injury redirects the claim to (CARC 19 / 20 / 21)."""
+        for reason in ctx.reasons:
+            if reason.carc in ACCIDENT_CARRIERS:
+                return ACCIDENT_CARRIERS[reason.carc]
+        return None
+
+    def propose(self, ctx: DenialContext, classification: ClassificationResult) -> ProposalDraft:
+        draft = super().propose(ctx, classification)
+        if self.accident_carrier(ctx) and draft.action_type == ActionType.CLINIC_QUESTION:
+            draft.summary = "Ask the clinic for the accident carrier, its claim number and the date of injury"
+            draft.flags = [*draft.flags, FLAG_ACCIDENT_CARRIER]
+        return draft
+
     def question(self, ctx: DenialContext) -> str:
+        carrier = self.accident_carrier(ctx)
+        if carrier:
+            return (
+                f"Claim {ctx.claim.claim_control_number} (DOS {self.dos_label(ctx)}) was denied because the plan holds a "
+                f"{carrier} carrier liable for this injury ({self.reasons_summary(ctx)}). Please send the accident "
+                f"intake: the {carrier} carrier's name, its claim number, the date of injury and the adjuster or "
+                "employer contact on file, so the claim can be billed to that carrier; if that carrier has denied the "
+                "claim or the benefits are exhausted, send its denial or exhaustion letter for an appeal to this plan; "
+                "if the condition is not related to the accident, say so and the history of onset will be quoted in an "
+                "appeal."
+            )
         return (
             f"Claim {ctx.claim.claim_control_number} was denied for coordination of benefits ({self.reasons_summary(ctx)}). "
             f"Please obtain the patient's other-coverage information for {self.dos_label(ctx)}: the primary payer's name, "
@@ -239,9 +313,14 @@ class CoordinationOfBenefitsPlaybook(_CoveragePlaybook):
 
 
 __all__ = [
+    "ACCIDENT_CARRIERS",
     "CoordinationOfBenefitsPlaybook",
     "EligibilityPlaybook",
+    "FLAG_ACCIDENT_CARRIER",
+    "FLAG_NEW_CLAIM_TO_OTHER_PAYER",
+    "FLAG_PAYER_SPECIFIC_MODIFIERS",
     "PAYER_NAME_PATTERNS",
     "PayerNameHit",
+    "as_new_claim",
     "extract_payer_name",
 ]

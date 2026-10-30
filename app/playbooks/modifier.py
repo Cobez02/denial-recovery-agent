@@ -3,10 +3,20 @@
 Situations (see the YAML for the code lists and keywords):
 
 (a) an E/M code on the same date as a procedure without modifier 25 -> add 25 to the E/M line;
-(b) CARC 4 / RARC M78 or N519 on a line carrying an invalid or repeated modifier -> remove it;
+(b) a modifier CARC/RARC on a line carrying an invalid or repeated modifier -> remove it;
 (e) modifier 59 billed together with an X{EPSU} modifier on a denied line -> drop the redundant 59;
-(c) two procedures that bundle on the same day -> add 59 (XS when the notes describe a different site)
-    to the column-2 line;
+(f) `kind: restricted_modifier`: a modifier that belongs only on certain codes (AT on 98940-98942)
+    billed on another line -> remove it from that line;
+(g) `kind: required_modifier`: a modifier a line of this kind must carry (AT on spinal CMT, GP on
+    physical medicine codes) is missing from a line the denial names -> add it, never on top of the
+    situation's `absent_modifiers` (an ABN modifier on a CMT line, another discipline modifier),
+    never for a payer whose claim filing indicator is not among the situation's
+    `filing_indicators`, and never when a note sentence matches the situation's `blocked_by`
+    keyword set (maintenance documentation for AT): such a sentence never counts as support, and
+    the draft is `no_action` (the denial stands) or, when other sentences document active care, a
+    `clinic_question` for the coder;
+(c) two procedures that bundle on the same day -> add 59 (XS when the notes describe a different
+    anatomic region) to the column-2 line;
 (d) the notes describe a bilateral service billed on one line -> add 50.
 
 Every modifier edit is a coding change: `coding_change=True`, `requires_note_excerpt=True`, flag
@@ -27,11 +37,14 @@ import yaml
 from app.drafting.corrected_claim import build_corrected_claim
 from app.enums import ActionType, DenialCategory
 from app.playbooks.base import (
+    FLAG_CONFLICTING_DOCUMENTATION,
+    FLAG_MAINTENANCE_DOCUMENTED,
     FLAG_UNSUPPORTED_CODING_CHANGE,
     Playbook,
     code_is_numeric_in,
     dedupe_citations,
     keyword_pattern,
+    marked_sentences,
     split_sentences,
     usable_notes,
 )
@@ -75,10 +88,60 @@ class ModifierFix:
     needs_note_support: bool
     support: list[tuple[NoteContext, str]] = field(default_factory=list)
     reasons: list[DenialReason] = field(default_factory=list)
+    notices: list[str] = field(default_factory=list)
 
     @property
     def supported(self) -> bool:
         return (not self.needs_note_support) or bool(self.support)
+
+
+@dataclass
+class BlockedFix:
+    """A required modifier the claim lacks that the notes rule out (maintenance care for AT)."""
+
+    situation_id: str
+    line_number: int
+    modifier: str
+    keyword_set: str
+    blockers: list[tuple[NoteContext, str]]
+    support: list[tuple[NoteContext, str]] = field(default_factory=list)
+
+
+def keyword_set(name: str) -> dict[str, Any]:
+    """A named keyword set of modifier_rules.yaml (`markers`, `negations`, `code_ranges`, ...)."""
+    value = load_modifier_rules().get(name) or {}
+    return value if isinstance(value, dict) else {}
+
+
+def keyword_set_sentences(ctx: DenialContext, name: str) -> list[tuple[NoteContext, str]]:
+    """The usable note sentences that carry one of the set's markers and none of its negations."""
+    spec = keyword_set(name)
+    return marked_sentences(ctx, spec.get("markers", []), spec.get("negations", []))
+
+
+def maintenance_sentences(ctx: DenialContext) -> list[tuple[NoteContext, str]]:
+    """Note sentences that document maintenance (supportive) care (`maintenance_documentation`)."""
+    return keyword_set_sentences(ctx, "maintenance_documentation")
+
+
+def filing_indicator(ctx: DenialContext) -> str | None:
+    """The claim filing indicator (CLP06: MB, 16, MC, 12, ...) when the remittance context carries
+    it. RemittanceContext gains the field with the integrator's foundation change; until then this
+    is None and the payer-specific situations ask the reviewer to confirm the payer instead."""
+    value = getattr(ctx.remittance, "filing_indicator", None)
+    return str(value).strip().upper() if value else None
+
+
+def _payer_allows(situation: dict[str, Any], ctx: DenialContext) -> tuple[bool, str | None]:
+    """(applies, notice): False when the payer's filing indicator is known and not listed; the
+    situation's `payer_notice` when the indicator is unknown."""
+    indicators = {str(x).strip().upper() for x in situation.get("filing_indicators", [])}
+    if not indicators:
+        return True, None
+    value = filing_indicator(ctx)
+    if value is None:
+        return True, situation.get("payer_notice")
+    return value in indicators, None
 
 
 def _same_day(a: ClaimLineContext, b: ClaimLineContext) -> bool:
@@ -89,6 +152,14 @@ def _notes_matching(
     playbook: Playbook, ctx: DenialContext, keywords: list[str]
 ) -> list[tuple[NoteContext, str]]:
     return playbook.find_supporting_notes(ctx, keywords)
+
+
+def _situation_covers(situation: dict[str, Any], code: str) -> bool:
+    """True when the situation's `codes` / `code_ranges` name the procedure code."""
+    codes = {str(c).strip().upper() for c in situation.get("codes", [])}
+    if code.strip().upper() in codes:
+        return True
+    return code_is_numeric_in(code, situation.get("code_ranges", []))
 
 
 class ModifierPlaybook(Playbook):
@@ -104,13 +175,24 @@ class ModifierPlaybook(Playbook):
 
     def find_fixes(self, ctx: DenialContext) -> list[ModifierFix]:
         """All structural fixes, one per line, with the note sentences that support each."""
+        return self.analyze(ctx)[0]
+
+    def analyze(self, ctx: DenialContext) -> tuple[list[ModifierFix], list[BlockedFix]]:
+        """(fixes, blocked): the structural fixes, one per line, with the note sentences that support
+        each, and the required modifiers the notes rule out (`blocked_by`)."""
         rules = load_modifier_rules()
         situations = rules["situations"]
         working: dict[int, list[str]] = {line.line_number: list(line.modifiers) for line in ctx.claim.lines}
         fixes: dict[int, ModifierFix] = {}
+        blocked: list[BlockedFix] = []
 
         def record(
-            situation_id: str, line: ClaimLineContext, after: list[str], support: list, reasons: list
+            situation_id: str,
+            line: ClaimLineContext,
+            after: list[str],
+            support: list,
+            reasons: list,
+            notices: list[str] | None = None,
         ) -> None:
             situation = situations.get(situation_id, {})
             existing = fixes.get(line.line_number)
@@ -124,6 +206,7 @@ class ModifierPlaybook(Playbook):
                     needs_note_support=bool(situation.get("needs_note_support", True)),
                     support=list(support),
                     reasons=list(reasons),
+                    notices=list(notices or []),
                 )
             else:
                 existing.after = after
@@ -134,6 +217,7 @@ class ModifierPlaybook(Playbook):
                 )
                 existing.support.extend(s for s in support if s not in existing.support)
                 existing.reasons.extend(r for r in reasons if r not in existing.reasons)
+                existing.notices.extend(n for n in notices or [] if n not in existing.notices)
             working[line.line_number] = after
 
         # (b) invalid or duplicate modifiers on lines the denial points at
@@ -164,6 +248,59 @@ class ModifierPlaybook(Playbook):
                     related = [r for r in mod_reasons if r.line_number in (None, line.line_number)]
                     after = [m for m in current if m != "59"]
                     record("redundant_distinct_service_pair", line, after, [], related)
+
+        # (f) a modifier restricted to certain codes, billed on another line
+        for situation_id, situation in situations.items():
+            if situation.get("kind") != "restricted_modifier":
+                continue
+            restricted = str(situation["modifier"]).upper()
+            for line in ctx.claim.lines:
+                current = [str(mod).strip().upper() for mod in working[line.line_number]]
+                if restricted in current and not _situation_covers(situation, line.procedure_code):
+                    related = [r for r in ctx.reasons if r.line_number in (None, line.line_number)]
+                    record(situation_id, line, [m for m in current if m != restricted], [], related)
+
+        # (g) a modifier a line of this kind must carry, missing from a line the denial names; never for
+        #     a payer that does not use it, never when the notes rule it out (`blocked_by`)
+        denied_numbers = set(self.reason_lines(ctx))
+        for situation_id, situation in situations.items():
+            if situation.get("kind") != "required_modifier":
+                continue
+            applies, notice = _payer_allows(situation, ctx)
+            if not applies:
+                continue
+            required = str(situation["modifier"]).upper()
+            blocking = {str(m).upper() for m in situation.get("absent_modifiers", [])}
+            set_name = str(situation.get("blocked_by") or "")
+            blockers = keyword_set_sentences(ctx, set_name) if set_name else []
+            # a sentence that rules the modifier out is never its support
+            support = [
+                s
+                for s in _notes_matching(self, ctx, list(situation.get("support_keywords", [])))
+                if s not in blockers
+            ]
+            for line in ctx.claim.lines:
+                if situation.get("requires_denied_line", True) and line.line_number not in denied_numbers:
+                    continue
+                if not _situation_covers(situation, line.procedure_code):
+                    continue
+                current = [str(mod).strip().upper() for mod in working[line.line_number]]
+                if required in current or (blocking & set(current)):
+                    continue
+                if blockers:
+                    blocked.append(
+                        BlockedFix(situation_id, line.line_number, required, set_name, blockers, support)
+                    )
+                    continue
+                related = [r for r in ctx.reasons if r.line_number in (None, line.line_number)]
+                record(
+                    situation_id,
+                    line,
+                    [*working[line.line_number], required],
+                    support,
+                    related,
+                    [notice] if notice else None,
+                )
 
         # (a) E/M on the same date as a procedure without 25
         em_rule = situations.get("em_same_day_procedure")
@@ -244,19 +381,77 @@ class ModifierPlaybook(Playbook):
         if denied_lines:
             on_denied = [f for f in ordered if f.line_number in denied_lines]
             if on_denied:
-                return on_denied
-        return ordered
+                return on_denied, blocked
+        return ordered, blocked
 
     # ---- proposal ---------------------------------------------------------------------
 
     def propose(self, ctx: DenialContext, classification: ClassificationResult) -> ProposalDraft:
-        fixes = self.find_fixes(ctx)
-        if not fixes:
-            return self.modifier_question(ctx)
-        return self.corrected_claim_from_fixes(ctx, fixes)
+        fixes, blocked = self.analyze(ctx)
+        if fixes:
+            return self.corrected_claim_from_fixes(ctx, fixes, blocked=blocked)
+        if blocked:
+            return self.blocked_proposal(ctx, blocked)
+        return self.modifier_question(ctx)
+
+    def blocked_proposal(self, ctx: DenialContext, blocked: list[BlockedFix]) -> ProposalDraft:
+        """The notes rule the required modifier out (maintenance care documented for AT): the denial
+        stands (`no_action`), or the coder decides when other sentences document active care."""
+        blockers = [s for fix in blocked for s in fix.blockers]
+        support = [s for fix in blocked for s in fix.support if s not in blockers]
+        lines = sorted({fix.line_number for fix in blocked})
+        modifiers = ", ".join(dict.fromkeys(fix.modifier for fix in blocked))
+        citations: list[Citation] = list(self.cite_reasons(ctx))
+        for number in lines:
+            line = self.line_by_number(ctx, number)
+            if line is not None:
+                citations.append(
+                    self.cite_claim_field(ctx, f"lines[{number}].procedure_code", line.procedure_code)
+                )
+                citations.append(self.cite_claim_field(ctx, f"lines[{number}].modifiers", line.modifiers))
+        citations.extend(self.note_citations(ctx, blockers))
+        quoted = blockers[0][1]
+        set_rationale = " ".join(
+            " ".join(str(keyword_set(name).get("rationale") or "").split())
+            for name in dict.fromkeys(fix.keyword_set for fix in blocked)
+        ).strip()
+        if support:
+            citations.extend(self.note_citations(ctx, support))
+            question = (
+                f"Claim {ctx.claim.claim_control_number} (DOS {self.dos_label(ctx)}) was denied for "
+                f'{self.reasons_summary(ctx)}. The notes document maintenance care ("{quoted}") and also '
+                f'active treatment ("{support[0][1]}"). Modifier {modifiers} may be added only for active, '
+                "corrective treatment and never to maintenance care: please have the treating chiropractor or "
+                "a coder state which applies to this visit before anything is resubmitted."
+            )
+            return self.build(
+                ctx,
+                action_type=ActionType.CLINIC_QUESTION,
+                summary=f"Coder decision: the notes document both maintenance and active care (modifier {modifiers})",
+                rationale=f"Denied for {self.reasons_summary(ctx)}. {set_rationale} The notes also carry "
+                "active-treatment wording, so the coder decides.",
+                citations=dedupe_citations(citations),
+                clinic_question=question,
+                confidence=0.45,
+                flags=[FLAG_MAINTENANCE_DOCUMENTED, FLAG_CONFLICTING_DOCUMENTATION],
+            )
+        return self.build(
+            ctx,
+            action_type=ActionType.NO_ACTION,
+            summary=f"Denial stands: the notes document maintenance care, so modifier {modifiers} is not added",
+            rationale=f"Denied for {self.reasons_summary(ctx)}. {set_rationale}",
+            citations=dedupe_citations(citations),
+            confidence=0.75,
+            flags=[FLAG_MAINTENANCE_DOCUMENTED],
+        )
 
     def corrected_claim_from_fixes(
-        self, ctx: DenialContext, fixes: list[ModifierFix], *, extra_citations: list[Citation] | None = None
+        self,
+        ctx: DenialContext,
+        fixes: list[ModifierFix],
+        *,
+        extra_citations: list[Citation] | None = None,
+        blocked: list[BlockedFix] | None = None,
     ) -> ProposalDraft:
         citations: list[Citation] = list(self.cite_reasons(ctx)) + list(extra_citations or [])
         changes: list[CorrectedClaimChange] = []
@@ -305,6 +500,16 @@ class ModifierPlaybook(Playbook):
             confidence = 0.35
             flags.append(FLAG_UNSUPPORTED_CODING_CHANGE)
             rationale += " No note excerpt on file supports this modifier. " + REVIEWER_CONFIRM
+        for notice in dict.fromkeys(n for fix in fixes for n in fix.notices):
+            rationale += f" {notice}"
+        for held in blocked or []:
+            rationale += (
+                f" Modifier {held.modifier} is not added to line {held.line_number}: the notes document "
+                f'maintenance care ("{held.blockers[0][1]}").'
+            )
+            citations.extend(self.note_citations(ctx, held.blockers))
+            if FLAG_MAINTENANCE_DOCUMENTED not in flags:
+                flags.append(FLAG_MAINTENANCE_DOCUMENTED)
         return self.build(
             ctx,
             action_type=ActionType.CORRECTED_CLAIM,
@@ -355,4 +560,15 @@ def notes_mention_any(ctx: DenialContext, keywords: list[str]) -> bool:
     )
 
 
-__all__ = ["ModifierFix", "ModifierPlaybook", "load_modifier_rules", "notes_mention_any", "RULES_PATH"]
+__all__ = [
+    "BlockedFix",
+    "ModifierFix",
+    "ModifierPlaybook",
+    "RULES_PATH",
+    "filing_indicator",
+    "keyword_set",
+    "keyword_set_sentences",
+    "load_modifier_rules",
+    "maintenance_sentences",
+    "notes_mention_any",
+]

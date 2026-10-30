@@ -14,7 +14,7 @@ uv run pytest tests/test_classifier_set.py -q -s    # one file, with the per-cat
 On this machine (Windows, path with a space) the same thing is
 `"C:/Users/conno/Denial Agent/.venv/Scripts/python.exe" -m pytest tests -q -o addopts=""`.
 
-Counted on Oct 29, 2026 with `pytest tests --co -q`: **827 tests in 27 files**. One of them
+Counted on Oct 30, 2026 with `pytest tests --co -q`: **970 tests in 27 files**. One of them
 (`tests/test_prompt_regression.py::test_live_model_outputs_are_schema_valid_and_faithful`, marker
 `live_llm`) skips unless `ANTHROPIC_API_KEY` and `LLM_PROVIDER=anthropic` are set; nothing else skips.
 The numbers move as the suite grows; the commands above regenerate them.
@@ -24,7 +24,7 @@ The numbers move as the suite grows; the commands above regenerate them.
 | Plan test | Phase | What the tests check | Pass when | Test files |
 |---|---|---|---|---|
 | Parser golden files | 1 onward | 835 parsing and the claim-export import against checked-in expected output; member ids under every NM1 qualifier with the NM1*IL fallback; duplicate-safe re-imports that re-link remittance lines | Exact match on every field | `tests/test_parser_golden.py`, `tests/test_claims_import_golden.py`, `tests/test_remit_import.py` |
-| Classifier test set | 1 onward | Category and expected action on the 150 labeled denials of `synthetic/fixtures/labeled_set_v1/labels.json` (rules alone, stub model), plus every rule in `app/classify/rules.yaml` and the code catalog | >= 0.90 category agreement and >= 0.80 action agreement, asserted in the test and never lowered (today 150/150 and 150/150, see below) | `tests/test_classifier_set.py`, `tests/test_classifier_rules.py`, `tests/test_codes.py` |
+| Classifier test set | 1 onward | Category and expected action on the 150 labeled denials of `synthetic/fixtures/labeled_set_v2/labels.json` (the chiropractic set; rules alone, stub model), plus every rule in `app/classify/rules.yaml` (the line-aware CARC 50 rules included) and the code catalog | >= 0.90 category agreement and >= 0.80 action agreement, asserted in the test and never lowered (today 150/150 and 150/150, see below) | `tests/test_classifier_set.py`, `tests/test_classifier_rules.py`, `tests/test_codes.py` |
 | Prompt regression | 1 onward | Fixed inputs to both prompts (`classify_denial.v1`, `draft_appeal.v1`): rendering, schema validity, version hash, the committed replay fixtures fact-checked with `app.drafting.factcheck.verify`; the real model only through the opt-in `live_llm` test | No structure break; no fact in the output that is absent from the inputs | `tests/test_prompt_regression.py`, `tests/test_llm_clients.py`, `tests/test_drafting.py` |
 | Redaction | 1 onward | Every prompt that reaches the model client during a full synthetic run is scanned for names (the clinic's and the payer's spelling), member ids, account numbers, addresses and every DOB spelling; the guard refuses a payload that still carries one | Zero identifiers in any captured payload | `tests/test_redaction.py`, `tests/test_redaction_e2e.py` |
 | PHI in logs | 1 onward | Log output captured during a full run is scanned raw, and `app.logging_config.MASK_HITS` proves no `app.*` logger ever needed the masking filter; route exceptions, inline jobs, the rq worker and `denial-agent serve` log class names and frames only | Zero identifiers, zero mask hits from application loggers | `tests/test_phi_in_logs.py`, `tests/test_jobs.py`, `tests/test_cli.py` |
@@ -43,8 +43,8 @@ Other layers the plan implies:
 | Migrations | `tests/test_migrations.py` | `alembic upgrade head` on a fresh SQLite file equals the models (the full `compare_metadata` diff is empty), downgrade and re-upgrade, the Postgres-only audit trigger in the offline SQL |
 | Outcomes and metrics | `tests/test_outcomes.py`, `tests/test_metrics.py` | The outcome rule, the date and payer gates, reversals leaving the item submitted, take-backs reopening a closed item (the two passes, the reopen events, the date-before-outcome gate, what can never be reopened, idempotence, a take-back from an 835 without a payment date still leaving recovered dollars), per-work-item counting by latest outcome, reversed fixes and taken-back dollars |
 | Pipeline, jobs, matching | `tests/test_pipeline.py`, `tests/test_jobs.py`, `tests/test_matching.py` | One proposed work item per label with every citation resolving, savepoint isolation of a failing claim, inline and rq job runners, the worker's masked failures, every matching method |
-| Playbooks and drafting | `tests/test_playbooks.py`, `tests/test_drafting.py` | Every category's behaviour, deadlines counted from the remittance, corrected-claim builder and diff, letters for every category, fact check, PDF fallback |
-| Synthetic data | `tests/test_synthetic.py` | Determinism, the committed fixture reproduced byte for byte, 835 balancing, labels versus adjustments, follow-up amounts following the outcome rule |
+| Playbooks and drafting | `tests/test_playbooks.py`, `tests/test_drafting.py` | Every category's behaviour (the chiropractic modifier situations: AT with and without note support, never over an ABN modifier, never on documented maintenance care and only for the payers that use it, GP on therapy lines, AT removed from an E/M line, the CMT / 97140 bundled pair with and without a separate region and with the modifier missing or billed, an E/M bundled into CMT, once-per-day CMT, the medical-necessity keyword families and the primary-diagnosis rule), deadlines counted from the remittance, corrected-claim builder and diff (a new claim to another payer included), letters for every category, fact check, PDF fallback |
+| Synthetic data | `tests/test_synthetic.py` | The chiropractic profile's contract and payer billing rules (ages, G0283, sequestration, the ordering provider on X-ray claims), what the loader rejects, determinism, the committed fixture reproduced byte for byte, 835 balancing (non-covered PR lines in CLP05, CO-253), labels versus adjustments and the ingest rule's dollar value, region-paired diagnoses, the SOAP elements in the active-treatment notes and plan arithmetic that adds up, follow-up amounts following the outcome rule |
 | CLI | `tests/test_cli.py` | Every command including `list-payers`/`set-payer`, exit codes (`partial` pipeline runs exit 1), `serve` refusing a placeholder `SECRET_KEY` with a readable error, `purge-clinic` deleting uploads and export packages, refusing to report destruction when a file survives, clearing unmatched CLPs and leaving no purged name in the SQLite file |
 
 ## Milestone done-when checks that are tests
@@ -62,17 +62,17 @@ Other layers the plan implies:
 
 ## Tests per file
 
-From `pytest tests --co -q` on Oct 29, 2026 (827 in all).
+From `pytest tests --co -q` on Oct 30, 2026 (970 in all).
 
 | File | Tests | Covers |
 |---|---|---|
 | `tests/test_audit.py` | 11 | append-only guards, hash chain, canonical JSON |
 | `tests/test_auth.py` | 15 | accounts, login, TOTP replay guard (row-level), lockout, CSRF, upload gates and the declared-size refusal |
 | `tests/test_claims_import_golden.py` | 27 | claim export golden file, re-imports, notes and documents with the real injection scanner, payer windows |
-| `tests/test_classifier_rules.py` | 177 | every rule, priorities, model merge policy, `classify()` consultation rule |
+| `tests/test_classifier_rules.py` | 229 | every rule (the line-aware CARC 50 rules included, and the review-finding remarks N10 / M127 / M25 that make a CMT line without AT a medical-necessity review), priorities, model merge policy, `classify()` consultation rule |
 | `tests/test_classifier_set.py` | 2 | category and action agreement on the labeled set |
 | `tests/test_cli.py` | 31 | every `denial-agent` command, `partial` exit code, placeholder-key refusal, purge VACUUM and unmatched CLPs |
-| `tests/test_codes.py` | 102 | CARC/RARC catalog coverage |
+| `tests/test_codes.py` | 139 | CARC/RARC catalog coverage, the chiropractic codes included |
 | `tests/test_drafting.py` | 39 | corrected-claim builder, letters, fact check, model rewrite, PDF fallback |
 | `tests/test_end_to_end_synthetic.py` | 10 | the full loop over HTTP, take-backs and the re-payment included |
 | `tests/test_injection.py` | 4 | planted letters end to end, obedient model, direct guarded call |
@@ -86,37 +86,39 @@ From `pytest tests --co -q` on Oct 29, 2026 (827 in all).
 | `tests/test_parser_golden.py` | 25 | 835 parser golden files and edge cases |
 | `tests/test_phi_in_logs.py` | 3 | raw log scan, route exceptions, uvicorn folding |
 | `tests/test_pipeline.py` | 4 | M3 done-when, one work item per label, audit trail and flags, idempotence and regenerate |
-| `tests/test_playbooks.py` | 66 | every category's playbook, deadlines, priority, citations |
+| `tests/test_playbooks.py` | 105 | every category's playbook (the chiropractic modifier situations and keyword families included; maintenance care never given AT or a medical-necessity appeal; AT only for the Medicare, MA and Medicaid filing indicators; once-per-day CMT; an E/M bundled into CMT gets 25, never 59 or XS; the Medicaid service limit; the ordering chiropractor from the note; the M99.0x level leading the CMT line; a new claim to the payer a letter names), deadlines, priority without the patient-liable lines, citations |
 | `tests/test_prompt_regression.py` | 14 | prompt rendering, schema, stub and replay fidelity, opt-in live model |
 | `tests/test_redaction.py` | 43 | registry, tokenizer, scanner, generic masks, guard |
 | `tests/test_redaction_e2e.py` | 1 | zero identifiers in every payload of a full run |
 | `tests/test_remit_import.py` | 27 | 835 import, denial detection, line linking, outcomes hook, savepoints |
 | `tests/test_review_queue.py` | 29 | queue, item page, actions, export, API, health cache, partial-run notice, 20-item run |
-| `tests/test_synthetic.py` | 29 | generator, fixture, 835 writer, follow-ups |
+| `tests/test_synthetic.py` | 44 | profile and payer rules (and what the loader rejects), generator, fixture, region-paired diagnoses and the adjusted segment in the notes, payer ages, plan arithmetic, sequestration, the declared swap pool on every seed, no known real NPI, 835 writer, follow-ups |
 
 Fixtures: `tests/fixtures/835/` and `tests/fixtures/claims/` (golden inputs and expected JSON),
 `tests/fixtures/llm/` (recorded model fixtures for the replay client; scanned by gitleaks),
-`synthetic/fixtures/labeled_set_v1/` (the committed 200-claim batch). `tests/conftest.py` provides
+`synthetic/fixtures/labeled_set_v2/` (the committed 200-claim chiropractic batch). `tests/conftest.py` provides
 `settings`, `engine`, `session`, `clinic`, `app`, `client` (logged in through the real password and
 TOTP flow), `anon_client`, `reviewer`, `synthetic_batch` and `captured_llm_payloads`; `tests/helpers.py`
 runs the whole batch once per module for the heavier suites.
 
 ## Classifier set, current output
 
-`pytest tests/test_classifier_set.py -q -s` on Oct 28, 2026:
+`pytest tests/test_classifier_set.py -q -s` on Oct 30, 2026 (the chiropractic set, generator
+version 3, regenerated after the review of the specialty switch):
 
 ```
 category accuracy 1.000 (150/150), bar 0.90
-  authorization 19/19   bundling 19/19   coordination_of_benefits 9/9   duplicate 12/12
-  eligibility 17/17     medical_necessity 14/14   missing_information 28/28   modifier 19/19
-  other 3/3             timely_filing 10/10
+  authorization 14/14   bundling 10/10   contractual 7/7   coordination_of_benefits 11/11
+  duplicate 12/12       eligibility 12/12   medical_necessity 23/23   missing_information 17/17
+  modifier 20/20        other 8/8   patient_responsibility 8/8   timely_filing 8/8
 expected-action agreement 1.000 (150/150), bar 0.80
-  appeal 40/40   clinic_question 41/41   corrected_claim 47/47   no_action 22/22
+  appeal 20/20   clinic_question 42/42   corrected_claim 45/45   no_action 43/43
 ```
 
 The labels are the generator's ground truth, not a human judgement; the hand-check the plan asks
-for is still owed (`synthetic/fixtures/labeled_set_v1/REVIEW.md`). A perfect score on a set the
-same code base generated says the rules match the profile, not that the profile matches reality.
+for is still owed (`synthetic/fixtures/labeled_set_v2/REVIEW.md`, with the numbered billing
+assumptions in `docs/SPECIALTY.md`). A perfect score on a set the same code base generated says the
+rules match the profile, not that the profile matches reality.
 
 ## Metric definitions
 

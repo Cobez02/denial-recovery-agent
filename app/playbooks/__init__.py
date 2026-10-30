@@ -83,9 +83,31 @@ def urgency_weight(days: int | None) -> float:
     return 1.0 + (URGENCY_HORIZON_DAYS - remaining) / URGENCY_SLOPE_DAYS
 
 
+PATIENT_LIABLE_GROUP = "PR"
+
+
+def patient_liable_amount(ctx: DenialContext) -> Decimal:
+    """The PR-group denial reasons: amounts the patient owes (a statutorily excluded GY line, PR-96,
+    a provider-type exclusion, PR-170), which no appeal or corrected claim recovers from the payer."""
+    return sum(
+        (
+            Decimal(r.amount or 0)
+            for r in ctx.reasons
+            if str(r.group_code or "").strip().upper() == PATIENT_LIABLE_GROUP
+        ),
+        Decimal("0"),
+    )
+
+
 def dollar_value(ctx: DenialContext) -> Decimal:
-    """Denied dollars, falling back to the sum of the reasons, then the claim's total charge."""
-    amount = Decimal(ctx.remittance.denied_amount or 0)
+    """The dollars the payer can be asked for: the denied amount less the patient-liable (PR-group)
+    reasons, falling back to the whole denied amount when every reason is the patient's (a
+    patient-responsibility item still needs a value), then the sum of the reasons, then the claim's
+    total charge."""
+    denied = Decimal(ctx.remittance.denied_amount or 0)
+    amount = denied - patient_liable_amount(ctx)
+    if amount <= 0:
+        amount = denied
     if amount <= 0:
         amount = sum((Decimal(r.amount or 0) for r in ctx.reasons), Decimal("0"))
     if amount <= 0:
@@ -116,6 +138,7 @@ __all__ = [
     "dollar_value",
     "finalize",
     "get_playbook",
+    "patient_liable_amount",
     "priority_score",
     "propose",
     "register",

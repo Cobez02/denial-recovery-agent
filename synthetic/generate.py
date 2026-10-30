@@ -9,11 +9,18 @@ set iteration, so two runs with the same arguments produce byte-identical files.
 and providers come from `synthetic.names` and the specialty profile; nothing here is real.
 
 Pipeline for one batch:
-  1. patients (about 70% of n_claims, some with two or three claims), each with one payer
-  2. a scenario plan: round-robin floors so every category appears, then weighted draws
-  3. one claim per slot built from an encounter template, altered by the scenario's claim_setup
-  4. adjudication: paid lines get CO-45 contractual (and sometimes PR-1/2/3); denied lines or claims
-     get the scenario's CARC/RARC at the scenario's level
+  1. patients (about 70% of n_claims, some with two or three claims), each with one payer and an
+     age drawn from that payer's age bands
+  2. a scenario plan: round-robin floors so every category appears, then weighted draws; each
+     planned scenario gets a claim slot whose payer allows it (`requires_payers`, timely filing)
+  3. one claim per slot built from an encounter template: the anchor slot's detail decides the
+     treated regions and the diagnosis pairs are drawn per region; the other lines point to the
+     diagnoses of their region and draw a detail that fits it; line kinds the payer is never billed
+     for are dropped, the payer's code substitutions and per-kind modifiers applied; then the
+     scenario's claim_setup alters the claim
+  4. adjudication: paid lines get CO-45 contractual (sometimes PR-1/2/3, and CO-253 sequestration
+     for the payers that withhold it); line kinds the payer never pays get the payer's non-covered
+     CAS; denied lines or claims get the scenario's CARC/RARC at the scenario's level
   5. notes (scenario documentation or benign notes), payer letters (some with planted instructions)
   6. files: claims_export.csv, notes.csv, payer_documents.csv, remit_<payer_id>.835, labels.json,
      manifest.json
@@ -37,19 +44,23 @@ from app.enums import ActionType, DenialCategory
 from app.schemas import CLAIM_EXPORT_COLUMNS
 from synthetic import names
 from synthetic.profile import (
+    DEFAULT_PROFILE,
+    MAX_DIAGNOSIS_POINTERS,
     CodeSpec,
+    DetailSpec,
     EncounterTemplate,
     PayerSpec,
     Profile,
     ProviderSpec,
     ScenarioSpec,
     load_profile,
+    pairable_regions,
 )
 from synthetic.x12_writer import build_835
 
 log = logging.getLogger(__name__)
 
-GENERATOR_VERSION = "1"
+GENERATOR_VERSION = "3"
 DEFAULT_AS_OF = date(2026, 10, 28)
 # Defaults are tuned so the committed labeled set (n_claims=200) meets the plan's floors: 150+
 # labeled denials and at least ten letters with planted instructions. Pass denial_rate=0.35 for a
@@ -66,10 +77,15 @@ PATIENT_SHARE = 0.70
 MAX_CLAIMS_PER_PATIENT = 3
 MAX_UNIQUE_NAME_DRAWS = 20  # after this many collisions a patient may share a name (never hang)
 MIN_DENIALS_PER_CATEGORY = 6
-MIN_DENIALS_OTHER = 3
+MIN_DENIALS_OTHER = 6
 CCN_PREFIX = "CLM"
 CCN_WIDTH = 6
 CENT = Decimal("0.01")
+# The ingest rule's denial adjustment (app/ingest/denials.py), restated for the label's dollar value.
+DENIAL_GROUPS = frozenset({"CO", "PI", "OA", "PR"})
+INFORMATIONAL_CARCS = frozenset(
+    {"1", "2", "3", "45", "66", "94", "104", "118", "137", "144", "187", "237", "253"}
+)
 
 CLAIMS_FILE = "claims_export.csv"
 NOTES_FILE = "notes.csv"
@@ -149,10 +165,23 @@ class _Line:
     adjustments: list[tuple[str, str, Decimal]] = field(default_factory=list)
     rarcs: list[str] = field(default_factory=list)
     line_item_control_number: str = ""
+    # the clinical detail drawn for this line once, so every note of the claim quotes the same text
+    detail: DetailSpec | None = None
 
     @property
     def procedure_code(self) -> str:
         return self.code.code
+
+
+@dataclass
+class _Procedure:
+    """A procedure line drawn from an encounter slot, before line numbers are assigned."""
+
+    code: CodeSpec
+    units: int
+    modifiers: list[str]
+    pointers: list[int]
+    detail: DetailSpec | None
 
 
 @dataclass
@@ -291,7 +320,11 @@ class _Generator:
             while member_id in used_member_ids:
                 member_id = f"{payer.member_id_prefix}{rng.randint(100_000_000, 999_999_999)}"
             used_member_ids.add(member_id)
-            dob = self.as_of - timedelta(days=rng.randint(18 * 365, 85 * 365))
+            # an age from the payer's bands, reached by the earliest possible date of service
+            band = self._weighted(list(payer.age_bands), [b.weight for b in payer.age_bands])
+            dob = self.as_of - timedelta(
+                days=rng.randint(band.low * 365 + SERVICE_WINDOW_DAYS, band.high * 365 + 364)
+            )
             sex = self._weighted(["F", "M", "U"], [52, 47, 1])
             street = f"{rng.randint(100, 9899)} {rng.choice(names.STREET_NAMES)}"
             if rng.random() < 0.2:
@@ -360,9 +393,20 @@ class _Generator:
         )
 
     def _slot_fits(self, scenario: ScenarioSpec, patient: _Patient) -> bool:
+        if scenario.requires_payers and patient.payer.payer_id not in scenario.requires_payers:
+            return False
         if scenario.claim_setup.get("timely_filing") == "outside":
             return self._late_filing_possible(patient.payer)
         return True
+
+    @staticmethod
+    def _constraint_rank(scenario: ScenarioSpec) -> int:
+        """Tighter scenarios are placed first: late filing (few payers fit), then payer-restricted ones."""
+        if scenario.claim_setup.get("timely_filing") == "outside":
+            return 0
+        if scenario.requires_payers:
+            return 1
+        return 2
 
     def assign_scenarios(
         self, scenarios: list[ScenarioSpec], slot_patients: list[int]
@@ -370,11 +414,10 @@ class _Generator:
         """Give each planned scenario a claim slot whose payer allows it; constrained ones first."""
         rng = self.rng
         free = list(range(len(slot_patients)))
-        constrained = [s for s in scenarios if s.claim_setup.get("timely_filing") == "outside"]
-        others = [s for s in scenarios if s.claim_setup.get("timely_filing") != "outside"]
+        ordered = sorted(scenarios, key=self._constraint_rank)  # stable: plan order within a rank
         by_category = self.profile.scenarios_by_category()
         assignment: dict[int, ScenarioSpec] = {}
-        for scenario in constrained + others:
+        for scenario in ordered:
             candidates = [i for i in free if self._slot_fits(scenario, self.patients[slot_patients[i]])]
             if not candidates:
                 alternatives = [
@@ -416,11 +459,15 @@ class _Generator:
         return service, submission, received, adjudication
 
     def _pick_encounter(self, scenario: ScenarioSpec | None) -> EncounterTemplate:
+        """A scenario with required tags draws among the encounters carrying one of them (a
+        `scenario_only` encounter included); every other claim never draws a `scenario_only` one."""
         encounters = list(self.profile.encounters)
         if scenario and scenario.requires_tags:
             encounters = [e for e in encounters if any(tag in e.tags for tag in scenario.requires_tags)]
             if not encounters:
                 raise ValueError(f"scenario {scenario.id}: no encounter carries its required tags")
+        else:
+            encounters = [e for e in encounters if not e.scenario_only]
         return self._weighted(encounters, [e.weight for e in encounters])
 
     def _pick_target(self, scenario: ScenarioSpec, lines: list[_Line]) -> _Line:
@@ -436,57 +483,207 @@ class _Generator:
             candidates = [line for line in lines if line.code.role == "procedure"] or list(lines)
         return self.rng.choice(candidates)
 
+    @staticmethod
+    def _with_kind_modifiers(payer: PayerSpec, code: CodeSpec, modifiers: list[str]) -> list[str]:
+        """The line's modifiers plus the ones every line of that kind carries for this payer."""
+        out = list(modifiers)
+        for modifier in payer.kind_modifiers.get(code.kind, ()):
+            if modifier not in out:
+                out.append(modifier)
+        return out
+
+    def _pick_detail(
+        self, code: CodeSpec, pointers: list[int], diagnosis_codes: list[str]
+    ) -> DetailSpec | None:
+        """One of the code's detail texts, preferring those whose regions meet the regions of the
+        diagnosis the line points to first (a cervical exercise text for a cervical condition)."""
+        if not code.detail:
+            return None
+        regions: set[str] = set()
+        if pointers:
+            regions = set(self.profile.diagnoses[diagnosis_codes[pointers[0] - 1]].regions)
+        candidates = [d for d in code.detail if regions & set(d.regions)] or list(code.detail)
+        return self.rng.choice(candidates)
+
     def build_claim(self, slot: int, patient: _Patient, scenario: ScenarioSpec | None) -> _Claim:
         rng = self.rng
         prof = self.profile
+        payer = patient.payer
         encounter = self._pick_encounter(scenario)
-        service, submission, received, adjudication = self._dates(patient.payer, scenario)
+        service, submission, received, adjudication = self._dates(payer, scenario)
         provider = self._weighted(list(prof.providers), [p.weight for p in prof.providers])
-        referring_npi = None
-        if prof.referring_providers and rng.random() < prof.referring_rate:
-            referring_npi = rng.choice(prof.referring_providers).npi
         setup = scenario.claim_setup if scenario else {}
+        bill_excluded = bool(setup.get("bill_excluded_kinds"))
 
+        # -- diagnoses: the anchor slot's detail decides the treated regions; its diagnosis groups
+        #    are drawn per region (a level and the condition of the same region), the other groups
+        #    one code each.
         diagnosis_codes: list[str] = []
-        for group in encounter.diagnosis_groups:
-            code = rng.choice(group)
+        by_group: dict[int, list[str]] = {}
+
+        def add_dx(group: int, code: str) -> None:
             if code not in diagnosis_codes:
                 diagnosis_codes.append(code)
+            drawn = by_group.setdefault(group, [])
+            if code not in drawn:
+                drawn.append(code)
 
-        procedures: list[tuple[CodeSpec, int, list[str], int]] = []
-        for slot_spec in encounter.procedures:
-            if slot_spec.probability < 1.0 and rng.random() >= slot_spec.probability:
-                continue
-            code = prof.codes[rng.choice(slot_spec.codes)]
+        anchor_index = encounter.anchor_index
+        anchor_code: CodeSpec | None = None
+        anchor_detail: DetailSpec | None = None
+        anchor_order: list[str] = []
+        treated_regions: list[str] = []
+        if anchor_index is not None:
+            anchor = encounter.procedures[anchor_index]
+            anchor_code = prof.codes[payer.billed_code(rng.choice(anchor.codes))]
+            pairable = pairable_regions(anchor, encounter.diagnosis_groups, prof.diagnoses)
+            # the loader guarantees every anchor detail names a pairable region
+            details = [d for d in anchor_code.detail if set(d.regions) & pairable] or list(anchor_code.detail)
+            anchor_detail = rng.choice(details) if details else None
+            regions = [r for r in (anchor_detail.regions if anchor_detail else ()) if r in pairable]
+            picks = sorted(rng.sample(range(len(regions)), min(anchor.max_pairs, len(regions))))
+            treated_regions = [regions[i] for i in picks]
+            for region in treated_regions:
+                for group in anchor.dx_groups:
+                    candidates = [
+                        c
+                        for c in encounter.diagnosis_groups[group - 1]
+                        if region in prof.diagnoses[c].regions
+                    ]
+                    # a second region gets its own condition when the group has one for it; a code
+                    # that covers both regions (low back pain: lumbar and pelvic) may serve both
+                    fresh = [c for c in candidates if c not in by_group.get(group, [])]
+                    code = rng.choice(fresh or candidates)
+                    add_dx(group, code)
+                    anchor_order.append(code)
+        for index, group_codes in enumerate(encounter.diagnosis_groups, start=1):
+            if index not in by_group:
+                add_dx(index, rng.choice(group_codes))
+
+        def pointers_for(groups: tuple[int, ...], regions: tuple[str, ...] = ()) -> list[int]:
+            """One pointer per group: the code of that group in the given regions, else the first."""
+            out: list[int] = []
+            for group in groups:
+                drawn = by_group.get(group, [])
+                pick = next((c for c in drawn if set(prof.diagnoses[c].regions) & set(regions)), None)
+                pick = pick or (drawn[0] if drawn else None)
+                if pick is not None and diagnosis_codes.index(pick) + 1 not in out:
+                    out.append(diagnosis_codes.index(pick) + 1)
+            return out[:MAX_DIAGNOSIS_POINTERS]
+
+        procedures: list[_Procedure] = []
+        for index, slot_spec in enumerate(encounter.procedures):
+            if index == anchor_index:
+                assert anchor_code is not None
+                code = anchor_code
+                pointers = list(dict.fromkeys(diagnosis_codes.index(c) + 1 for c in anchor_order))
+                pointers = pointers or pointers_for(slot_spec.dx_groups)
+                detail: DetailSpec | None = anchor_detail
+            else:
+                if slot_spec.probability < 1.0 and rng.random() >= slot_spec.probability:
+                    continue
+                choices = list(slot_spec.codes)
+                if slot_spec.match_regions and treated_regions:
+                    choices = [
+                        c for c in choices if set(prof.codes[c].regions) & set(treated_regions)
+                    ] or choices
+                code = prof.codes[payer.billed_code(rng.choice(choices))]
+                regions_hint = code.regions if slot_spec.match_regions else ()
+                pointers = pointers_for(slot_spec.dx_groups, regions_hint)
+                detail = self._pick_detail(code, pointers, diagnosis_codes)
             units = rng.randint(*code.units)
             modifiers: list[str] = []
             if slot_spec.modifiers and (
                 slot_spec.modifier_probability >= 1.0 or rng.random() < slot_spec.modifier_probability
             ):
                 modifiers = list(slot_spec.modifiers)
-            procedures.append((code, units, modifiers, min(slot_spec.dx_group, len(diagnosis_codes))))
+            if code.kind in payer.excluded_kinds and not bill_excluded:
+                continue  # the clinic does not bill this kind of service to this payer
+            modifiers = self._with_kind_modifiers(payer, code, modifiers)
+            procedures.append(_Procedure(code, units, modifiers, pointers, detail))
+
+        def billable(code: CodeSpec) -> bool:
+            return bill_excluded or code.kind not in payer.excluded_kinds
 
         em_present = bool(encounter.em_codes) and (
             bool(setup.get("force_em")) or rng.random() < encounter.em_probability
         )
         lines: list[_Line] = []
         if em_present:
-            em_code = prof.codes[rng.choice(encounter.em_codes)]
-            em_modifiers = ["25"] if encounter.em_modifier_25 and procedures else []
-            pointers = [1] if len(diagnosis_codes) == 1 else [1, 2]
-            lines.append(_Line(len(lines) + 1, em_code, em_modifiers, 1, em_code.charge, pointers, None))
-        for code, units, modifiers, dx_group in procedures:
-            charge = (code.charge * units).quantize(CENT)
-            lines.append(_Line(len(lines) + 1, code, modifiers, units, charge, [dx_group], code.ndc))
+            em_code = prof.codes[payer.billed_code(rng.choice(encounter.em_codes))]
+            if billable(em_code):
+                em_modifiers = ["25"] if encounter.em_modifier_25 and procedures else []
+                em_modifiers = self._with_kind_modifiers(payer, em_code, em_modifiers)
+                pointers = [1] if len(diagnosis_codes) == 1 else [1, 2]
+                lines.append(
+                    _Line(
+                        len(lines) + 1,
+                        em_code,
+                        em_modifiers,
+                        1,
+                        em_code.charge,
+                        pointers,
+                        None,
+                        detail=self._pick_detail(em_code, pointers, diagnosis_codes),
+                    )
+                )
+        for proc in procedures:
+            charge = (proc.code.charge * proc.units).quantize(CENT)
+            lines.append(
+                _Line(
+                    len(lines) + 1,
+                    proc.code,
+                    proc.modifiers,
+                    proc.units,
+                    charge,
+                    proc.pointers,
+                    proc.code.ndc,
+                    detail=proc.detail,
+                )
+            )
         if not lines:
-            # Every slot of this template is probabilistic and none was drawn; a claim needs a line.
-            if encounter.em_codes:
-                em_code = prof.codes[rng.choice(encounter.em_codes)]
-                lines.append(_Line(1, em_code, [], 1, em_code.charge, [1], None))
-            else:
-                code = prof.codes[encounter.procedures[0].codes[0]]
-                units = code.units[0]
-                lines.append(_Line(1, code, [], units, (code.charge * units).quantize(CENT), [1], code.ndc))
+            # Every slot of this template is probabilistic and none was drawn; a claim needs a line,
+            # and never one of a kind the clinic does not bill to this payer.
+            candidates = [
+                prof.codes[payer.billed_code(c)]
+                for c in (*encounter.em_codes, *(c for s in encounter.procedures for c in s.codes))
+            ]
+            candidates = [c for c in candidates if billable(c)]
+            if not candidates:
+                raise ValueError(
+                    f"profile: encounter {encounter.id} has no line the clinic bills to payer {payer.payer_id}"
+                )
+            code = candidates[0]
+            units = code.units[0]
+            modifiers = self._with_kind_modifiers(payer, code, [])
+            lines.append(
+                _Line(
+                    1,
+                    code,
+                    modifiers,
+                    units,
+                    (code.charge * units).quantize(CENT),
+                    [1],
+                    code.ndc,
+                    detail=self._pick_detail(code, [1], diagnosis_codes),
+                )
+            )
+
+        # -- the ordering/referring provider: a scenario's setup decides; otherwise the payer's rule
+        #    (the rendering chiropractor orders the office's own films), then the profile's rate.
+        referring_mode = setup.get("referring_provider")
+        referring_npi = None
+        if referring_mode == "rendering":
+            referring_npi = provider.npi
+        elif referring_mode == "present":
+            referring_npi = (
+                rng.choice(prof.referring_providers).npi if prof.referring_providers else provider.npi
+            )
+        elif referring_mode is None:
+            if any(line.code.kind in payer.ordering_provider_kinds for line in lines):
+                referring_npi = provider.npi
+            elif prof.referring_providers and rng.random() < prof.referring_rate:
+                referring_npi = rng.choice(prof.referring_providers).npi
 
         prior_auth: str | None = None
         auth_mode = setup.get("prior_auth")
@@ -519,13 +716,17 @@ class _Generator:
         rng = self.rng
         setup = scenario.claim_setup
         if setup.get("strip_em_modifier_25") and claim.em_line is not None:
-            claim.em_line.modifiers = []
+            claim.em_line.modifiers = [m for m in claim.em_line.modifiers if m != "25"]
         if scenario.level == "line":
             claim.target = self._pick_target(scenario, claim.lines)
         target = claim.target
         if target is not None:
-            if setup.get("strip_target_modifiers"):
+            strip = setup.get("strip_target_modifiers")
+            if strip is True:
                 target.modifiers = []
+            elif strip:
+                # only the named modifiers: the line keeps the payer's own (GP on a therapy line, ...)
+                target.modifiers = [m for m in target.modifiers if m.upper() not in set(strip)]
             if setup.get("set_target_modifiers"):
                 target.modifiers = [str(m) for m in setup["set_target_modifiers"]]
             if setup.get("duplicate_target_line"):
@@ -537,18 +738,17 @@ class _Generator:
                     charge=target.charge,
                     diagnosis_pointers=list(target.diagnosis_pointers),
                     ndc=target.ndc,
+                    detail=target.detail,
                 )
                 claim.lines.append(copy)
                 claim.target = copy
             if setup.get("swap_diagnosis_inconsistent"):
                 pointer = (claim.target or target).diagnosis_pointers[0]
                 original = claim.diagnosis_codes[pointer - 1]
-                allowed = set(claim.encounter.diagnosis_codes)
-                pool = [
-                    code
-                    for code in self.profile.diagnoses
-                    if code not in allowed and code not in claim.diagnosis_codes
-                ]
+                # the scenario's declared pool only (codes no encounter bills, never on the claim)
+                pool = [c for c in setup["swap_diagnosis_inconsistent"] if c not in claim.diagnosis_codes]
+                if not pool:
+                    raise ValueError(f"scenario {scenario.id}: every swap pool code is already on the claim")
                 claim.diagnosis_codes[pointer - 1] = rng.choice(pool)
                 claim.documented_diagnosis = original
 
@@ -559,7 +759,15 @@ class _Generator:
         # Never above the charge: a payer ratio near 1.0 plus jitter must not produce a negative CO-45.
         return min(charge, (charge * payer.allowed_ratio * (Decimal(1) + jitter)).quantize(CENT))
 
-    def _pay_line(self, claim: _Claim, line: _Line) -> None:
+    def _adjudicate_line(self, claim: _Claim, line: _Line) -> None:
+        """Pay the line at the payer's allowed amount, or deny it with the payer's non-covered CAS
+        when the payer never pays this kind of line (an informational adjustment, no work item)."""
+        rule = claim.payer.noncovered_rule(line.code.kind)
+        if rule is not None:
+            line.allowed, line.paid = None, Decimal("0.00")
+            line.adjustments = [(rule.group, rule.carc, line.charge)]
+            line.rarcs = list(rule.rarcs)
+            return
         allowed = self._allowed(claim.payer, line.charge)
         line.allowed = allowed
         line.paid = allowed
@@ -588,14 +796,48 @@ class _Generator:
             return
         line.paid = (line.paid - amount).quantize(CENT)
         line.adjustments.append(("PR", code, amount))
-        claim.pr_total = (claim.pr_total + amount).quantize(CENT)
+
+    @staticmethod
+    def _sequestration(claim: _Claim) -> None:
+        """The payer's sequestration share of every payment, as CO-253 on the paid line (informational:
+        never a denial under the ingest rule)."""
+        rate = claim.payer.sequestration_rate
+        if rate <= 0:
+            return
+        for line in claim.lines:
+            if line.paid <= 0:
+                continue
+            withheld = (line.paid * rate).quantize(CENT)
+            if withheld > 0:
+                line.paid = (line.paid - withheld).quantize(CENT)
+                line.adjustments.append(("CO", "253", withheld))
+
+    @staticmethod
+    def _finish_totals(claim: _Claim) -> None:
+        """CLP05 (patient responsibility) is every PR-group CAS amount on the claim, whatever its code."""
+        claim.pr_total = sum(
+            (
+                amount
+                for adjustments in [claim.claim_adjustments, *(line.adjustments for line in claim.lines)]
+                for group, _code, amount in adjustments
+                if group == "PR"
+            ),
+            Decimal("0"),
+        ).quantize(CENT)
 
     def adjudicate(self, claim: _Claim) -> None:
         scenario = claim.scenario
         if scenario is None:
             for line in claim.lines:
-                self._pay_line(claim, line)
+                self._adjudicate_line(claim, line)
             self._patient_responsibility(claim)
+            self._sequestration(claim)
+            self._finish_totals(claim)
+            if all(line.allowed is None for line in claim.lines):
+                # every line is one the payer never pays: an unlabeled claim must be a paid claim
+                raise ValueError(
+                    f"profile: encounter {claim.encounter.id} pays nothing for payer {claim.payer.payer_id}"
+                )
             claim.status, claim.clp_status = "paid", "1"
             return
         if scenario.level == "claim":
@@ -604,6 +846,7 @@ class _Generator:
             claim.claim_adjustments = [(scenario.group, scenario.carc, claim.total_charge)]
             claim.claim_rarcs = list(scenario.rarcs)
             claim.denied_amount = claim.total_charge
+            self._finish_totals(claim)
             claim.status, claim.clp_status = "denied", "4"
             return
         target = claim.target
@@ -611,7 +854,7 @@ class _Generator:
         for line in claim.lines:
             if line is target:
                 continue
-            self._pay_line(claim, line)
+            self._adjudicate_line(claim, line)
         if scenario.amount == "allowed":
             allowed = self._allowed(claim.payer, target.charge)
             contractual = (target.charge - allowed).quantize(CENT)
@@ -623,10 +866,26 @@ class _Generator:
             claim.denied_amount = target.charge
         target.allowed, target.paid, target.rarcs = None, Decimal("0.00"), list(scenario.rarcs)
         self._patient_responsibility(claim)
+        self._sequestration(claim)
+        self._finish_totals(claim)
         if claim.paid_total > 0:
             claim.status, claim.clp_status = "partial", "1"
         else:
             claim.status, claim.clp_status = "denied", "4"
+
+    @staticmethod
+    def _denial_dollar_value(claim: _Claim) -> Decimal:
+        """What the ingest rule (docs/SPEC.md section 6) stores as the work item's dollar value: every
+        CO/PI/OA/PR adjustment with a non-informational CARC and a positive amount, the payer's
+        non-covered lines included; the full charge for a claim denied outright without one."""
+        total = Decimal("0")
+        for adjustments in [claim.claim_adjustments, *(line.adjustments for line in claim.lines)]:
+            for group, code, amount in adjustments:
+                if group in DENIAL_GROUPS and code not in INFORMATIONAL_CARCS and amount > 0:
+                    total += amount
+        if total <= 0 and claim.clp_status == "4":
+            total = claim.total_charge
+        return total.quantize(CENT)
 
     # -- numbering ------------------------------------------------------------------
 
@@ -662,7 +921,18 @@ class _Generator:
         pointer = target.diagnosis_pointers[0] if target.diagnosis_pointers else 1
         dx_code = claim.diagnosis_codes[min(pointer, len(claim.diagnosis_codes)) - 1]
         dx = prof.diagnoses[dx_code]
-        site = rng.choice(dx.sites)
+
+        def site_named_by(line: _Line | None, regions: tuple[str, ...]) -> str | None:
+            """The site the line's detail names for one of the regions (the segment adjusted there)."""
+            if line is None or line.detail is None:
+                return None
+            for region in regions:
+                named = line.detail.site_for(region)
+                if named:
+                    return named
+            return None
+
+        site = site_named_by(target, dx.regions) or rng.choice(dx.sites)
         other_sites = [s for s in dx.sites if s != site]
         site2 = rng.choice(other_sites) if other_sites else "contralateral side"
         if other is not None and other.diagnosis_pointers:
@@ -670,17 +940,60 @@ class _Generator:
                 claim.diagnosis_codes[min(other.diagnosis_pointers[0], len(claim.diagnosis_codes)) - 1]
             ]
             other_site_pool = [s for s in other_dx.sites if s != site] or list(other_dx.sites)
-            other_site = rng.choice(other_site_pool)
+            other_site = site_named_by(other, other_dx.regions) or rng.choice(other_site_pool)
         else:
             other_site = site2
         documented_code = claim.documented_diagnosis or dx_code
         documented = prof.diagnoses[documented_code]
         drug_line = next((ln for ln in claim.lines if ln.code.role == "drug"), None)
         other_payers = [p.name for p in prof.payers if p.payer_id != payer.payer_id] or [payer.name]
+        other_payer_name = (
+            prof.payer(scenario.other_payer).name
+            if scenario is not None and scenario.other_payer
+            else rng.choice(other_payers)
+        )
         carc = scenario.carc if scenario else "45"
         rarcs = list(scenario.rarcs) if scenario else []
         carc_text = prof.code_text(carc)
+
+        def detail_of(line: _Line | None) -> str:
+            return line.detail.text if line is not None and line.detail is not None else ""
+
+        # One set of placeholders per line kind on the claim ({cmt_code}, {therapy_detail}, ...), from
+        # the first line of that kind; the kinds are the profile's free-text `kind` values.
+        kind_vocab: dict[str, Any] = {}
+        for line in claim.lines:
+            kind = line.code.kind
+            if f"{kind}_code" in kind_vocab:
+                continue
+            kind_vocab[f"{kind}_code"] = line.code.code
+            kind_vocab[f"{kind}_description"] = line.code.description
+            kind_vocab[f"{kind}_detail"] = detail_of(line)
+            kind_vocab[f"{kind}_units"] = line.units
+            kind_vocab[f"{kind}_modifiers"] = " ".join(line.modifiers) or "no modifier"
+        # Profile-defined placeholders (synthetic/README.md, "vocabulary"), drawn once per claim in
+        # profile order, so a range bound can name an earlier placeholder (visit <= planned visits).
+        profile_vocab: dict[str, Any] = {}
+
+        def bound(value: int | str) -> int:
+            return value if isinstance(value, int) else int(profile_vocab[value])
+
+        for entry in prof.vocabulary.values():
+            if entry.kind == "choice":
+                profile_vocab[entry.name] = rng.choice(list(entry.values))
+            elif entry.kind == "bundle":
+                profile_vocab.update(dict(rng.choice(list(entry.options))))
+            elif entry.kind == "int":
+                low, high = bound(entry.low), bound(entry.high)
+                if low > high:
+                    raise ValueError(f"profile vocabulary {entry.name}: range {low}..{high} is empty")
+                profile_vocab[entry.name] = rng.randint(low, high)
+            else:  # days_before_service
+                days = rng.randint(int(entry.low), int(entry.high))
+                profile_vocab[entry.name] = (claim.service_date - timedelta(days=days)).isoformat()
         vocab: dict[str, Any] = {
+            **profile_vocab,
+            **kind_vocab,
             "first_name": patient.first_name,
             "last_name": patient.last_name,
             "patient_first_name": patient.first_name,
@@ -714,11 +1027,14 @@ class _Generator:
             "line_number": target.line_number,
             "line_code": target.code.code,
             "line_description": target.code.description,
+            "line_detail": detail_of(target),
             "procedure_code": procedure.code.code,
             "procedure": procedure.code.description,
+            "procedure_detail": detail_of(procedure),
             "em_code": claim.em_line.code.code if claim.em_line else "",
             "other_procedure_code": other.code.code if other else "",
             "other_procedure": other.code.description if other else "",
+            "other_procedure_detail": detail_of(other),
             "other_site": other_site,
             "diagnosis_code": dx_code,
             "diagnosis": dx.description,
@@ -727,16 +1043,12 @@ class _Generator:
             "site": site,
             "site2": site2,
             "lesion": dx.lesion,
-            "size_mm": rng.randint(3, 12),
-            "size_mm2": rng.randint(3, 12),
-            "count": rng.randint(3, 12),
-            "bsa": rng.randint(3, 15),
             "units": target.units,
             "ndc": target.ndc or (drug_line.ndc if drug_line else ""),
             "drug": drug_line.code.description if drug_line else "",
             "prior_auth_number": claim.prior_auth_number or "(none on file)",
             "auth_date": (claim.service_date - timedelta(days=rng.randint(3, 20))).isoformat(),
-            "other_payer_name": rng.choice(other_payers),
+            "other_payer_name": other_payer_name,
             "clearinghouse_batch": f"CHB{rng.randint(100_000, 999_999)}",
             "original_payer_ccn": (
                 f"{payer.payer_id}{(claim.adjudication_date - timedelta(days=rng.randint(20, 60))):%y%m%d}"
@@ -784,12 +1096,15 @@ class _Generator:
         vocab = dict(claim.vocab)
         vocab["letter_date"] = letter_date.strftime("%B %d, %Y")
         body = _fill(scenario.letter or "{carc_quote} {rarc_quote}", vocab)
+        # the payer's own paragraph when it has one (a Medicare contractor corrects by reopening or
+        # a new claim, never by a frequency-7 replacement), the profile-wide one otherwise
+        overrides = claim.payer.letter_overrides
         if scenario.no_appeal_rights:
-            rights = prof.no_appeal_rights_text
+            rights = overrides.get("no_appeal_rights") or prof.no_appeal_rights_text
         elif scenario.expected_action == ActionType.CORRECTED_CLAIM:
-            rights = prof.corrected_claim_rights_text
+            rights = overrides.get("corrected_claim_rights") or prof.corrected_claim_rights_text
         else:
-            rights = prof.appeal_rights_text
+            rights = overrides.get("appeal_rights") or prof.appeal_rights_text
         vocab["body"] = body
         vocab["appeal_paragraph"] = _fill(rights, vocab)
         return _fill(prof.portal_template if portal else prof.letter_template, vocab)
@@ -984,10 +1299,12 @@ class _Generator:
                     "expected_action": str(scenario.expected_action),
                     "carc": scenario.carc,
                     "rarcs": list(scenario.rarcs),
+                    "group": scenario.group,
                     "level": scenario.level,
                     "line_number": claim.target.line_number if claim.target is not None else None,
                     "procedure_code": claim.target.code.code if claim.target is not None else None,
                     "denied_amount": _money(claim.denied_amount),
+                    "dollar_value": _money(self._denial_dollar_value(claim)),
                     "payer_id": claim.payer.payer_id,
                     "injection_planted": claim.injection_planted,
                     "has_notes": bool(claim.notes),
@@ -1031,7 +1348,7 @@ def generate(
     n_claims: int,
     out_dir: str | Path,
     *,
-    profile: str | Path | Profile = "dermatology",
+    profile: str | Path | Profile = DEFAULT_PROFILE,
     denial_rate: float = DEFAULT_DENIAL_RATE,
     injection_rate: float = DEFAULT_INJECTION_RATE,
     as_of: date = DEFAULT_AS_OF,

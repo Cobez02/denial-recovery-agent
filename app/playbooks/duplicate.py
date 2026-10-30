@@ -1,8 +1,12 @@
 """Duplicate-claim playbook (CARC 18, RARC N522 / M86).
 
-`no_action` unless a note sentence describes a distinct, second, separate or repeat service; then an
-appeal that cites the note and adds modifier 76 (repeat by the same physician), 77 (repeat by another
-physician) or 91 (repeat clinical laboratory test) as a coding change.
+- `no_action` when the denied service is payable once per patient per day
+  (`once_per_day_code_ranges` in modifier_rules.yaml: spinal and extraspinal CMT): a repeat modifier
+  cannot make a second same-day manipulation payable, whatever the notes say about a second
+  encounter;
+- `no_action` unless a note sentence describes a distinct, second, separate or repeat service;
+- otherwise an appeal that cites the note and adds modifier 76 (repeat by the same physician), 77
+  (repeat by another physician) or 91 (repeat clinical laboratory test) as a coding change.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from app.schemas import (
 LAB_CODE_RANGES = ((80000, 89999),)
 REPEAT_MODIFIERS = frozenset({"76", "77", "91"})
 FLAG_POSSIBLE_TRUE_DUPLICATE = "possible_true_duplicate"
+FLAG_ONCE_PER_DAY = "once_per_day_code"
 
 
 class DuplicatePlaybook(Playbook):
@@ -43,6 +48,30 @@ class DuplicatePlaybook(Playbook):
 
     def propose(self, ctx: DenialContext, classification: ClassificationResult) -> ProposalDraft:
         rules = load_modifier_rules()
+        line = self.target_line(ctx)
+        if line is not None and code_is_numeric_in(
+            line.procedure_code, rules.get("once_per_day_code_ranges", [])
+        ):
+            return self.build(
+                ctx,
+                action_type=ActionType.NO_ACTION,
+                summary=f"Duplicate denial stands: {line.procedure_code} is payable once per patient per day",
+                rationale=(
+                    f"Denied for {self.reasons_summary(ctx)}. {line.procedure_code} on line {line.line_number} is "
+                    "payable once per patient per day (one spinal and one extraspinal manipulation per provider, "
+                    "patient and day), so a repeat modifier cannot make a second same-day service payable and "
+                    "the denial stands even when the notes describe a second encounter. Keep the documentation "
+                    "of both encounters in the record; nothing is resubmitted."
+                ),
+                citations=[
+                    *self.cite_reasons(ctx),
+                    self.cite_claim_field(
+                        ctx, f"lines[{line.line_number}].procedure_code", line.procedure_code
+                    ),
+                ],
+                confidence=0.8,
+                flags=[FLAG_ONCE_PER_DAY],
+            )
         support = self.find_supporting_notes(ctx, rules.get("duplicate_keywords", []))
         if not support:
             return self.build(
@@ -58,7 +87,6 @@ class DuplicatePlaybook(Playbook):
                 confidence=0.75,
                 flags=[FLAG_POSSIBLE_TRUE_DUPLICATE],
             )
-        line = self.target_line(ctx)
         citations = [*self.cite_reasons(ctx), *self.note_citations(ctx, support)]
         corrected = None
         coding_change = False
@@ -98,4 +126,4 @@ class DuplicatePlaybook(Playbook):
         )
 
 
-__all__ = ["DuplicatePlaybook", "FLAG_POSSIBLE_TRUE_DUPLICATE"]
+__all__ = ["DuplicatePlaybook", "FLAG_ONCE_PER_DAY", "FLAG_POSSIBLE_TRUE_DUPLICATE"]

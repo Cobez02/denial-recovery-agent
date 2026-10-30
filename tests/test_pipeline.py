@@ -30,6 +30,7 @@ from app.enums import (
     CitationKind,
     ClassificationSource,
     DeadlineKind,
+    DenialCategory,
     WorkItemStatus,
 )
 from app.ingest.matching import MATCH_CCN
@@ -57,7 +58,7 @@ from app.schemas import Citation, DenialContext
 from tests import helpers
 
 EXPECTED_CLAIMS = 200
-EXPECTED_LINES = 444
+EXPECTED_LINES = 396
 EXPECTED_PATIENTS = 140
 EXPECTED_PAYERS = 4
 EXPECTED_DENIALS = 150
@@ -126,7 +127,7 @@ def run(tmp_path_factory) -> Iterator[helpers.FixtureRun]:
 
 
 def test_m3_import_done_when(run):
-    """200 claims / 444 lines / 140 patients import, every CLP matches by ccn, re-import is a no-op."""
+    """200 claims / 396 lines / 140 patients import, every CLP matches by ccn, re-import is a no-op."""
     session, imports, labels = run.session, run.imports, run.labels
     manifest = helpers.load_manifest()
 
@@ -204,7 +205,10 @@ def test_process_pending_creates_one_proposed_work_item_per_label(run):
     for ccn, label in run.label_by_ccn.items():
         work_item = by_ccn[ccn]
         assert work_item.status == WorkItemStatus.PROPOSED, ccn
-        assert work_item.category in {str(c) for c in ACTIONABLE_CATEGORIES}, ccn
+        assert work_item.category in {str(c) for c in DenialCategory}, ccn
+        if work_item.category not in {str(c) for c in ACTIONABLE_CATEGORIES}:
+            # an informational category (a GZ line, a PR-group exclusion) is a no-action item
+            assert work_item.current_proposal.action_type == str(ActionType.NO_ACTION), ccn
         assert 0 < float(work_item.category_confidence) <= 1, ccn
         assert work_item.classification_source in {
             str(ClassificationSource.RULES),
@@ -212,7 +216,10 @@ def test_process_pending_creates_one_proposed_work_item_per_label(run):
         }, ccn
         assert work_item.classification_rationale, ccn
         assert work_item.all_reasons, ccn
-        assert Decimal(str(work_item.dollar_value)) == Decimal(label["denied_amount"]), ccn
+        # the dollar value is every denial adjustment on the claim (the Medicare contractor's
+        # PR-96 lines included); the denied line's own amount is the label's denied_amount
+        assert Decimal(str(work_item.dollar_value)) == Decimal(label["dollar_value"]), ccn
+        assert Decimal(str(work_item.dollar_value)) >= Decimal(label["denied_amount"]), ccn
         assert work_item.remittance_claim.is_denial and work_item.claim.claim_control_number == ccn
 
         proposal = work_item.current_proposal

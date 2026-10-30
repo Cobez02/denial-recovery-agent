@@ -1,6 +1,11 @@
-"""Authorization playbook (CARC 197 / 198 / 15 / 62 / 39; CARC 16 with RARC M62 / N54).
+"""Authorization playbook (CARC 197 / 198 / 15 / 62 / 39; CARC 16 with RARC M62 / N54; CARC 119 / 273
+with RARC N640 / N435).
 
 - `corrected_claim` resending the prior authorization number (REF*G1) when the claim record has one;
+- a service-limit denial (`SERVICE_LIMIT_CARCS` with `SERVICE_LIMIT_RARCS`: visits beyond the
+  program's limit without a service authorization) is always a `clinic_question`, whatever the
+  notes say: the remedy is a service authorization request, and a retrospective authorization is
+  limited to primary-payer denials and retroactive eligibility (ND and WV Medicaid manuals);
 - otherwise `appeal` for retro-authorization with note citations showing why the service could not wait;
 - `clinic_question` when no note excerpt is on file.
 """
@@ -22,7 +27,15 @@ from app.schemas import ClassificationResult, CorrectedClaimChange, DenialContex
 
 FLAG_RETRO_AUTHORIZATION = "retro_authorization"
 FLAG_WEAK_NOTE_SUPPORT = "weak_note_support"
+FLAG_SERVICE_LIMIT = "service_limit"
 
+# A benefit or service limit exceeded without a service authorization (the rules.yaml rule
+# `authorization_119_service_limit`): CARC 119 / 273 with RARC N640 / N435.
+SERVICE_LIMIT_CARCS: frozenset[str] = frozenset({"119", "273"})
+SERVICE_LIMIT_RARCS: frozenset[str] = frozenset({"N640", "N435"})
+
+# Words that say why a service could not wait for an authorization (the medical-necessity keyword
+# table of the billed diagnoses is added to these).
 RETRO_AUTH_KEYWORDS: tuple[str, ...] = (
     "urgent",
     "urgently",
@@ -32,6 +45,7 @@ RETRO_AUTH_KEYWORDS: tuple[str, ...] = (
     "same-day",
     "could not wait",
     "cannot wait",
+    "could not be interrupted",
     "immediate",
     "immediately",
     "medically necessary",
@@ -39,17 +53,9 @@ RETRO_AUTH_KEYWORDS: tuple[str, ...] = (
     "necessary",
     "required",
     "worsening",
+    "acute",
     "pain",
     "painful",
-    "bleeding",
-    "infection",
-    "infected",
-    "suspicious",
-    "rule out",
-    "malignant",
-    "malignancy",
-    "carcinoma",
-    "melanoma",
     "failed",
     "symptomatic",
 )
@@ -57,6 +63,39 @@ RETRO_AUTH_KEYWORDS: tuple[str, ...] = (
 
 class AuthorizationPlaybook(Playbook):
     category = DenialCategory.AUTHORIZATION
+
+    @staticmethod
+    def is_service_limit(ctx: DenialContext) -> bool:
+        claim_rarcs = set(ctx.remittance.remark_codes or [])
+        return any(
+            reason.carc in SERVICE_LIMIT_CARCS and (set(reason.rarcs) | claim_rarcs) & SERVICE_LIMIT_RARCS
+            for reason in ctx.reasons
+        )
+
+    def service_limit_question(self, ctx: DenialContext) -> ProposalDraft:
+        question = (
+            f"Claim {ctx.claim.claim_control_number} (DOS {self.dos_label(ctx)}) was denied because the visit exceeds "
+            f"the program's service limit without a service authorization ({self.reasons_summary(ctx)}). Was a "
+            "service authorization requested or obtained for the visits beyond the limit? If one exists, send its "
+            "number and a corrected claim will carry it. If not, request authorization for the remaining visits of "
+            "the plan of care (a retrospective authorization is limited to primary-payer denials and retroactive "
+            "eligibility) and confirm whether the patient signed a non-covered-service acknowledgement before the "
+            "visit; without one the visit cannot be billed to the patient."
+        )
+        return self.build(
+            ctx,
+            action_type=ActionType.CLINIC_QUESTION,
+            summary="Ask the clinic whether a service authorization was requested for the visits beyond the limit",
+            rationale=(
+                f"Denied for {self.reasons_summary(ctx)}. A service-limit denial is cured by a service authorization "
+                "request, not by an appeal of the visit's medical necessity, so whatever the notes say the clinic is "
+                "asked first."
+            ),
+            citations=[*self.cite_reasons(ctx), self.cite_claim_field(ctx, "prior_auth_number", None)],
+            clinic_question=question,
+            confidence=0.65,
+            flags=[FLAG_SERVICE_LIMIT],
+        )
 
     def propose(self, ctx: DenialContext, classification: ClassificationResult) -> ProposalDraft:
         auth = ctx.claim.prior_auth_number
@@ -82,6 +121,9 @@ class AuthorizationPlaybook(Playbook):
                 corrected_claim=build_corrected_claim(ctx, [change]),
                 confidence=0.75,
             )
+
+        if self.is_service_limit(ctx):
+            return self.service_limit_question(ctx)
 
         if not usable_notes(ctx):  # a note flagged for planted instructions counts as absent
             question = (
@@ -134,4 +176,11 @@ class AuthorizationPlaybook(Playbook):
         )
 
 
-__all__ = ["AuthorizationPlaybook", "FLAG_RETRO_AUTHORIZATION", "RETRO_AUTH_KEYWORDS"]
+__all__ = [
+    "AuthorizationPlaybook",
+    "FLAG_RETRO_AUTHORIZATION",
+    "FLAG_SERVICE_LIMIT",
+    "RETRO_AUTH_KEYWORDS",
+    "SERVICE_LIMIT_CARCS",
+    "SERVICE_LIMIT_RARCS",
+]

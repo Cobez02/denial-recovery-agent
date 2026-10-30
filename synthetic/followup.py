@@ -33,7 +33,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.ingest.denials import is_denial_adjustment
+from app.ingest.denials import is_denial_adjustment, is_patient_responsibility_adjustment
 from app.models import Claim, Clinic, Payer, WorkItem
 from synthetic.x12_writer import build_835, build_835_multi
 
@@ -112,22 +112,36 @@ def _line_dicts(claim: Claim) -> list[dict[str, Any]]:
     ]
 
 
+def _is_real_denial(reason: dict[str, Any]) -> bool:
+    """A denial the ingest rule (docs/SPEC.md section 6) would act on: a non-informational CARC that
+    is not a PR-group patient-responsibility exclusion (a payer's non-covered line)."""
+    group = str(reason.get("group_code") or "")
+    carc = str(reason.get("carc") or "")
+    return is_denial_adjustment(group, carc, Decimal("1")) and not is_patient_responsibility_adjustment(
+        group, carc
+    )
+
+
 def _primary_reason(work_item: WorkItem) -> dict[str, Any]:
+    """The work item's first stored reason that is a real denial (the reasons are stored largest
+    amount first, so a payer's non-covered PR-96 line may come before the denial that created the
+    item), else its first reason, else the default CO-16."""
     reasons = [r for r in (work_item.all_reasons or []) if isinstance(r, dict)]
+    for reason in reasons:
+        if _is_real_denial(reason):
+            return reason
     return reasons[0] if reasons else dict(DEFAULT_REASON)
 
 
 def _denial_cas(work_item: WorkItem) -> tuple[str, str]:
     """(group, CARC) of a real denial for the unpaid part of a partial payment.
 
-    The work item's first stored reason when it is a denial code (never a contractual or
-    patient-responsibility split), otherwise the default CO-16.
+    The work item's first stored denial reason (never a contractual or patient-responsibility
+    split, never a patient-responsibility exclusion), otherwise the default CO-16.
     """
     reason = _primary_reason(work_item)
-    group = str(reason.get("group_code") or "CO")
-    carc = str(reason.get("carc") or "16")
-    if is_denial_adjustment(group, carc, Decimal("1")):
-        return group, carc
+    if _is_real_denial(reason):
+        return str(reason.get("group_code") or "CO"), str(reason.get("carc") or "16")
     return str(DEFAULT_REASON["group_code"]), str(DEFAULT_REASON["carc"])
 
 

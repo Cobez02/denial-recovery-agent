@@ -18,6 +18,11 @@
 #     claim_paid:      true = the remittance paid something on the claim, false = it paid 0.00
 #                      (optional; needs the remittance context, otherwise the rule does not match)
 #     amount_positive: true = the adjustment amount must be > 0 (optional)
+#     procedure_codes: the denied line's procedure code must be one of these codes or inside one of
+#                      these inclusive numeric ranges, e.g. ["98940-98942", "G0283"] (optional;
+#                      a claim-level reason has no line and never matches)
+#     modifiers_any:   at least one of these modifiers must be on the denied line (optional)
+#     modifiers_none:  none of these modifiers may be on the denied line (optional)
 #   rationale:   short clause shown to the reviewer after the code citation, e.g.
 #                "CO-16 with RARC M119 on line 1 ($120.00): missing or invalid NDC"
 #
@@ -25,7 +30,42 @@
 # remittance (a remark after the CLP applies to the whole claim) are added when the reason's own
 # codes did not select a remark-specific rule. The rationale cites both sets.
 #
+# Specialty: chiropractic (docs/SPECIALTY.md). The line-aware rules at the top of the file tell the
+# chiropractic uses of CARC 50 apart: a CMT line without AT (a modifier problem), a GZ line (an
+# expected, provider-liable denial) and a PR-group line (the patient's share under an ABN).
 # Extend this file with the coder session (Phase 0) and with every shadow-mode disagreement.
+
+# ---------------------------------------------------------------------------------------------
+# Line-aware chiropractic rules: the same CARC means different things depending on the line
+# ---------------------------------------------------------------------------------------------
+
+- id: contractual_50_expected_denial_gz
+  category: contractual
+  confidence: 0.90
+  match: {carc: ["50"], group: ["CO", "PI", "OA"], modifiers_any: ["GZ"]}
+  rationale: "modifier GZ: the provider expected this item to be denied as not reasonable and necessary and holds no ABN; provider liable, not appealable"
+
+- id: patient_responsibility_50_abn
+  category: patient_responsibility
+  confidence: 0.85
+  match: {carc: ["50"], group: ["PR"]}
+  rationale: "not medically necessary under the payer's policy and assigned to the patient (an ABN or GA on file); bill the patient per the notice"
+
+# The automated no-AT edit carries N115 or no remark. A review organization's finding (N10), a
+# missing medical record (M127) or an unsupported level of service (M25) is a medical-necessity
+# review whatever the modifiers (a commercial plan's UM vendor reviews CMT lines that never carry
+# AT), so those fall through to medical_necessity_core.
+- id: modifier_50_cmt_without_at
+  category: modifier
+  confidence: 0.85
+  match: {carc: ["50"], procedure_codes: ["98940-98942"], modifiers_none: ["AT", "GA", "GY", "GZ", "GX"], rarc_none: ["N10", "M127", "M25"]}
+  rationale: "spinal manipulation billed without modifier AT is adjudicated as maintenance therapy; add AT when the notes document active, corrective treatment"
+
+- id: patient_responsibility_170_provider_type_pr
+  category: patient_responsibility
+  confidence: 0.85
+  match: {carc: ["170"], group: ["PR"]}
+  rationale: "service not payable when performed by this provider type and assigned to the patient (a statutory exclusion); bill the patient, no payer action"
 
 # ---------------------------------------------------------------------------------------------
 # Strong CARC rules and CARC + RARC combinations
@@ -48,6 +88,24 @@
   confidence: 0.90
   match: {carc: ["31", "32", "33", "140", "177"]}
   rationale: "payer cannot match the patient to an eligible member; verify member id, name and plan"
+
+- id: eligibility_24_managed_care
+  category: eligibility
+  confidence: 0.85
+  match: {carc: ["24"]}
+  rationale: "charges are covered under a capitation agreement or managed care plan (a Medicare Advantage or Medicaid managed-care enrollee); verify the enrollment on the date of service and bill that plan"
+
+- id: eligibility_16_patient_identifier
+  category: eligibility
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["N382"]}
+  rationale: "patient identifier missing or invalid (member id or MBI); verify the identifier and the patient's coverage on the date of service"
+
+- id: cob_accident_liability_19_20_21
+  category: coordination_of_benefits
+  confidence: 0.85
+  match: {carc: ["19", "20", "21"]}
+  rationale: "a workers' compensation, liability or no-fault carrier is primary for this injury; obtain the accident details and bill that carrier or supply its denial"
 
 - id: cob_109_other_payer
   category: coordination_of_benefits
@@ -82,8 +140,20 @@
 - id: modifier_16_modifier
   category: modifier
   confidence: 0.85
-  match: {carc: ["16"], rarc_any: ["M78", "N519"]}
+  match: {carc: ["16"], rarc_any: ["M78", "N519", "N822", "N823"]}
   rationale: "HCPCS modifier missing, invalid or an invalid combination"
+
+- id: missing_info_16_chiropractic_claim_fields
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["MA122", "MA121", "M122"]}
+  rationale: "initial treatment date, x-ray date or subluxation level missing or invalid on a chiropractic claim; a new claim with the field is required"
+
+- id: missing_info_16_ordering_provider
+  category: missing_information
+  confidence: 0.85
+  match: {carc: ["16"], rarc_any: ["N264", "N265", "N285", "N286"]}
+  rationale: "ordering or referring provider name or identifier missing or invalid"
 
 - id: missing_info_16_ndc
   category: missing_information
@@ -94,7 +164,7 @@
 - id: missing_info_16_documentation
   category: missing_information
   confidence: 0.85
-  match: {carc: ["16"], rarc_any: ["N29", "N225", "M127"]}
+  match: {carc: ["16"], rarc_any: ["N29", "N225", "M127", "N706", "N393"]}
   rationale: "missing or incomplete documentation (notes, orders, report or medical record)"
 
 - id: missing_info_16_procedure_code
@@ -147,6 +217,18 @@
   match: {carc: ["197", "198", "15", "62", "39"]}
   rationale: "pre-certification or authorization absent, exceeded, invalid or denied"
 
+- id: authorization_119_service_limit
+  category: authorization
+  confidence: 0.80
+  match: {carc: ["119", "273"], rarc_any: ["N640", "N435"]}
+  rationale: "visits beyond the program's service limit need a service authorization; confirm whether one was requested or obtained"
+
+- id: authorization_referral_243_288
+  category: authorization
+  confidence: 0.80
+  match: {carc: ["243", "288"]}
+  rationale: "referral or network authorization absent; obtain the referral or authorization number and resubmit"
+
 - id: modifier_core
   category: modifier
   confidence: 0.90
@@ -176,6 +258,24 @@
   confidence: 0.85
   match: {carc: ["150", "151"]}
   rationale: "documentation does not support the level or frequency of service billed"
+
+- id: medical_necessity_b22_diagnosis
+  category: medical_necessity
+  confidence: 0.80
+  match: {carc: ["B22"]}
+  rationale: "payment adjusted based on the diagnosis (the condition is not related to the spinal level billed); check the diagnosis pair for each region against the notes"
+
+- id: modifier_97_em_with_chiropractic_n626
+  category: modifier
+  confidence: 0.85
+  match: {carc: ["97"], rarc_any: ["N626"]}
+  rationale: "E/M not payable with chiropractic care codes on the same date unless significant and separately identifiable (modifier 25)"
+
+- id: duplicate_97_b20_n111
+  category: duplicate
+  confidence: 0.85
+  match: {carc: ["97", "B20"], rarc_any: ["N111"]}
+  rationale: "service already included in a claim previously billed and adjudicated; no appeal except for a duplicate-claim issue"
 
 - id: bundling_core
   category: bundling
@@ -244,8 +344,8 @@
 - id: medical_necessity_rarc
   category: medical_necessity
   confidence: 0.80
-  match: {rarc_any: ["N115", "N661", "M76"]}
-  rationale: "coverage decision based on medical-necessity criteria or the diagnosis"
+  match: {rarc_any: ["N115", "N661", "M76", "M25", "N10"]}
+  rationale: "coverage decision based on medical-necessity criteria, the level of service or the diagnosis"
 
 - id: bundling_rarc
   category: bundling
@@ -268,13 +368,13 @@
 - id: modifier_rarc
   category: modifier
   confidence: 0.75
-  match: {rarc_any: ["M78", "N519"]}
+  match: {rarc_any: ["M78", "N519", "N822", "N823"]}
   rationale: "HCPCS modifier missing, invalid or an invalid combination"
 
 - id: missing_info_rarc
   category: missing_information
   confidence: 0.70
-  match: {rarc_any: ["M119", "N29", "N225", "M127", "MA130", "M20", "M51", "M79", "N290", "N179"]}
+  match: {rarc_any: ["M119", "N29", "N225", "M127", "MA130", "M20", "M51", "M79", "N290", "N179", "N706", "N393", "MA122", "MA121", "M122", "N264", "N265", "N285", "N286"]}
   rationale: "remark code names missing or invalid claim information"
 
 # ---------------------------------------------------------------------------------------------
@@ -316,6 +416,18 @@
   confidence: 0.55
   match: {carc: ["B7"]}
   rationale: "provider not certified or eligible for this service on the date of service; credentialing review"
+
+- id: provider_type_not_payable_co
+  category: other
+  confidence: 0.55
+  match: {carc: ["170", "185"], group: ["CO", "PI", "OA", "CR"]}
+  rationale: "service not payable when performed by this provider type and written off by the provider; coverage or credentialing review"
+
+- id: network_restriction_242
+  category: other
+  confidence: 0.55
+  match: {carc: ["242"]}
+  rationale: "service not provided by a network provider; confirm the member's product and the clinic's network status"
 
 - id: qualifying_service_b15
   category: other

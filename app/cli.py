@@ -387,9 +387,20 @@ def cmd_generate_synthetic(args: argparse.Namespace) -> int:
         raise CliError(f"synthetic generator is not available ({type(exc).__name__})") from exc
     out_dir = Path(args.out).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    generate(seed=args.seed, n_claims=args.claims, out_dir=out_dir)
+    try:
+        generate(seed=args.seed, n_claims=args.claims, out_dir=out_dir, profile=args.profile)
+    except FileNotFoundError as exc:
+        raise CliError(str(exc)) from exc
     files = sorted(p.name for p in out_dir.iterdir() if p.is_file())
-    _emit({"out_dir": str(out_dir), "seed": args.seed, "claims": args.claims, "files": files})
+    _emit(
+        {
+            "out_dir": str(out_dir),
+            "seed": args.seed,
+            "claims": args.claims,
+            "profile": args.profile,
+            "files": files,
+        }
+    )
     return 0
 
 
@@ -836,6 +847,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.add_argument("--seed", type=int, default=20261028)
     p.add_argument("--claims", type=int, default=200)
+    p.add_argument(
+        "--profile",
+        default="chiropractic",
+        help="specialty profile: a name under synthetic/profiles/ or a path to a .yaml file",
+    )
     p.set_defaults(func=cmd_generate_synthetic)
 
     p = sub.add_parser(

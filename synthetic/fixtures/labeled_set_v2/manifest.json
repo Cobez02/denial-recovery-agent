@@ -1,0 +1,142 @@
+{
+  "generator_version": "3",
+  "seed": 20261028,
+  "as_of": "2026-10-28",
+  "n_claims": 200,
+  "profile": "chiropractic",
+  "denial_rate": 0.75,
+  "injection_rate": 0.2,
+  "counts": {
+    "claims": 200,
+    "lines": 396,
+    "patients": 140,
+    "paid_claims": 50,
+    "partial_claims": 52,
+    "denied_claims": 98,
+    "denials": 150,
+    "denials_by_category": {
+      "medical_necessity": 23,
+      "modifier": 20,
+      "timely_filing": 8,
+      "bundling": 10,
+      "authorization": 14,
+      "patient_responsibility": 8,
+      "contractual": 7,
+      "eligibility": 12,
+      "missing_information": 17,
+      "coordination_of_benefits": 11,
+      "other": 8,
+      "duplicate": 12
+    },
+    "denials_by_expected_action": {
+      "corrected_claim": 45,
+      "no_action": 43,
+      "clinic_question": 42,
+      "appeal": 20
+    },
+    "injection_planted": 13,
+    "notes": 193,
+    "payer_documents": 63,
+    "dropped_scenarios": []
+  },
+  "files": {
+    "claims_export": "claims_export.csv",
+    "notes": "notes.csv",
+    "payer_documents": "payer_documents.csv",
+    "labels": "labels.json",
+    "manifest": "manifest.json",
+    "remittances": {
+      "GBMB1": "remit_GBMB1.835",
+      "GPMA2": "remit_GPMA2.835",
+      "SWPPO3": "remit_SWPPO3.835",
+      "TLMC4": "remit_TLMC4.835"
+    }
+  },
+  "payers": [
+    {
+      "payer_id": "GBMB1",
+      "name": "Great Basin Medicare Part B",
+      "file": "remit_GBMB1.835",
+      "claims": 66,
+      "denials": 55,
+      "payment_date": "2026-10-28",
+      "payment_amount": "614.19",
+      "trace_number": "TRNGBMB120261028",
+      "interchange_control_number": 610280001
+    },
+    {
+      "payer_id": "GPMA2",
+      "name": "Granite Peak Medicare Advantage",
+      "file": "remit_GPMA2.835",
+      "claims": 44,
+      "denials": 36,
+      "payment_date": "2026-10-28",
+      "payment_amount": "1523.48",
+      "trace_number": "TRNGPMA220261028",
+      "interchange_control_number": 610280002
+    },
+    {
+      "payer_id": "SWPPO3",
+      "name": "Sawtooth Health Plan PPO",
+      "file": "remit_SWPPO3.835",
+      "claims": 53,
+      "denials": 42,
+      "payment_date": "2026-10-28",
+      "payment_amount": "2819.00",
+      "trace_number": "TRNSWPPO320261028",
+      "interchange_control_number": 610280003
+    },
+    {
+      "payer_id": "TLMC4",
+      "name": "Timberline Medicaid Plan",
+      "file": "remit_TLMC4.835",
+      "claims": 37,
+      "denials": 17,
+      "payment_date": "2026-10-28",
+      "payment_amount": "1981.13",
+      "trace_number": "TRNTLMC420261028",
+      "interchange_control_number": 610280004
+    }
+  ],
+  "scenario_counts": {
+    "diagnosis_subluxation_primary_missing": 10,
+    "modifier_at_missing_maintenance_care": 6,
+    "timely_filing_expired": 4,
+    "bundling_97140_same_region": 6,
+    "auth_medicaid_service_limit": 5,
+    "pr_xray_without_gy": 8,
+    "contractual_gz_maintenance": 7,
+    "auth_ma_plan_of_care_absent": 4,
+    "elig_coverage_terminated": 5,
+    "missing_initial_treatment_date": 10,
+    "modifier_at_missing": 6,
+    "elig_ma_enrollee_billed_to_medicare": 7,
+    "cob_other_coverage_primary": 3,
+    "other_ppo_visit_limit": 8,
+    "cob_medicare_secondary_payer": 3,
+    "bundling_97140_separate_region": 4,
+    "cob_work_injury_liability": 3,
+    "med_nec_um_vendor_review": 5,
+    "duplicate_exact": 7,
+    "modifier_gp_missing": 6,
+    "med_nec_maintenance_review": 7,
+    "missing_ordering_provider_xray": 2,
+    "duplicate_second_cmt_same_day": 5,
+    "timely_filing_in_window": 4,
+    "auth_number_not_on_claim": 5,
+    "modifier_25_missing_em_with_cmt": 2,
+    "diagnosis_inconsistent_with_cmt": 1,
+    "missing_records_not_received": 5,
+    "cob_misrouted_wrong_payer": 2
+  },
+  "file_sha256": {
+    "claims_export.csv": "7504926fc869f4787d611231af3ba2b51d403ba6bc99d502a4d253b2376e9334",
+    "notes.csv": "ff70d5511c9d92c7e4fc494c3c633fe09ceec592343ab08ff867e594ece54bc4",
+    "payer_documents.csv": "cf7507502c523fd36cb44233718ae043032c978621a57e24ee1a5ee896fc9eb6",
+    "remit_GBMB1.835": "7f4637f2daab3ea992cdf9b471c136dbd054c872bcc1f70b14ea02083ad3b529",
+    "remit_GPMA2.835": "be947df6b842d01a7edeb0a9126a4bab65156d09cdf7bfef111b69b5be93d0e9",
+    "remit_SWPPO3.835": "85ba22ed4e4f8fbe4305eb297ee213177218dc80ceab99225c02f3e2412a7b31",
+    "remit_TLMC4.835": "7f50f8b530c2f66757099852a0bacca746c1bf7dcf8fde93b0a19faf5d70e2d2",
+    "labels.json": "3a1d59d6cdec913ff6717b5925e19552a8a0ed04e21f53b8afbb00e338576423"
+  }
+}

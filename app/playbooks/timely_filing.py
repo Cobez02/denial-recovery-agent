@@ -3,7 +3,10 @@
 Appeal with proof of timely submission when the claim's `original_submission_date` falls within the
 payer's timely-filing window measured from the first date of service; otherwise `no_action` with reason
 `timely_filing_expired` so the item lands in the missed-money review. Without a recorded submission
-date the clinic is asked for the clearinghouse acceptance report.
+date the clinic is asked for the clearinghouse acceptance report. When the payer marks the decision
+as not appealable (`NO_APPEAL_RARCS`: N211, which a Medicare contractor attaches to every
+timely-filing denial) an in-window claim is a `clinic_question` instead: the route is a reopening for
+an administrative error or a new claim with the corrected date of service, never an appeal.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from app.playbooks.deadlines import first_service_date
 from app.schemas import ClassificationResult, DenialContext, ProposalDraft
 
 REASON_EXPIRED = "timely_filing_expired"
+FLAG_NO_APPEAL_RIGHTS = "no_appeal_rights"
+NO_APPEAL_RARCS: frozenset[str] = frozenset({"N211"})
 
 
 class TimelyFilingPlaybook(Playbook):
@@ -49,6 +54,31 @@ class TimelyFilingPlaybook(Playbook):
             )
         limit = dos + timedelta(days=window)
         days_after = (submitted - dos).days
+        remarks = {rc for reason in ctx.reasons for rc in reason.rarcs} | set(
+            ctx.remittance.remark_codes or []
+        )
+        if submitted <= limit and remarks & NO_APPEAL_RARCS:
+            question = (
+                f"Claim {ctx.claim.claim_control_number} was denied for timely filing ({self.reasons_summary(ctx)}) "
+                f"although the record shows it was first submitted on {submitted.isoformat()}, {days_after} days after "
+                f"the date of service {dos.isoformat()}, inside the payer's {window}-day window. The payer marks the "
+                "decision as not appealable. Please check whether the date of service on the claim was wrong (a new "
+                "claim with the corrected date is the fix) or whether an administrative error delayed it (a reopening "
+                "request with the proof is the route), and send the clearinghouse acceptance report."
+            )
+            return self.build(
+                ctx,
+                action_type=ActionType.CLINIC_QUESTION,
+                summary="Ask the clinic for proof of a date-of-service or administrative error (no appeal rights)",
+                rationale=(
+                    f"Denied for {self.reasons_summary(ctx)}. The submission falls inside the window but the payer "
+                    "affords no appeal rights for this decision, so an appeal is not the route."
+                ),
+                citations=citations,
+                clinic_question=question,
+                confidence=0.7,
+                flags=[FLAG_NO_APPEAL_RIGHTS],
+            )
         if submitted <= limit:
             return self.build(
                 ctx,
@@ -80,4 +110,4 @@ class TimelyFilingPlaybook(Playbook):
         )
 
 
-__all__ = ["REASON_EXPIRED", "TimelyFilingPlaybook"]
+__all__ = ["FLAG_NO_APPEAL_RIGHTS", "NO_APPEAL_RARCS", "REASON_EXPIRED", "TimelyFilingPlaybook"]

@@ -1,16 +1,19 @@
 # Modifier playbook rules (docs/SPEC.md section 9, category `modifier`).
 #
 # Everything here is a coding decision that a certified coder should review (Phase 0 "coding advice"
-# feeds this file). The playbook never adds a modifier to raise payment unless the documentation
-# supports it: a proposed edit without a supporting note excerpt is flagged `unsupported_coding_change`
-# and capped at confidence 0.4. Codes are synthetic examples for a dermatology profile.
+# feeds this file; docs/SPECIALTY.md lists the assumptions). The playbook never adds a modifier to
+# raise payment unless the documentation supports it: a proposed edit without a supporting note
+# excerpt is flagged `unsupported_coding_change` and capped at confidence 0.4. The code pairs, ranges
+# and keywords are for the chiropractic profile (the pilot specialty); the situation kinds are
+# generic and another specialty changes the data, not the playbook.
 
-version: 1
+version: 2
 
 # Modifiers the claim export may carry. Anything else on a line the payer denied for a modifier
-# problem (CARC 4 / 182, RARC M78 / N519) is treated as invalid and removed. Keep this list generous:
-# a legitimate modifier that is missing here would be stripped as a "supported" coding change, while
-# an unknown modifier that is listed only sends the item to a coder (the safe direction).
+# problem (CARC 4 / 182, RARC M78 / N519 / N822 / N823) is treated as invalid and removed. Keep this
+# list generous: a legitimate modifier that is missing here would be stripped as a "supported"
+# coding change, while an unknown modifier that is listed only sends the item to a coder (the safe
+# direction).
 valid_modifiers:
   # Distinct / same-day service
   - "25"
@@ -72,10 +75,15 @@ valid_modifiers:
   - "81"
   - "82"
   - "AS"
-  # Therapy, coverage and payer-policy modifiers
+  # Chiropractic treatment, therapy discipline, coverage and payer-policy modifiers
+  - "AT"
   - "GP"
+  - "GO"
+  - "GN"
+  - "97"
   - "KX"
   - "GA"
+  - "GX"
   - "GY"
   - "GZ"
   - "GC"
@@ -103,18 +111,23 @@ distinct_service_modifiers: ["59", "XS", "XU", "XE", "XP"]
 # Modifiers that already assert laterality (no 50 is added on top of these).
 laterality_modifiers: ["50", "LT", "RT"]
 
-# Evaluation and management codes (inclusive numeric ranges) and surgical/procedure codes.
+# Evaluation and management codes (inclusive numeric ranges) and the procedures that carry a global
+# period, so an E/M on the same date needs modifier 25: surgery (10000-69999) and chiropractic
+# manipulative treatment (98940-98943, global period 000, includes the pre-manipulation assessment).
 em_code_ranges:
   - [99202, 99215]
 procedure_code_ranges:
   - [10000, 69999]
+  - [98940, 98943]
 
-# Denial codes that point at a modifier problem on a line.
+# Denial codes that point at a modifier problem on a line (M78 is deactivated but still recognised).
 modifier_carcs: ["4", "182"]
-modifier_rarcs: ["M78", "N519"]
+modifier_rarcs: ["M78", "N519", "N822", "N823"]
 
 situations:
-  # (a) An E/M visit on the same date as a procedure needs modifier 25 on the E/M line.
+  # (a) An E/M visit on the same date as a procedure needs modifier 25 on the E/M line, when the
+  #     notes show a significant, separately identifiable service (a new complaint or injury, a
+  #     re-examination that changes the plan), not the pre-manipulation assessment CMT includes.
   - id: em_same_day_procedure
     modifier: "25"
     description: "E/M service on the same date as a procedure: append modifier 25 to the E/M line"
@@ -124,22 +137,27 @@ situations:
       - "separate problem"
       - "new problem"
       - "new complaint"
+      - "new injury"
+      - "new condition"
       - "unrelated"
       - "additional complaint"
       - "also evaluated"
       - "also reports"
       - "also complains"
       - "also presents"
-      - "counseled"
-      - "counseling"
-      - "discussed"
+      - "re-examination"
+      - "re-evaluation"
+      - "reexamination"
+      - "exacerbation"
+      - "separate history"
+      - "medical decision making"
+      - "treatment plan was changed"
+      - "plan was revised"
       - "evaluation and management"
       - "e/m service"
-      - "prescribed"
-      - "medication adjusted"
-      - "refilled"
 
-  # (b) CARC 4 / RARC M78 or N519 on a line carrying a modifier that is not valid, or repeated.
+  # (b) CARC 4 / RARC M78, N519, N822 or N823 on a line carrying a modifier that is not valid, or
+  #     repeated.
   - id: invalid_or_duplicate_modifier
     description: "Remove a modifier that is not valid for the claim export, or a repeated modifier"
     needs_note_support: false
@@ -151,38 +169,120 @@ situations:
     description: "Modifier 59 billed with an X{EPSU} modifier: drop the redundant 59 and keep the specific modifier"
     needs_note_support: false
 
+  # (f) A modifier that only belongs on certain codes, billed on another line (AT on an E/M or an
+  #     X-ray line: AT is defined for 98940-98942 only). The claim itself is the evidence.
+  - id: restricted_modifier_outside_its_codes
+    kind: restricted_modifier
+    modifier: "AT"
+    code_ranges:
+      - [98940, 98942]
+    description: "Modifier AT belongs on spinal chiropractic manipulative treatment (98940-98942) only: remove it from this line"
+    needs_note_support: false
+
+  # (g) A modifier a line of this kind must carry: AT on spinal CMT billed to Medicare, Medicare
+  #     Advantage and Medicaid payers (active or corrective treatment). Never added on top of an
+  #     ABN modifier (GA/GX/GY/GZ: maintenance or excluded care is not active treatment) and only
+  #     on a line the denial names; the notes must document active treatment of a subluxation.
+  #     `blocked_by` names a keyword set below: a note sentence that documents maintenance care
+  #     never counts as support, and when the notes carry one AT is not added (the denial stands,
+  #     or the coder decides when the notes also document active care). `filing_indicators` are
+  #     the claim filing indicators (CLP06) of the payers that require AT (Medicare Part B, Medicare
+  #     Advantage, Medicaid); a commercial claim (12) never gets AT. The indicator is read from the
+  #     remittance context when the context carries it; until then the reviewer is told to confirm
+  #     the payer requires AT (`payer_notice`).
+  - id: required_treatment_modifier_at
+    kind: required_modifier
+    modifier: "AT"
+    code_ranges:
+      - [98940, 98942]
+    absent_modifiers: ["GA", "GX", "GY", "GZ"]
+    requires_denied_line: true
+    blocked_by: maintenance_documentation
+    filing_indicators: ["MB", "16", "MC"]
+    payer_notice: "AT applies to Medicare, Medicare Advantage and Medicaid claims only; the payer's claim filing indicator is not in the record, so confirm the payer requires AT before approval."
+    description: "Spinal CMT billed without modifier AT: append AT when the notes document active, corrective treatment of a subluxation"
+    needs_note_support: true
+    support_keywords:
+      - "subluxation"
+      - "segmental dysfunction"
+      - "somatic dysfunction"
+      - "active treatment"
+      - "active care"
+      - "corrective"
+      - "treatment plan"
+      - "plan of care"
+      - "measurable"
+      - "improvement"
+      - "improved"
+      - "re-examination"
+      - "re-evaluation"
+      - "outcome score"
+      - "range of motion"
+      - "asymmetry"
+      - "goals"
+      - "PART findings"
+      - "PART examination"
+      - "PART exam"
+      - "not maintenance"
+
+  # (h) The therapy discipline modifier GP on physical medicine and rehabilitation codes (97010-97799
+  #     and the unattended electrical stimulation G codes) for payers that require it; never on top
+  #     of another discipline modifier (GO, GN); only on a line the denial names; the notes should
+  #     record the plan of care and the minutes of the timed service.
+  - id: required_discipline_modifier_gp
+    kind: required_modifier
+    modifier: "GP"
+    code_ranges:
+      - [97010, 97799]
+    codes: ["G0283", "G0281"]
+    absent_modifiers: ["GO", "GN"]
+    requires_denied_line: true
+    description: "Physical medicine code billed without the therapy modifier GP: append GP (services under a physical-therapy plan of care)"
+    needs_note_support: true
+    support_keywords:
+      - "minutes"
+      - "plan of care"
+      - "treatment plan"
+      - "therapeutic exercise"
+      - "therapeutic procedure"
+      - "manual therapy"
+      - "mechanical traction"
+      - "electrical stimulation"
+      - "ultrasound"
+      - "supervised"
+      - "one-on-one"
+      - "units"
+
   # (c) Two procedures that bundle on the same day: the column-2 code needs 59 (or XS when the notes
-  #     describe a different site). Pairs are [column_1, column_2]; the modifier goes on column 2.
+  #     describe a different anatomic region). Pairs are [column_1, column_2]; the modifier goes on
+  #     column 2. NCCI ch. 11 sec. S: 97140, 97124 and 97112 are not separately reportable in a
+  #     spinal region undergoing CMT; a different region (an extremity) takes 59 or XS.
   - id: bundled_pair
     modifier: "59"
     alternate_modifier: "XS"
-    description: "Bundled procedure pair on the same date: append 59 (XS for a separate site) to the column-2 line"
+    description: "Bundled procedure pair on the same date: append 59 (XS for a separate anatomic region) to the column-2 line"
     needs_note_support: true
     pairs:
-      - ["17110", "17000"]   # destruction of benign lesions with destruction of premalignant lesion
-      - ["17110", "17003"]
-      - ["17311", "11102"]   # Mohs surgery with a tangential biopsy
-      - ["17311", "11104"]   # Mohs surgery with a punch biopsy
-      - ["11104", "11102"]   # punch biopsy with tangential biopsy
-      - ["11106", "11102"]   # incisional biopsy with tangential biopsy
-      - ["11106", "11104"]
-      - ["11102", "11100"]   # tangential biopsy with the retired 11100-series biopsy codes
-      - ["11102", "11101"]
-      - ["96920", "96910"]   # laser treatment with photochemotherapy
-      - ["96921", "96910"]
-      - ["11402", "11102"]   # excision with a biopsy of the same lesion
-      - ["11602", "11102"]
+      - ["98940", "97140"]   # spinal CMT with manual therapy
+      - ["98941", "97140"]
+      - ["98942", "97140"]
+      - ["98940", "97124"]   # spinal CMT with massage
+      - ["98941", "97124"]
+      - ["98942", "97124"]
+      - ["98940", "97112"]   # spinal CMT with neuromuscular re-education
+      - ["98941", "97112"]
+      - ["98942", "97112"]
+      - ["97140", "97124"]   # manual therapy with massage in the same session
     support_keywords:
       - "separate"
       - "distinct"
       - "different site"
-      - "different lesion"
-      - "second lesion"
-      - "additional lesion"
-      - "separate lesion"
-      - "separate site"
-      - "separate incision"
-      - "separate procedure"
+      - "different region"
+      - "separate region"
+      - "region not manipulated"
+      - "not manipulated"
+      - "extraspinal"
+      - "extremity"
       - "unrelated"
       - "different anatomic"
       - "separate anatomic"
@@ -192,9 +292,18 @@ situations:
     alternate_keywords:
       - "different site"
       - "separate site"
-      - "separate structure"
-      - "different structure"
-      - "separate organ"
+      - "different region"
+      - "separate region"
+      - "region not manipulated"
+      - "not manipulated"
+      - "extraspinal"
+      - "extremity"
+      - "shoulder"
+      - "hip"
+      - "knee"
+      - "elbow"
+      - "wrist"
+      - "ankle"
       - "different anatomic"
       - "separate anatomic"
       - "different location"
@@ -221,6 +330,74 @@ situations:
       - "left and right"
       - "right and left"
 
+# Maintenance (supportive) care documentation (a keyword set: `markers` and `negations`). A note
+# sentence with a marker documents maintenance care unless it also carries a negation ("this is
+# not maintenance care"). Such a sentence never supports adding AT (situation g, `blocked_by`) or a
+# medical-necessity appeal of a service in `code_ranges`: AT must not be used for maintenance care
+# (Medicare Benefit Policy Manual ch. 15 sec. 240.1.3), and when the record shows a stable condition
+# with no expectation of further objective improvement the care is maintenance and an appeal cannot
+# succeed. `rationale` is what the reviewer reads when the denial is left to stand.
+maintenance_documentation:
+  code_ranges:
+    - [98940, 98942]
+  markers:
+    - "maintenance care"
+    - "maintenance therapy"
+    - "maintenance visit"
+    - "supportive care"
+    - "wellness care"
+    - "preventive manipulation"
+    - "clinically stable"
+    - "clinical status has remained stable"
+    - "condition is stable"
+    - "condition remains stable"
+    - "no further objective improvement"
+    - "no further improvement"
+    - "without expectation of"
+    - "no expectation of"
+    - "maximum therapeutic benefit"
+    - "maximum medical improvement"
+    - "plateaued"
+    - "prevent deterioration"
+    - "findings unchanged"
+    - "unchanged since the last visit"
+  negations:
+    - "not maintenance"
+    - "no longer maintenance"
+    - "rather than maintenance"
+    - "not supportive"
+    - "not wellness"
+  rationale: >-
+    The notes document maintenance care: a stable condition without expectation of further objective
+    improvement. Modifier AT identifies active, corrective treatment and must not be added to
+    maintenance care (Medicare Benefit Policy Manual ch. 15 sec. 240.1.3), and an appeal of a
+    maintenance finding the record confirms cannot succeed, so the denial stands. The patient may be
+    billed only when a valid Advance Beneficiary Notice was on file (modifier GA); obtain one before
+    further maintenance visits.
+
+# Codes payable once per patient per day: a duplicate denial on one of them is never cured by a
+# repeat modifier (76/77/91), whatever the notes say about a second encounter. Spinal and
+# extraspinal CMT are one code, one unit per provider, patient and day (Premera CP.PP.390; ND
+# Medicaid; Medicare reimburses one manipulation per beneficiary per day).
+once_per_day_code_ranges:
+  - [98940, 98943]
+
+# The diagnosis family that must lead a procedure's diagnosis pointers. When the denied line's code
+# is in `procedure_code_ranges` and the notes document a code of one of these `prefixes` that the
+# claim lacks, the corrected claim puts it at the line's first pointer, replacing the code there
+# when that code is not of the family (the symptom code the claim led with), instead of appending
+# it at the end. Spinal CMT leads with the subluxation level (SE1601; Palmetto A56616; WPS A56273).
+primary_diagnosis_rules:
+  - procedure_code_ranges:
+      - [98940, 98942]
+    prefixes: ["M99.0"]
+
+# Modifiers set for one payer's rules. When a claim is redirected to another payer (an eligibility or
+# coordination-of-benefits letter names the plan to bill), the lines carrying one of these are flagged
+# for the reviewer to re-derive against the new payer's rules: GA/GX/GY/GZ are Medicare liability
+# modifiers, AT, GP, KX and 97 payer requirements.
+payer_specific_modifiers: ["GA", "GX", "GY", "GZ", "AT", "GP", "KX", "97"]
+
 # Keywords other playbooks use when they look for a distinct or repeat service in the notes.
 duplicate_keywords:
   - "distinct"
@@ -239,4 +416,7 @@ other_physician_keywords:
   - "another provider"
   - "other physician"
   - "other provider"
+  - "different chiropractor"
+  - "another chiropractor"
   - "covering physician"
+  - "covering chiropractor"

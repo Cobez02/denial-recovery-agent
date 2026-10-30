@@ -228,7 +228,7 @@ def model_answer(
 class TestRulesFile:
     def test_rules_load_and_are_well_formed(self) -> None:
         rules = load_rules()
-        assert len(rules) >= 30
+        assert len(rules) >= 60
         ids = [r.id for r in rules]
         assert len(ids) == len(set(ids)), "rule ids must be unique"
         for rule in rules:
@@ -250,17 +250,21 @@ class TestRulesFile:
             "26": C.ELIGIBILITY,
             "27": C.ELIGIBILITY,
             "31": C.ELIGIBILITY,
+            "24": C.ELIGIBILITY,
             "197": C.AUTHORIZATION,
             "198": C.AUTHORIZATION,
             "4": C.MODIFIER,
             "182": C.MODIFIER,
             "18": C.DUPLICATE,
             "50": C.MEDICAL_NECESSITY,
+            "B22": C.MEDICAL_NECESSITY,
             "97": C.BUNDLING,
             "22": C.COORDINATION_OF_BENEFITS,
+            "19": C.COORDINATION_OF_BENEFITS,
             "252": C.MISSING_INFORMATION,
             "45": C.CONTRACTUAL,
             "1": C.PATIENT_RESPONSIBILITY,
+            "170": C.PATIENT_RESPONSIBILITY,
         }
         for carc, category in expectations.items():
             assert category in by_carc.get(carc, set()), f"CARC {carc} should map to {category}"
@@ -271,20 +275,54 @@ class TestRulesFile:
         rarc_expectations = {
             "N522": C.DUPLICATE,
             "M86": C.DUPLICATE,
+            "N111": C.DUPLICATE,
             "N115": C.MEDICAL_NECESSITY,
             "M76": C.MEDICAL_NECESSITY,
             "N661": C.MEDICAL_NECESSITY,
+            "M25": C.MEDICAL_NECESSITY,
             "M15": C.BUNDLING,
             "N390": C.BUNDLING,
             "N4": C.COORDINATION_OF_BENEFITS,
             "M119": C.MISSING_INFORMATION,
             "MA130": C.MISSING_INFORMATION,
+            "MA122": C.MISSING_INFORMATION,
+            "N264": C.MISSING_INFORMATION,
+            "N706": C.MISSING_INFORMATION,
+            "N822": C.MODIFIER,
+            "N626": C.MODIFIER,
+            "N640": C.AUTHORIZATION,
+            "N382": C.ELIGIBILITY,
         }
         for rarc, category in rarc_expectations.items():
             assert category in by_rarc.get(rarc, set()), f"RARC {rarc} should map to {category}"
 
 
 class TestRuleMatching:
+    def test_procedure_code_and_modifier_conditions(self) -> None:
+        """The line-aware conditions read the denied line: codes with ranges, modifiers present or absent."""
+        rule = Rule(
+            id="t",
+            category=C.MODIFIER,
+            confidence=0.8,
+            rationale="x",
+            carcs=frozenset({"50"}),
+            procedure_codes=frozenset({"G0283"}),
+            procedure_ranges=((98940, 98942),),
+            modifiers_none=frozenset({"AT", "GA"}),
+        )
+        assert rule.matches(reason("CO", "50", procedure_code="98941"), ())
+        assert rule.matches(reason("CO", "50", procedure_code="G0283", modifiers=("gp",)), ())
+        assert not rule.matches(reason("CO", "50", procedure_code="98943"), ())  # outside the range
+        assert not rule.matches(reason("CO", "50", procedure_code="98941", modifiers=("at",)), ())
+        assert not rule.matches(reason("CO", "50", procedure_code="98941", modifiers=("GA",)), ())
+        assert not rule.matches(reason("CO", "50", level="claim"), ())  # a claim-level reason has no line
+        any_mod = Rule(
+            id="u", category=C.CONTRACTUAL, confidence=0.9, rationale="x", modifiers_any=frozenset({"GZ"})
+        )
+        assert any_mod.matches(reason("CO", "50", modifiers=("AT", "gz")), ())
+        assert not any_mod.matches(reason("CO", "50", modifiers=("AT",)), ())
+        assert not any_mod.matches(reason("CO", "50", level="claim"), ())
+
     def test_level_group_and_rarc_none_conditions(self) -> None:
         rule = Rule(
             id="t",
@@ -337,7 +375,10 @@ class TestRuleMatching:
 SINGLE_REASON_CASES: list[tuple[str, str, tuple[str, ...], DenialCategory, str]] = [
     # eligibility
     ("CO", "27", (), C.ELIGIBILITY, "eligibility_coverage_period"),
+    ("CO", "27", ("N30",), C.ELIGIBILITY, "eligibility_coverage_period"),
     ("CO", "31", (), C.ELIGIBILITY, "eligibility_member_identity"),
+    ("CO", "24", (), C.ELIGIBILITY, "eligibility_24_managed_care"),
+    ("CO", "16", ("N382", "N704"), C.ELIGIBILITY, "eligibility_16_patient_identifier"),
     ("CO", "109", (), C.ELIGIBILITY, "eligibility_109_wrong_payer"),
     ("CO", "200", (), C.ELIGIBILITY, "eligibility_coverage_period"),
     # authorization
@@ -345,13 +386,23 @@ SINGLE_REASON_CASES: list[tuple[str, str, tuple[str, ...], DenialCategory, str]]
     ("CO", "15", (), C.AUTHORIZATION, "authorization_core"),
     ("PR", "198", (), C.AUTHORIZATION, "authorization_core"),
     ("CO", "16", ("M62",), C.AUTHORIZATION, "authorization_16_auth_number"),
+    ("CO", "119", ("N640",), C.AUTHORIZATION, "authorization_119_service_limit"),
+    ("CO", "273", ("N435",), C.AUTHORIZATION, "authorization_119_service_limit"),
+    ("CO", "243", (), C.AUTHORIZATION, "authorization_referral_243_288"),
     # modifier
     ("CO", "4", (), C.MODIFIER, "modifier_core"),
+    ("CO", "4", ("N822",), C.MODIFIER, "modifier_core"),
     ("CO", "182", (), C.MODIFIER, "modifier_core"),
     ("CO", "16", ("N519",), C.MODIFIER, "modifier_16_modifier"),
+    ("CO", "16", ("N823",), C.MODIFIER, "modifier_16_modifier"),
+    ("CO", "97", ("N626",), C.MODIFIER, "modifier_97_em_with_chiropractic_n626"),
+    ("CO", "999", ("N822",), C.MODIFIER, "modifier_rarc"),
     # duplicate
     ("CO", "18", (), C.DUPLICATE, "duplicate_18"),
-    ("OA", "18", (), C.DUPLICATE, "duplicate_18"),
+    ("OA", "18", ("N522",), C.DUPLICATE, "duplicate_18"),
+    ("CO", "18", ("M86",), C.DUPLICATE, "duplicate_18"),
+    ("CO", "97", ("N111",), C.DUPLICATE, "duplicate_97_b20_n111"),
+    ("CO", "B20", ("N111",), C.DUPLICATE, "duplicate_97_b20_n111"),
     ("CO", "96", ("M86",), C.DUPLICATE, "duplicate_rarc"),
     ("CO", "96", ("N522",), C.DUPLICATE, "duplicate_rarc"),
     # a strong CARC rule outranks the RARC-only gap fillers: CO-97 + M86 stays bundling
@@ -359,9 +410,13 @@ SINGLE_REASON_CASES: list[tuple[str, str, tuple[str, ...], DenialCategory, str]]
     # timely filing
     ("CO", "29", (), C.TIMELY_FILING, "timely_filing_29"),
     ("PR", "29", (), C.TIMELY_FILING, "timely_filing_29"),
-    # medical necessity
+    # medical necessity (the default line is an E/M, so CARC 50 is a medical-necessity denial)
     ("CO", "50", (), C.MEDICAL_NECESSITY, "medical_necessity_core"),
+    ("CO", "50", ("N115",), C.MEDICAL_NECESSITY, "medical_necessity_core"),
     ("CO", "11", (), C.MEDICAL_NECESSITY, "medical_necessity_diagnosis_11"),
+    ("CO", "11", ("N657",), C.MEDICAL_NECESSITY, "medical_necessity_diagnosis_11"),
+    ("CO", "B22", (), C.MEDICAL_NECESSITY, "medical_necessity_b22_diagnosis"),
+    ("CO", "204", ("M25",), C.MEDICAL_NECESSITY, "medical_necessity_rarc"),
     ("CO", "151", (), C.MEDICAL_NECESSITY, "medical_necessity_level_frequency"),
     ("CO", "56", ("N661",), C.MEDICAL_NECESSITY, "medical_necessity_core"),
     ("CO", "96", (), C.MEDICAL_NECESSITY, "medical_necessity_noncovered_co"),
@@ -377,11 +432,18 @@ SINGLE_REASON_CASES: list[tuple[str, str, tuple[str, ...], DenialCategory, str]]
     ("CO", "96", ("M15",), C.BUNDLING, "bundling_rarc"),
     # coordination of benefits
     ("CO", "22", (), C.COORDINATION_OF_BENEFITS, "cob_22_other_coverage"),
+    ("CO", "22", ("N4",), C.COORDINATION_OF_BENEFITS, "cob_22_other_coverage"),
+    ("CO", "19", ("N418",), C.COORDINATION_OF_BENEFITS, "cob_accident_liability_19_20_21"),
+    ("CO", "21", (), C.COORDINATION_OF_BENEFITS, "cob_accident_liability_19_20_21"),
     ("CO", "109", ("N4",), C.COORDINATION_OF_BENEFITS, "cob_109_other_payer"),
     ("CO", "109", ("N418",), C.COORDINATION_OF_BENEFITS, "cob_109_other_payer"),
     ("CO", "16", ("N4",), C.COORDINATION_OF_BENEFITS, "cob_rarc"),
     # missing information
     ("CO", "16", ("M119",), C.MISSING_INFORMATION, "missing_info_16_ndc"),
+    ("CO", "16", ("MA122", "MA130"), C.MISSING_INFORMATION, "missing_info_16_chiropractic_claim_fields"),
+    ("CO", "16", ("N264", "N265"), C.MISSING_INFORMATION, "missing_info_16_ordering_provider"),
+    ("CO", "16", ("N706",), C.MISSING_INFORMATION, "missing_info_16_documentation"),
+    ("CO", "226", ("N706",), C.MISSING_INFORMATION, "missing_info_requested_226_227"),
     ("CO", "252", (), C.MISSING_INFORMATION, "missing_info_documentation_252"),
     ("CO", "206", (), C.MISSING_INFORMATION, "missing_info_npi_206"),
     ("CO", "226", (), C.MISSING_INFORMATION, "missing_info_requested_226_227"),
@@ -393,6 +455,9 @@ SINGLE_REASON_CASES: list[tuple[str, str, tuple[str, ...], DenialCategory, str]]
     ("OA", "253", (), C.CONTRACTUAL, "contractual_informational"),
     # patient responsibility
     ("PR", "1", (), C.PATIENT_RESPONSIBILITY, "patient_responsibility_cost_share"),
+    ("PR", "170", ("N95",), C.PATIENT_RESPONSIBILITY, "patient_responsibility_170_provider_type_pr"),
+    ("PR", "50", (), C.PATIENT_RESPONSIBILITY, "patient_responsibility_50_abn"),
+    ("PR", "96", ("N425",), C.PATIENT_RESPONSIBILITY, "patient_responsibility_noncovered_pr"),
     ("PR", "2", (), C.PATIENT_RESPONSIBILITY, "patient_responsibility_cost_share"),
     ("PR", "3", (), C.PATIENT_RESPONSIBILITY, "patient_responsibility_cost_share"),
     ("PR", "96", (), C.PATIENT_RESPONSIBILITY, "patient_responsibility_noncovered_pr"),
@@ -402,7 +467,10 @@ SINGLE_REASON_CASES: list[tuple[str, str, tuple[str, ...], DenialCategory, str]]
     ("CO", "999", (), C.OTHER, UNMATCHED_RULE_ID),
     ("CO", "96", ("N130",), C.OTHER, "noncovered_plan_rules_co"),
     ("CO", "204", ("N30",), C.OTHER, "noncovered_plan_rules_co"),
+    ("CO", "119", ("N587",), C.OTHER, "benefit_maximum_co"),
     ("CO", "B7", (), C.OTHER, "provider_not_eligible_b7"),
+    ("CO", "170", (), C.OTHER, "provider_type_not_payable_co"),
+    ("CO", "242", (), C.OTHER, "network_restriction_242"),
     ("CO", "5", (), C.OTHER, "claim_data_inconsistency"),
 ]
 
@@ -419,6 +487,59 @@ def test_single_reason_category(
     assert f"{group}-{carc}" in result.rationale
     for code in rarcs:
         assert code in result.rationale
+
+
+@pytest.mark.parametrize(
+    ("group", "modifiers", "expected", "rule_id"),
+    [
+        ("CO", (), C.MODIFIER, "modifier_50_cmt_without_at"),
+        ("CO", ("GP",), C.MODIFIER, "modifier_50_cmt_without_at"),
+        ("CO", ("AT",), C.MEDICAL_NECESSITY, "medical_necessity_core"),
+        ("CO", ("GZ",), C.CONTRACTUAL, "contractual_50_expected_denial_gz"),
+        ("CO", ("GA",), C.MEDICAL_NECESSITY, "medical_necessity_core"),  # CO with GA: review, not AT
+        ("PR", ("GA",), C.PATIENT_RESPONSIBILITY, "patient_responsibility_50_abn"),
+        ("PR", (), C.PATIENT_RESPONSIBILITY, "patient_responsibility_50_abn"),
+    ],
+)
+def test_carc_50_on_a_cmt_line_depends_on_the_modifiers(
+    group: str, modifiers: tuple[str, ...], expected: DenialCategory, rule_id: str
+) -> None:
+    """docs/SPECIALTY.md: CMT without AT is adjudicated as maintenance (a modifier fix), GZ is an
+    expected provider-liable denial, a PR-group line is the patient's share under an ABN, and AT
+    with CARC 50 is a medical-review denial to appeal."""
+    for code in ("98940", "98941", "98942"):
+        result = classify_rules(
+            make_ctx([reason(group, "50", rarcs=["N115"], procedure_code=code, modifiers=modifiers)])
+        )
+        assert (result.category, result.rule_id) == (expected, rule_id), (code, modifiers)
+        assert result.confidence >= 0.75  # never a model consultation on confidence alone
+    # the line-aware rules never reach a non-CMT line or a claim-level reason
+    em = classify_rules(make_ctx([reason(group, "50", rarcs=["N115"], modifiers=modifiers)]))
+    assert em.rule_id != "modifier_50_cmt_without_at"
+    claim_level = classify_rules(make_ctx([reason("CO", "50", level="claim")]))
+    assert claim_level.rule_id == "medical_necessity_core"
+
+
+@pytest.mark.parametrize(
+    ("rarcs", "expected"),
+    [
+        (["N10"], C.MEDICAL_NECESSITY),
+        (["M127"], C.MEDICAL_NECESSITY),
+        (["M25"], C.MEDICAL_NECESSITY),
+        (["N115"], C.MODIFIER),
+        ([], C.MODIFIER),
+    ],
+)
+def test_carc_50_review_findings_on_a_cmt_line_without_at_are_medical_necessity(
+    rarcs: list[str], expected: DenialCategory
+) -> None:
+    """A review organization's finding (N10), a missing medical record (M127) or an unsupported level
+    of service (M25) is a medical-necessity review even on a CMT line without AT (a commercial plan's
+    UM vendor reviews lines that never carry AT); the automated no-AT edit carries N115 or no remark."""
+    result = classify_rules(make_ctx([reason("CO", "50", rarcs=rarcs, procedure_code="98941", modifiers=())]))
+    assert result.category == expected, rarcs
+    rule = "medical_necessity_core" if expected == C.MEDICAL_NECESSITY else "modifier_50_cmt_without_at"
+    assert result.rule_id == rule
 
 
 def test_every_category_covered_by_at_least_two_cases() -> None:
@@ -443,6 +564,15 @@ def test_every_category_covered_by_at_least_two_cases() -> None:
         ("M127", C.MISSING_INFORMATION, "medical record"),
         ("N179", C.MISSING_INFORMATION, "member"),
         ("N225", C.MISSING_INFORMATION, "documentation"),
+        ("N706", C.MISSING_INFORMATION, "documentation"),
+        ("MA122", C.MISSING_INFORMATION, "initial treatment date"),
+        ("MA121", C.MISSING_INFORMATION, "x-ray date"),
+        ("M122", C.MISSING_INFORMATION, "subluxation level"),
+        ("N264", C.MISSING_INFORMATION, "ordering"),
+        ("N265", C.MISSING_INFORMATION, "ordering"),
+        ("N822", C.MODIFIER, "modifier"),
+        ("N823", C.MODIFIER, "modifier"),
+        ("N382", C.ELIGIBILITY, "identifier"),
         ("M76", C.MEDICAL_NECESSITY, "diagnosis"),
     ],
 )

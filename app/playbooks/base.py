@@ -53,6 +53,8 @@ FLAG_PAYER_CHANGE_UNVERIFIED = "payer_change_unverified"
 FLAG_CONTRACTUAL_BUNDLING = "contractual_bundling"
 FLAG_NO_NOTES = "no_note_excerpts"
 FLAG_FLAGGED_NOTES_SKIPPED = "flagged_notes_skipped"
+FLAG_MAINTENANCE_DOCUMENTED = "maintenance_documented"
+FLAG_CONFLICTING_DOCUMENTATION = "conflicting_documentation"
 
 
 # --------------------------------------------------------------------------------------
@@ -95,6 +97,21 @@ def notes_mention(ctx: DenialContext, keywords: Iterable[str]) -> bool:
         for note in usable_notes(ctx)
         for sentence in split_sentences(note.text)
     )
+
+
+def marked_sentences(
+    ctx: DenialContext, markers: Iterable[str], negations: Iterable[str] = ()
+) -> list[tuple[NoteContext, str]]:
+    """(note, sentence) for every usable note sentence that carries a marker and none of the
+    negations ("clinically stable" marks maintenance care; "not maintenance care" does not)."""
+    marks = [m for m in markers if m]
+    negs = [n for n in negations if n]
+    found: list[tuple[NoteContext, str]] = []
+    for note in usable_notes(ctx):
+        for sentence in split_sentences(note.text):
+            if sentence_matches(sentence, marks) and not sentence_matches(sentence, negs):
+                found.append((note, sentence))
+    return found
 
 
 def latest_note(ctx: DenialContext) -> NoteContext | None:
@@ -389,8 +406,10 @@ class Playbook:
 
 __all__ = [
     "FLAG_CODING_CHANGE",
+    "FLAG_CONFLICTING_DOCUMENTATION",
     "FLAG_CONTRACTUAL_BUNDLING",
     "FLAG_FLAGGED_NOTES_SKIPPED",
+    "FLAG_MAINTENANCE_DOCUMENTED",
     "FLAG_MISSED_MONEY_REVIEW",
     "FLAG_NO_NOTES",
     "FLAG_PAYER_CHANGE_UNVERIFIED",
@@ -405,6 +424,7 @@ __all__ = [
     "has_flagged_notes",
     "keyword_pattern",
     "latest_note",
+    "marked_sentences",
     "normalize_ws",
     "note_ref",
     "notes_mention",

@@ -14,6 +14,7 @@ item; the selection is deterministic and documented on that function.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -40,9 +41,23 @@ CONFIDENCE_FLOOR = 0.05
 AMOUNT_SHARE_THRESHOLD = Decimal("0.2")
 
 _LEVELS = frozenset({"claim", "line", "any"})
-_MATCH_KEYS = frozenset({"carc", "rarc_any", "rarc_none", "group", "level", "claim_paid", "amount_positive"})
+_MATCH_KEYS = frozenset(
+    {
+        "carc",
+        "rarc_any",
+        "rarc_none",
+        "group",
+        "level",
+        "claim_paid",
+        "amount_positive",
+        "procedure_codes",
+        "modifiers_any",
+        "modifiers_none",
+    }
+)
 _RULE_KEYS = frozenset({"id", "category", "confidence", "match", "rationale"})
 _PRIORITY_INDEX: dict[DenialCategory, int] = {c: i for i, c in enumerate(CATEGORY_PRIORITY)}
+_CODE_RANGE = re.compile(r"^(\d{4,5})-(\d{4,5})$")
 
 
 def _money(amount: Any) -> str:
@@ -72,9 +87,65 @@ def _code_set(value: Any, *, what: str, rule_id: str) -> frozenset[str] | None:
     return frozenset(codes)
 
 
+def _modifier_set(value: Any, *, what: str, rule_id: str) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"rules.yaml: rule {rule_id}: {what} must be a non-empty list of modifiers")
+    modifiers = {str(m).strip().upper() for m in value}
+    if "" in modifiers:
+        raise ValueError(f"rules.yaml: rule {rule_id}: {what} has an empty modifier")
+    return frozenset(modifiers)
+
+
+def _procedure_spec(value: Any, *, rule_id: str) -> tuple[frozenset[str], tuple[tuple[int, int], ...]]:
+    """``procedure_codes``: exact codes (``98943``, ``G0283``) and inclusive numeric ranges (``98940-98942``)."""
+    if value is None:
+        return frozenset(), ()
+    if isinstance(value, str | int):
+        value = [value]
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"rules.yaml: rule {rule_id}: procedure_codes must be a non-empty list")
+    codes: set[str] = set()
+    ranges: list[tuple[int, int]] = []
+    for item in value:
+        text = str(item).strip().upper()
+        match = _CODE_RANGE.match(text)
+        if match:
+            low, high = int(match.group(1)), int(match.group(2))
+            if low > high:
+                raise ValueError(f"rules.yaml: rule {rule_id}: procedure range {text} is reversed")
+            ranges.append((low, high))
+        elif text:
+            codes.add(text)
+        else:
+            raise ValueError(f"rules.yaml: rule {rule_id}: procedure_codes has an empty code")
+    return frozenset(codes), tuple(ranges)
+
+
+def _procedure_in(code: str | None, codes: frozenset[str], ranges: tuple[tuple[int, int], ...]) -> bool:
+    if not code:
+        return False
+    text = str(code).strip().upper()
+    if text in codes:
+        return True
+    if text.isdigit():
+        value = int(text)
+        return any(low <= value <= high for low, high in ranges)
+    return False
+
+
 @dataclass(frozen=True)
 class Rule:
-    """One entry of rules.yaml. ``carcs``/``groups`` of ``None`` mean "any"."""
+    """One entry of rules.yaml. ``carcs``/``groups`` of ``None`` mean "any".
+
+    ``procedure_codes``, ``modifiers_any`` and ``modifiers_none`` look at the denied line itself
+    (``DenialReason.procedure_code`` / ``modifiers``), so a code the payer uses for two different
+    situations (CARC 50 on a CMT line with and without modifier AT) can be told apart; a claim-level
+    reason has no line and never matches a rule that names procedure codes or modifiers.
+    """
 
     id: str
     category: DenialCategory
@@ -87,6 +158,10 @@ class Rule:
     level: str = "any"
     claim_paid: bool | None = None
     amount_positive: bool | None = None
+    procedure_codes: frozenset[str] = frozenset()
+    procedure_ranges: tuple[tuple[int, int], ...] = ()
+    modifiers_any: frozenset[str] = frozenset()
+    modifiers_none: frozenset[str] = frozenset()
 
     def matches(
         self,
@@ -113,6 +188,18 @@ class Rule:
             if remittance is None:
                 return False
             if (Decimal(remittance.paid_amount or 0) > 0) != self.claim_paid:
+                return False
+        if (self.procedure_codes or self.procedure_ranges) and not _procedure_in(
+            reason.procedure_code, self.procedure_codes, self.procedure_ranges
+        ):
+            return False
+        if self.modifiers_any or self.modifiers_none:
+            if reason.level != "line":
+                return False
+            modifiers = {str(m).strip().upper() for m in reason.modifiers}
+            if self.modifiers_any and not (modifiers & self.modifiers_any):
+                return False
+            if self.modifiers_none and (modifiers & self.modifiers_none):
                 return False
         return True
 
@@ -168,6 +255,7 @@ def _parse_rule(raw: Any, position: int) -> Rule:
     rationale = str(raw.get("rationale") or "").strip()
     if not rationale:
         raise ValueError(f"rules.yaml: rule {rule_id}: rationale is required")
+    procedure_codes, procedure_ranges = _procedure_spec(match.get("procedure_codes"), rule_id=rule_id)
     return Rule(
         id=rule_id,
         category=category,
@@ -180,6 +268,10 @@ def _parse_rule(raw: Any, position: int) -> Rule:
         level=level,
         claim_paid=match.get("claim_paid"),
         amount_positive=match.get("amount_positive"),
+        procedure_codes=procedure_codes,
+        procedure_ranges=procedure_ranges,
+        modifiers_any=_modifier_set(match.get("modifiers_any"), what="modifiers_any", rule_id=rule_id),
+        modifiers_none=_modifier_set(match.get("modifiers_none"), what="modifiers_none", rule_id=rule_id),
     )
 
 

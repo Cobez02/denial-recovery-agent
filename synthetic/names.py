@@ -230,12 +230,15 @@ PROVIDER_NAMES: tuple[tuple[str, str, str], ...] = (
     ("Tobias", "Fenwright", "DO"),
     ("Noor", "Vasquez-Lund", "PA-C"),
     ("Desmond", "Kilbride", "NP"),
+    ("Rowan", "Halvorsen", "DC"),
+    ("Imogen", "Castellane", "DC"),
 )
 
 CLINIC_NAMES: tuple[str, ...] = (
-    "Larkspur Dermatology Associates",
-    "Cedar Hollow Skin and Surgery Center",
-    "Harborlight Dermatology Group",
+    "Alder Creek Family Chiropractic",
+    "Thistle Creek Spine and Sport Chiropractic",
+    "Harborlight Chiropractic Group",
+    "Cedar Hollow Spine and Wellness Center",
 )
 
 __all__ = ["FIRST_NAMES", "LAST_NAMES", "STREET_NAMES", "CITIES", "PROVIDER_NAMES", "CLINIC_NAMES"]

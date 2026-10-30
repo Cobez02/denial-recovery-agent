@@ -6,7 +6,7 @@ The phases run in file order and each one builds on the state the previous ones 
 
 1. imports through the UI: claims, notes, payer documents and the four 835 files; 150 proposals
 2. queue order and filters, and the injection banner on every item with a planted payer letter
-3. a representative review sample (every action type, every actionable category, and a planted-letter
+3. a representative review sample (every action type, every category, and a planted-letter
    claim for every action type that has one) worked through the item pages: views, note excerpts,
    approvals, rejections, an edit of the summary and the letter, a regeneration that consults the
    model again, a reopen, a close
@@ -47,7 +47,7 @@ from sqlalchemy import func, select
 from app import audit
 from app.audit import AuditImmutableError
 from app.drafting.pdf import weasyprint_available
-from app.enums import ACTIONABLE_CATEGORIES, ActionType, OutcomeResult, WorkItemStatus
+from app.enums import ActionType, DenialCategory, OutcomeResult, WorkItemStatus
 from app.models import AuditLog, ImportBatch, ModelCall, Outcome, Payer, ReviewAction, WorkItem
 from app.outcomes.matching import CLAIM_STATUS_FOR_RESULT, PAID_THRESHOLD
 from app.review.filters import label as label_text
@@ -63,25 +63,27 @@ from synthetic.followup import (
 )
 from tests import helpers
 
-# The committed fixture (synthetic/fixtures/labeled_set_v1/manifest.json).
+# The committed fixture (synthetic/fixtures/labeled_set_v2/manifest.json, the chiropractic profile).
 EXPECTED_CLAIMS = 200
-EXPECTED_LINES = 444
+EXPECTED_LINES = 396
 EXPECTED_PATIENTS = 140
 EXPECTED_PAYERS = 4
-EXPECTED_NOTES = 174
-EXPECTED_DOCUMENTS = 68
-EXPECTED_PLANTED = 14
+EXPECTED_NOTES = 193
+EXPECTED_DOCUMENTS = 63
+EXPECTED_PLANTED = 13
 EXPECTED_DENIALS = 150
 EXPECTED_REMIT_FILES = 4
 
-SAMPLE_PER_GROUP = 2  # items per (category, action type) group: 34 on this fixture
+SAMPLE_PER_GROUP = 2  # items per (category, action type) group: 42 here, plus the planted items
 MIN_SAMPLE = 25
 MIN_PAYLOADS = 10
 MIN_LOG_RECORDS = 100
 REVIEW_PAUSE_SECONDS = 1.05  # every decision lands at least one second after the first view
 FOLLOWUP_LAG_DAYS = 30
 DOCUMENT_LINE_MIN_CHARS = 60  # payer-letter lines this long are body text, never a shared header
-NOTE_FALLBACK = "Separate problem-focused evaluation documented before the destruction procedure."
+NOTE_FALLBACK = (
+    "Active treatment of the documented subluxation; segments adjusted and measurable improvement recorded."
+)
 INJECTION_BANNER = "Possible planted instructions"
 HX = helpers.HX_HEADERS
 
@@ -607,7 +609,7 @@ def test_3_review_sample_over_http(flow: Flow) -> None:
     sample = sorted(sample_ids)
     assert len(sample) >= MIN_SAMPLE
     present = {str(work_item.category) for work_item in items}
-    assert {str(by_id[i].category) for i in sample} == present == {str(c) for c in ACTIONABLE_CATEGORIES}
+    assert {str(by_id[i].category) for i in sample} == present == {str(c) for c in DenialCategory}
     assert {str(by_id[i].current_proposal.action_type) for i in sample} == {str(a) for a in ActionType}
     planted_in_sample = {i for i in sample if i in flow.planted}
     assert {str(by_id[i].current_proposal.action_type) for i in planted_in_sample} == flow.planted_actions
@@ -850,8 +852,12 @@ def test_4_export_packages(flow: Flow) -> None:
             )
             first = rows[0]
             assert first["claim_control_number"] == f"{claim.claim_control_number}-R1"
-            assert first["original_claim_control_number"] == claim.claim_control_number
-            assert first["claim_frequency_code"] == "7"
+            if "new_claim_to_other_payer" in work_item.flags:
+                # a claim redirected to the payer a letter names is a new original claim there
+                assert first["original_claim_control_number"] == "" and first["claim_frequency_code"] == "1"
+            else:
+                assert first["original_claim_control_number"] == claim.claim_control_number
+                assert first["claim_frequency_code"] == "7"
             assert first["patient_account_number"] == claim.patient.account_number
             assert first["patient_last_name"] == claim.patient.last_name
             corrected = json.loads(members["corrected_claim.json"])

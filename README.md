@@ -7,6 +7,8 @@ submits anything.** This is Phase 1 of the plan in `docs/PHASES.md`: everything 
 synthetic data until the clinic BAA, the model-provider BAA and the laptop security checklist are done.
 
 - Build specification: `docs/SPEC.md`
+- The specialty (chiropractic, chosen 2026-10-29), its payer mix, denial patterns and the coder's
+  assumption list: `docs/SPECIALTY.md`
 - Plan phases and milestone status: `docs/PHASES.md`
 - Testing plan → test files: `docs/TESTING.md`
 - Before any real data: `docs/SECURITY_CHECKLIST.md`, `docs/PILOT_CHECKLIST.md`, then
@@ -38,7 +40,7 @@ uv run denial-agent create-clinic --name "Pilot Clinic"
 #    provisioning URI and its QR code exactly once - enrol it in an authenticator app now
 uv run denial-agent create-user --email you@example.com --role admin
 
-# 6. Synthetic data (defaults: seed 20261028, 200 claims, the dermatology profile)
+# 6. Synthetic data (defaults: seed 20261028, 200 claims, the chiropractic profile; --profile picks another)
 uv run denial-agent generate-synthetic --out data/synthetic
 
 # 7. The clinic's side: claims, note excerpts, payer letters (creates the payer rows too)
@@ -48,18 +50,19 @@ uv run denial-agent import-documents data/synthetic/payer_documents.csv --clinic
 
 # 8. Optional: per-payer filing, corrected-claim and appeal windows. New payers get the defaults
 #    (90 / 90 / 180 days); set the real windows before the 835s create work items. The synthetic
-#    profile's payers are NW001 (the defaults), CMA02, BH003 and EV004:
+#    profile's payers are GBMB1 (Medicare Part B), GPMA2 (Medicare Advantage), SWPPO3 (a PPO, the
+#    defaults) and TLMC4 (Medicaid):
 uv run denial-agent list-payers
-uv run denial-agent set-payer --payer-id CMA02 --timely-filing-days 365 --corrected-claim-days 365 --appeal-days 60
-uv run denial-agent set-payer --payer-id BH003 --timely-filing-days 120 --corrected-claim-days 120
-uv run denial-agent set-payer --payer-id EV004 --timely-filing-days 180 --corrected-claim-days 180 --appeal-days 90
+uv run denial-agent set-payer --payer-id GBMB1 --timely-filing-days 365 --corrected-claim-days 365 --appeal-days 120
+uv run denial-agent set-payer --payer-id GPMA2 --timely-filing-days 365 --corrected-claim-days 365 --appeal-days 65
+uv run denial-agent set-payer --payer-id TLMC4 --timely-filing-days 180 --corrected-claim-days 180 --appeal-days 60
 
 # 9. The payers' side: one 835 per payer. Each import matches the CLPs to claims, detects the
 #    denials and runs the pipeline on them (work items with classified, cited proposals)
-uv run denial-agent import-835 data/synthetic/remit_NW001.835
-uv run denial-agent import-835 data/synthetic/remit_CMA02.835
-uv run denial-agent import-835 data/synthetic/remit_BH003.835
-uv run denial-agent import-835 data/synthetic/remit_EV004.835
+uv run denial-agent import-835 data/synthetic/remit_GBMB1.835
+uv run denial-agent import-835 data/synthetic/remit_GPMA2.835
+uv run denial-agent import-835 data/synthetic/remit_SWPPO3.835
+uv run denial-agent import-835 data/synthetic/remit_TLMC4.835
 
 # 10. Anything still pending (for example after a pipeline failure, which leaves the claim queued)
 uv run denial-agent process
@@ -219,7 +222,7 @@ container runs `denial-agent init-db --migrate` and then `denial-agent serve`; t
 `python -m app.jobs.worker` (not `rq worker`: it logs failures as class names and frames only). Postgres
 keeps its data in the named volume `pgdata`; `./data` is mounted at `/app/data` for uploads and
 export packages, so files you want to import from the command line go under `./data` first, for
-example `docker compose exec app denial-agent import-835 data/synthetic/remit_NW001.835`. The
+example `docker compose exec app denial-agent import-835 data/synthetic/remit_GBMB1.835`. The
 compose stack is defined and reviewed but is not exercised by the automated tests (see
 `docs/PHASES.md`).
 
@@ -229,11 +232,11 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-851 tests across 28 files at the time of writing, all on SQLite with the stub model client and
-inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
+994 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
+key), all on SQLite with the stub model client and inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
-synthetic set classifies at 150/150 categories and 150/150 expected actions (bars 0.90 and 0.80;
-never lower them).
+synthetic set (chiropractic, `synthetic/fixtures/labeled_set_v2`) classifies at 150/150 categories
+and 150/150 expected actions (bars 0.90 and 0.80; never lower them).
 
 ## Secret scanning
 

@@ -3,12 +3,19 @@
 - M119 / N59  -> lines[n].ndc: corrected claim resending the NDC when the claim line has one, else a
                   clinic question naming the NDC
 - M62 / N54   -> prior_auth_number: corrected claim when the claim record has it, else a clinic question
-- N285 / N286 -> referring_provider_npi: same pattern
-- N290        -> rendering_provider_npi: same pattern
-- MA130 / N29 / N56 / M127 / N179 / N225 / M76 / M20 / M51 / M79 -> clinic question quoting the RARC
-                  text and naming what is needed (a diagnosis or procedure code change is a coding change
-                  the clinic must document, so those are never guessed)
-- N519 / M78  -> delegated to the modifier playbook
+- N264 / N265 / N285 / N286 -> referring_provider_npi (the ordering or referring provider): resent
+                  when the claim record has it; when it is empty and a note says the treating provider
+                  ordered the service (a chiropractor orders the clinic's own X-rays,
+                  `ORDERING_PROVIDER_NOTE_KEYWORDS`), the rendering provider's NPI is proposed as the
+                  ordering provider, citing that note; otherwise a clinic question
+- N290        -> rendering_provider_npi: same pattern as the NDC
+- MA130 / MA122 / MA121 / M122 / N29 / N56 / M127 / N179 / N225 / N706 / N393 / M76 / M20 / M51 / M79
+                  -> clinic question quoting the RARC text and naming what is needed (a diagnosis or
+                  procedure code change is a coding change the clinic must document, so those are
+                  never guessed; the initial treatment date, x-ray date and subluxation level have
+                  no field in the claim export, so they are asked for, quoting the note sentence
+                  that already states them, `QUESTION_NOTE_KEYWORDS`)
+- N519 / M78 / N822 / N823 -> delegated to the modifier playbook
 - CARC 125 / 16 / 206 / 226 / 227 / 252 without a mapped RARC -> clinic question quoting the reason text
 """
 
@@ -26,6 +33,7 @@ from app.schemas import (
     CorrectedClaimChange,
     DenialContext,
     DenialReason,
+    NoteContext,
     ProposalDraft,
 )
 
@@ -34,6 +42,8 @@ FIELD_RARCS: dict[str, str] = {
     "N59": "ndc",
     "M62": "prior_auth_number",
     "N54": "prior_auth_number",
+    "N264": "referring_provider_npi",
+    "N265": "referring_provider_npi",
     "N285": "referring_provider_npi",
     "N286": "referring_provider_npi",
     "N290": "rendering_provider_npi",
@@ -42,7 +52,7 @@ FIELD_RARCS: dict[str, str] = {
 FIELD_LABELS: dict[str, str] = {
     "ndc": "NDC (national drug code)",
     "prior_auth_number": "prior authorization number",
-    "referring_provider_npi": "referring provider NPI",
+    "referring_provider_npi": "ordering or referring provider NPI",
     "rendering_provider_npi": "rendering provider NPI",
 }
 
@@ -51,7 +61,18 @@ QUESTION_RARCS: dict[str, str] = {
         "identify the incomplete or invalid element the payer rejected; the claim must be corrected and "
         "sent as a new claim because MA130 carries no appeal rights"
     ),
+    "MA122": (
+        "the date the course of treatment started (the initial treatment date from the initial-visit "
+        "note, CMS-1500 Item 14 / 837P DTP*454) for a new claim"
+    ),
+    "MA121": (
+        "the x-ray date (CMS-1500 Item 19 / 837P DTP*455) when an x-ray demonstrated the subluxation, "
+        "or confirmation that no x-ray date should be reported"
+    ),
+    "M122": "the level of subluxation (the M99.0x code) for each spinal region treated, from the note",
     "N29": "the missing documentation (orders, notes, summary, report or chart) the payer asked for",
+    "N706": "the documentation the payer requested (initial evaluation, treatment plan and daily notes)",
+    "N393": "the progress notes or report the payer requested",
     "N56": "the correct procedure code for the service and date of service billed",
     "M20": "the correct HCPCS code for the service billed, with the note sentence that documents it",
     "M51": "the correct procedure code for the service billed, with the note sentence that documents it",
@@ -65,9 +86,32 @@ QUESTION_RARCS: dict[str, str] = {
     "N225": "complete documentation (orders, notes, summary, report or chart) for the service",
 }
 
-MODIFIER_RARCS: frozenset[str] = frozenset({"N519", "M78"})
+MODIFIER_RARCS: frozenset[str] = frozenset({"N519", "M78", "N822", "N823"})
 QUESTION_CARCS: frozenset[str] = frozenset({"125", "16", "206", "226", "227", "252"})
 DRUG_CODE_PREFIXES: tuple[str, ...] = ("J", "Q", "S0", "C9")
+# RARCs that say the claim is unprocessable: the fix is a new claim, never an appeal.
+NEW_CLAIM_RARCS: frozenset[str] = frozenset({"MA130", "N704"})
+
+# A note sentence with one of these says the treating (rendering) provider ordered the service, so
+# the rendering NPI is the ordering provider the payer asks for (N264 / N265).
+ORDERING_PROVIDER_NOTE_KEYWORDS: tuple[str, ...] = (
+    "ordered by the treating",
+    "ordered and taken by the treating",
+    "treating chiropractor ordered",
+    "treating provider ordered",
+    "ordering provider is the rendering",
+    "ordering provider is the treating",
+)
+
+# RARC -> words of a note sentence that already states what the remark asks for (the date, the
+# level): the question quotes it so the clinic confirms instead of searching the chart again.
+QUESTION_NOTE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "MA122": ("initial treatment date", "date of initial treatment", "initial examination", "start of care"),
+    "MA121": ("x-ray date", "radiographs", "x-rays taken"),
+    "M122": ("subluxation level", "level of subluxation", "subluxation at"),
+}
+
+FLAG_ORDERING_PROVIDER_FROM_NOTE = "ordering_provider_from_note"
 
 
 class MissingInformationPlaybook(Playbook):
@@ -120,7 +164,12 @@ class MissingInformationPlaybook(Playbook):
         changes: list[CorrectedClaimChange] = []
         missing: list[str] = []
         citations: list[Citation] = list(self.cite_reasons(ctx))
+        seen_fields: set[str] = set()
+        flags_extra: list[str] = []
         for rarc, field, reason in hits:
+            if field != "ndc" and field in seen_fields:
+                continue  # two remarks for one field (N264 and N265) make one change
+            seen_fields.add(field)
             refs = [f"{reason.group_code}-{reason.carc}", rarc]
             label = FIELD_LABELS[field]
             if field == "ndc":
@@ -154,6 +203,34 @@ class MissingInformationPlaybook(Playbook):
                         citation_refs=[*refs, f"claim.{field}"],
                     )
                 )
+                continue
+            ordered = (
+                self.find_supporting_notes(ctx, ORDERING_PROVIDER_NOTE_KEYWORDS, limit=1)
+                if field == "referring_provider_npi" and ctx.claim.rendering_provider_npi
+                else []
+            )
+            if ordered:
+                # The note says the treating provider ordered the service: the rendering NPI is the
+                # ordering provider (a chiropractor's own X-rays).
+                note_cites = self.note_citations(ctx, ordered)
+                rendering_cite = self.cite_claim_field(
+                    ctx, "rendering_provider_npi", ctx.claim.rendering_provider_npi
+                )
+                citations.extend([*note_cites, rendering_cite])
+                changes.append(
+                    CorrectedClaimChange(
+                        path=field,
+                        before=None,
+                        after=ctx.claim.rendering_provider_npi,
+                        reason=(
+                            f"Report the rendering provider as the {label}: the note says the treating provider "
+                            f"ordered the service; RARC {rarc}: {rarc_text(reason, rarc)}"
+                        ),
+                        coding_change=False,
+                        citation_refs=[*refs, *(c.ref for c in note_cites), rendering_cite.ref],
+                    )
+                )
+                flags_extra.append(FLAG_ORDERING_PROVIDER_FROM_NOTE)
             else:
                 missing.append(label)
         missing = list(dict.fromkeys(missing))
@@ -164,14 +241,27 @@ class MissingInformationPlaybook(Playbook):
             else None
         )
         if changes:
-            summary = "Corrected claim resending " + ", ".join(
-                FIELD_LABELS[f] for f in dict.fromkeys(field for _, field, _ in hits)
-            )
-            rationale = (
-                f"Denied for {self.reasons_summary(ctx)}. The claim record already holds the information the "
-                "payer reports as missing, so a replacement claim (frequency 7) resends it."
-            )
-            flags: list[str] = []
+            from_note = FLAG_ORDERING_PROVIDER_FROM_NOTE in flags_extra
+            summary = (
+                "Corrected claim reporting " if from_note else "Corrected claim resending "
+            ) + ", ".join(FIELD_LABELS[f] for f in dict.fromkeys(field for _, field, _ in hits))
+            if from_note:
+                rationale = (
+                    f"Denied for {self.reasons_summary(ctx)}. The claim carried no ordering provider; the note on file "
+                    "says the treating provider ordered the service, so the rendering provider's NPI is reported as "
+                    "the ordering provider. Not a coding change; the reviewer confirms the quoted note."
+                )
+            else:
+                rationale = (
+                    f"Denied for {self.reasons_summary(ctx)}. The claim record already holds the information the "
+                    "payer reports as missing, so a replacement claim (frequency 7) resends it."
+                )
+            if any(rarc in NEW_CLAIM_RARCS for rarc, _ in self.rarcs_in_order(ctx)):
+                rationale += (
+                    " The payer returned the claim as unprocessable: it goes back as a new claim, and for a Medicare "
+                    "contractor only the corrected line needs to be on it."
+                )
+            flags: list[str] = list(flags_extra)
             if missing:
                 rationale += " Still missing from the record: " + "; ".join(missing) + "."
                 flags.append("partial_information")
@@ -199,9 +289,13 @@ class MissingInformationPlaybook(Playbook):
     def rarc_question(self, ctx: DenialContext, hits: list[tuple[str, DenialReason]]) -> ProposalDraft:
         needs = []
         quoted = []
+        on_file: list[tuple[str, tuple[NoteContext, str]]] = []
         for rarc, reason in hits:
             quoted.append(f'RARC {rarc}: "{rarc_text(reason, rarc)}"')
             needs.append(QUESTION_RARCS[rarc])
+            keywords = QUESTION_NOTE_KEYWORDS.get(rarc)
+            if keywords:
+                on_file.extend((rarc, s) for s in self.find_supporting_notes(ctx, keywords, limit=1))
         question = (
             f"Claim {ctx.claim.claim_control_number} (DOS {self.dos_label(ctx)}) was denied with "
             + "; ".join(quoted)
@@ -209,16 +303,30 @@ class MissingInformationPlaybook(Playbook):
             + "; ".join(dict.fromkeys(needs))
             + "."
         )
+        citations = list(self.cite_reasons(ctx))
+        if on_file:
+            question += " The note on file states: " + " ".join(
+                f'"{sentence}"' for _, (_, sentence) in on_file
+            )
+            question += " Please confirm it so it can be reported"
+            if any(rarc in NEW_CLAIM_RARCS for rarc, _ in self.rarcs_in_order(ctx)):
+                question += " on a new claim (the payer returned this one as unprocessable)"
+            question += "."
+            citations.extend(self.note_citations(ctx, [support for _, support in on_file]))
         return self.build(
             ctx,
             action_type=ActionType.CLINIC_QUESTION,
             summary="Ask the clinic for the information the payer requested ("
             + ", ".join(r for r, _ in hits)
             + ")",
-            rationale=f"Denied for {self.reasons_summary(ctx)}. The remark code names information only the clinic can supply.",
-            citations=self.cite_reasons(ctx),
+            rationale=(
+                f"Denied for {self.reasons_summary(ctx)}. The remark code names information the claim export cannot "
+                "carry, so the clinic supplies it"
+                + (" (the note on file already states it and is quoted)." if on_file else ".")
+            ),
+            citations=dedupe_citations(citations),
             clinic_question=question,
-            confidence=0.7,
+            confidence=0.75 if on_file else 0.7,
         )
 
     def reason_question(self, ctx: DenialContext) -> ProposalDraft:
@@ -239,4 +347,14 @@ class MissingInformationPlaybook(Playbook):
         )
 
 
-__all__ = ["FIELD_RARCS", "MODIFIER_RARCS", "QUESTION_CARCS", "QUESTION_RARCS", "MissingInformationPlaybook"]
+__all__ = [
+    "FIELD_RARCS",
+    "FLAG_ORDERING_PROVIDER_FROM_NOTE",
+    "MODIFIER_RARCS",
+    "NEW_CLAIM_RARCS",
+    "ORDERING_PROVIDER_NOTE_KEYWORDS",
+    "QUESTION_CARCS",
+    "QUESTION_NOTE_KEYWORDS",
+    "QUESTION_RARCS",
+    "MissingInformationPlaybook",
+]

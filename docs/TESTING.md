@@ -14,7 +14,7 @@ uv run pytest tests/test_classifier_set.py -q -s    # one file, with the per-cat
 On this machine (Windows, path with a space) the same thing is
 `"C:/Users/conno/Denial Agent/.venv/Scripts/python.exe" -m pytest tests -q -o addopts=""`.
 
-Counted on Oct 29, 2026 with `pytest tests --co -q`: **827 tests in 27 files**. One of them
+Counted on Oct 30, 2026 with `pytest tests --co -q`: **846 tests in 28 files**. One of them
 (`tests/test_prompt_regression.py::test_live_model_outputs_are_schema_valid_and_faithful`, marker
 `live_llm`) skips unless `ANTHROPIC_API_KEY` and `LLM_PROVIDER=anthropic` are set; nothing else skips.
 The numbers move as the suite grows; the commands above regenerate them.
@@ -45,6 +45,7 @@ Other layers the plan implies:
 | Pipeline, jobs, matching | `tests/test_pipeline.py`, `tests/test_jobs.py`, `tests/test_matching.py` | One proposed work item per label with every citation resolving, savepoint isolation of a failing claim, inline and rq job runners, the worker's masked failures, every matching method |
 | Playbooks and drafting | `tests/test_playbooks.py`, `tests/test_drafting.py` | Every category's behaviour, deadlines counted from the remittance, corrected-claim builder and diff, letters for every category, fact check, PDF fallback |
 | Synthetic data | `tests/test_synthetic.py` | Determinism, the committed fixture reproduced byte for byte, 835 balancing, labels versus adjustments, follow-up amounts following the outcome rule |
+| Pseudonymized real data | `tests/test_anonymize.py` | `denial-agent anonymize` on batches the tests generate themselves: no original name, member id, account number, date of birth or address in any output byte; zero unmatched remittances and the same work items, categories, actions, flags, dollars and deadlines from two databases (with and without `--replace-claim-numbers` and `--shift-dates`); every 835 parses to the original once the key's values are put back; the key restores the claim export; `--seed` reproducible; a planted phone stops the run without echoing it; repository paths refused; subscriber, corrected-name, employer and REF ids in the 835; other delimiters and CRLF |
 | CLI | `tests/test_cli.py` | Every command including `list-payers`/`set-payer`, exit codes (`partial` pipeline runs exit 1), `serve` refusing a placeholder `SECRET_KEY` with a readable error, `purge-clinic` deleting uploads and export packages, refusing to report destruction when a file survives, clearing unmatched CLPs and leaving no purged name in the SQLite file |
 
 ## Milestone done-when checks that are tests
@@ -62,10 +63,11 @@ Other layers the plan implies:
 
 ## Tests per file
 
-From `pytest tests --co -q` on Oct 29, 2026 (827 in all).
+From `pytest tests --co -q` on Oct 30, 2026 (846 in all).
 
 | File | Tests | Covers |
 |---|---|---|
+| `tests/test_anonymize.py` | 19 | `denial-agent anonymize`: no identifier left, same processing in two databases, 835 parse and key round trip, determinism, residual check, refusals |
 | `tests/test_audit.py` | 11 | append-only guards, hash chain, canonical JSON |
 | `tests/test_auth.py` | 15 | accounts, login, TOTP replay guard (row-level), lockout, CSRF, upload gates and the declared-size refusal |
 | `tests/test_claims_import_golden.py` | 27 | claim export golden file, re-imports, notes and documents with the real injection scanner, payer windows |

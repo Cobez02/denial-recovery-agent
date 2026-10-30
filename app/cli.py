@@ -1,8 +1,12 @@
 """`denial-agent` command line (milestone M1 operations).
 
 Subcommands: init-db, create-clinic, create-user, import-835, import-claims, import-notes,
-import-documents, process, generate-synthetic, verify-audit, list-payers, set-payer, purge-clinic,
-serve.
+import-documents, process, generate-synthetic, anonymize, verify-audit, list-payers, set-payer,
+purge-clinic, serve.
+
+`anonymize IN_DIR --out OUT_DIR --key-out KEY.json` (docs/SPEC.md section 16) pseudonymizes one raw
+clinic batch without touching the database; stdout carries paths, file names and counts, and
+residual findings by file, row, field and kind, never a value.
 
 Output policy: stdout carries ids, counts, statuses and file names only. Passwords are never
 printed. The TOTP provisioning URI (which embeds the shared secret) is printed exactly once, on
@@ -385,6 +389,36 @@ def cmd_generate_synthetic(args: argparse.Namespace) -> int:
     files = sorted(p.name for p in out_dir.iterdir() if p.is_file())
     _emit({"out_dir": str(out_dir), "seed": args.seed, "claims": args.claims, "files": files})
     return 0
+
+
+def cmd_anonymize(args: argparse.Namespace) -> int:
+    """Pseudonymize one raw clinic batch; exit 1 when residual identifiers stopped the run."""
+    from app.anonymize import AnonymizeError, AnonymizeOptions, anonymize_batch
+
+    options = AnonymizeOptions(
+        seed=args.seed,
+        replace_claim_numbers=args.replace_claim_numbers,
+        shift_dates_days=args.shift_dates or 0,
+        allow_residual=args.allow_residual,
+    )
+    try:
+        result = anonymize_batch(Path(args.in_dir), Path(args.out), Path(args.key_out), options)
+    except AnonymizeError as exc:
+        raise CliError(str(exc)) from exc
+    _emit(result.summary())
+    if not result.written:
+        print(
+            f"error: {len(result.residual)} residual identifier(s) left in free text (file, row, field and "
+            "kind are listed above); nothing was written. Remove them from those rows of the source, or "
+            "re-run with --allow-residual to mask them",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    print(
+        f"key written to {result.key_path}: it holds the original identifiers and stays with the clinic",
+        file=sys.stderr,
+    )
+    return EXIT_OK
 
 
 def cmd_verify_audit(args: argparse.Namespace) -> int:
@@ -781,6 +815,51 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=20261028)
     p.add_argument("--claims", type=int, default=200)
     p.set_defaults(func=cmd_generate_synthetic)
+
+    p = sub.add_parser(
+        "anonymize",
+        help=(
+            "pseudonymize one raw clinic batch (claim export, notes, letters, 835s) into a folder the app "
+            "imports exactly as before; the key with the originals stays with the clinic"
+        ),
+    )
+    p.add_argument(
+        "in_dir",
+        metavar="IN_DIR",
+        help="folder with the claim export CSV, optional notes and payer documents CSVs, and the 835 files",
+    )
+    p.add_argument(
+        "--out", required=True, metavar="OUT_DIR", help="a new or empty folder outside the repository"
+    )
+    p.add_argument(
+        "--key-out",
+        dest="key_out",
+        required=True,
+        metavar="KEY.json",
+        help="the key file to create, outside the repository and outside OUT_DIR",
+    )
+    p.add_argument(
+        "--seed", type=int, default=None, help="fixed seed for a reproducible run; leave it out for real data"
+    )
+    p.add_argument(
+        "--replace-claim-numbers",
+        action="store_true",
+        help="also replace claim, line item and payer claim control numbers",
+    )
+    p.add_argument(
+        "--shift-dates",
+        dest="shift_dates",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help="move every date in every file by DAYS (not HIPAA Safe Harbor; see docs/SPEC.md section 16)",
+    )
+    p.add_argument(
+        "--allow-residual",
+        action="store_true",
+        help="mask SSN-, phone-, e-mail- or DOB-shaped values left in free text instead of stopping",
+    )
+    p.set_defaults(func=cmd_anonymize)
 
     p = sub.add_parser("verify-audit", help="verify the audit log hash chain (exit 1 when broken)")
     p.set_defaults(func=cmd_verify_audit)

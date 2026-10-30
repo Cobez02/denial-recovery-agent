@@ -9,7 +9,8 @@ synthetic data until the clinic BAA, the model-provider BAA and the laptop secur
 - Build specification: `docs/SPEC.md`
 - Plan phases and milestone status: `docs/PHASES.md`
 - Testing plan → test files: `docs/TESTING.md`
-- Before any real data: `docs/SECURITY_CHECKLIST.md`, `docs/PILOT_CHECKLIST.md`
+- Before any real data: `docs/SECURITY_CHECKLIST.md`, `docs/PILOT_CHECKLIST.md`, then
+  [Running real data](#running-real-data)
 - Every `.env` key: `scripts/env-notes.md`; synthetic data: `synthetic/README.md`
 
 ## Quick start (no Docker, no API key)
@@ -120,6 +121,50 @@ submission, or before the payment it would take back, or from another payer, is 
 dashboard counts each work item once, by its latest outcome. For a synthetic run,
 `synthetic.followup.generate_followup_files` writes the follow-up 835s (see `synthetic/README.md`).
 
+## Running real data
+
+Real files come only after the clinic BAA is signed and `docs/SECURITY_CHECKLIST.md` is complete
+and dated; pseudonymizing a batch does not change that. A pseudonymized batch still carries dates
+of service, so it is a HIPAA limited data set: still PHI, still covered by the BAA, still kept only
+on the encrypted disk of the checklist. `denial-agent anonymize` is defence in depth on top: it
+turns one raw batch into a copy the app processes exactly as before (same remittance matches, same
+work items, categories and actions) with every patient identifier replaced.
+
+```bash
+# On the clinic's own computer (the command needs no database), with one raw batch in one folder:
+uv run denial-agent anonymize D:/clinic/batch-2026-10 --out E:/pseudonymized/batch-2026-10 --key-out D:/clinic/keys/batch-2026-10.key.json
+```
+
+- **Input**: the claim export CSV, optionally `notes.csv` and `payer_documents.csv`, and any number
+  of 835 files, recognised by their content (any other file is skipped, never copied).
+- **Replaced, consistently in every file**: each patient's first and last name (fictional names
+  from `synthetic/names.py`, one pair per patient; the payer's and the subscriber's spellings in the
+  835 map inside the same patient), account number and member id (same shape, so matching by member
+  id still works), date of birth (same year, day and month moved by a per-patient offset: age
+  drives payer rules, the birthday is not needed), address line, city and ZIP; in the 835 the
+  NM1*QC/IL/74/GB names and ids and REF*EA/1W style patient ids; in notes and letters every spelling
+  of those identifiers the registry knows.
+- **Kept**: every other date, procedure, diagnosis, modifier, CARC/RARC and place-of-service code,
+  units, amounts, payer ids and names, provider names and NPIs. `--replace-claim-numbers` also
+  replaces claim, line item and payer claim numbers (CLP01 and CLP07 included);
+  `--shift-dates DAYS` moves every date in every file by one offset (not HIPAA Safe Harbor: the
+  offset is in the key, and deadlines on screen move with it).
+- **Stops on leftovers**: a note or letter that still carries an SSN-, phone-, e-mail- or
+  DOB-shaped value after the replacement stops the run with exit 1 and a list of file, row, field
+  and kind (never the value); nothing is written. Fix those rows, or pass `--allow-residual` to mask
+  them. Names the batch does not know (a relative mentioned in a note) cannot be found: read the
+  notes before trusting them.
+- **The key**: `KEY.json` is the only file that holds an original value. It stays with the clinic,
+  on the clinic's computer; the command refuses to write it (or the output) inside the repository,
+  refuses a key inside the output folder and never overwrites one. Only the output folder travels
+  to the encrypted disk of the machine that runs the app; import it with steps 7 to 10 above. When
+  an approved corrected claim or appeal goes out, the clinic maps its pseudonyms back with the key
+  (`app.anonymize.restore_claim_row` does it for claim-export rows).
+
+`--seed N` makes a run reproducible (the tests use it); leave it out for real data. Each run makes a
+fresh key, so a later batch (the next month's 835s, say) gets other pseudonyms: anonymize a raw
+batch as a whole, in one run. The full rules are in `docs/SPEC.md` section 16.
+
 ## Model configuration
 
 With the example `.env` the model client is the offline **stub** (`LLM_PROVIDER=stub`): the rules
@@ -167,7 +212,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-827 tests across 27 files at the time of writing, all on SQLite with the stub model client and
+846 tests across 28 files at the time of writing, all on SQLite with the stub model client and
 inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set classifies at 150/150 categories and 150/150 expected actions (bars 0.90 and 0.80;

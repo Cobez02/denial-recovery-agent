@@ -78,6 +78,13 @@ Each line names the code and the way to check it.
   file; on PostgreSQL the DBA runs `VACUUM FULL` after a purge. The zip is the hand-over copy: delete it
   once delivered. Check: `uv run pytest tests/test_cli.py -q -k purge` (one test greps the SQLite file
   for the purged names).
+- **Pseudonymized batches** (`denial-agent anonymize`, `app/anonymize/`, `docs/SPEC.md` section 16): a
+  pseudonymized batch keeps dates of service, so it is a limited data set and still PHI: every control
+  in this file applies to it as it does to raw data. The command needs no database and runs on the
+  clinic's own computer; it refuses an output folder or key inside the repository and a key inside the
+  output folder, never overwrites a key, and writes nothing while a note or letter still carries an
+  SSN-, phone-, e-mail- or DOB-shaped value. The key holds the originals: it stays with the clinic and
+  never travels with the batch. Check: `uv run pytest tests/test_anonymize.py -q`.
 - **Patient pseudonym**: `patients.token` is `PT-` plus six hex characters of
   `sha256("<clinic_id>:<account_number>")`. It is a display label inside the clinic's own system (queue,
   letters without the patient block, API), not a security boundary: anyone with the database can read

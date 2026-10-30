@@ -389,14 +389,19 @@ class TextReplacer:
 
     # -- residual scan ----------------------------------------------------------------------
 
-    def _extra_findings(self, text: str) -> list[tuple[int, int, str]]:
-        """Bounded identifiers (short ids, dates of birth) and log-mask hits outside tokens, with spans."""
-        tokens = _token_spans(text)
+    def _bounded_findings(self, text: str, tokens: list[tuple[int, int]]) -> list[tuple[int, int, str]]:
+        """Bounded identifiers (short ids, dates of birth) outside tokens, with their spans."""
         found: list[tuple[int, int, str]] = []
         if self._bounded_pattern is not None:
             for match in self._bounded_pattern.finditer(text):
                 if not _overlaps(*match.span(), tokens):
                     found.append((*match.span(), self._bounded.get(normalize(match.group(0)), "UNKNOWN")))
+        return found
+
+    def _extra_findings(self, text: str) -> list[tuple[int, int, str]]:
+        """Bounded identifiers and log-mask hits outside tokens, with spans."""
+        tokens = _token_spans(text)
+        found = self._bounded_findings(text, tokens)
         for pattern, label in _MASK_PATTERNS:
             for match in pattern.finditer(text):
                 if label in _LOG_MASK_KINDS:
@@ -412,6 +417,13 @@ class TextReplacer:
                 if not _overlaps(start, end, tokens):
                     found.append((start, end, kind))
         return found
+
+    def remaining(self, text: str) -> list[str]:
+        """Kinds of this replacer's own identifiers still in ``text``, without the generic patterns:
+        a restore uses it to prove that no pseudonym is left."""
+        kinds = [finding.kind for finding in scan_text(text, self.scan_registry, generic=False)]
+        kinds.extend(kind for _start, _end, kind in self._bounded_findings(text, _token_spans(text)))
+        return kinds
 
     def residual(self, text: str) -> list[str]:
         """Kinds of everything left in ``text`` that is, or looks like, an identifier."""
@@ -447,8 +459,13 @@ class TextReplacer:
 
     # -- the whole rewrite --------------------------------------------------------------------
 
-    def process(self, text: str, *, shift_days: int = 0, allow_residual: bool = False) -> TextResult:
-        """Replace identifiers, keep known numbers, shift dates, scan, mask when allowed, render."""
+    def process(
+        self, text: str, *, shift_days: int = 0, allow_residual: bool = False, scan: bool = True
+    ) -> TextResult:
+        """Replace identifiers, keep known numbers, shift dates, scan, mask when allowed, render.
+
+        ``scan=False`` (a restore, where real identifiers are the point) skips the residual scan.
+        """
         if not text:
             return TextResult(text=text)
         existing = {m.group(1) for m in TOKEN_RE.finditer(text)}
@@ -483,7 +500,7 @@ class TextReplacer:
 
             text = PHONE_LIKE_RE.sub(_keep, text)
         text, shifted = shift_text_dates(text, shift_days)
-        residual = self.residual(text)
+        residual = self.residual(text) if scan else []
         masked = 0
         if residual and allow_residual:
             text, masked = self._mask(text)

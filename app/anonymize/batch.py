@@ -618,10 +618,12 @@ def restore_claim_row(row: dict[str, str], key: PseudonymKey) -> dict[str, str]:
         ("patient_address_line1", "address_line"),
         ("patient_city", "city"),
         ("patient_zip", "zip"),
-        *((column, "claim_number") for column in CLAIM_NUMBER_FIELDS),
     ):
         if row[column]:
             out[column] = key.original(family, row[column]) or row[column]
+    for column in CLAIM_NUMBER_FIELDS:  # a corrected claim's <pseudonym>-R1 included
+        if row[column]:
+            out[column] = key.original_claim_number(row[column]) or row[column]
     for column, role in (("patient_first_name", GIVEN), ("patient_last_name", FAMILY)):
         if row[column]:
             out[column] = key.original_name(subject, role, row[column]) or row[column]

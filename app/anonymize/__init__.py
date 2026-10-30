@@ -4,7 +4,8 @@
 ``denial-agent anonymize``: it writes a batch the app processes exactly like the original (same
 matches, same work items, categories and actions) with every patient identifier replaced, and a
 KEY.json that is the only place an original value is written. A pseudonymized batch that keeps
-dates of service is still a HIPAA limited data set, so it is still PHI.
+dates of service is still a HIPAA limited data set, so it is still PHI. ``restore_packages`` (behind
+``denial-agent deanonymize``) puts the real identifiers back into export packages, with the key.
 """
 
 from app.anonymize.batch import (
@@ -15,7 +16,8 @@ from app.anonymize.batch import (
     check_paths,
     restore_claim_row,
 )
-from app.anonymize.pseudonyms import AnonymizeError, PseudonymKey
+from app.anonymize.pseudonyms import AnonymizeError, PseudonymKey, load_key
+from app.anonymize.restore import RestoreResult, restore_packages
 
 __all__ = [
     "AnonymizeError",
@@ -23,7 +25,10 @@ __all__ = [
     "AnonymizeResult",
     "PseudonymKey",
     "ResidualFinding",
+    "RestoreResult",
     "anonymize_batch",
     "check_paths",
+    "load_key",
     "restore_claim_row",
+    "restore_packages",
 ]

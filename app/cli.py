@@ -1,13 +1,14 @@
 """`denial-agent` command line (milestone M1 operations).
 
 Subcommands: init-db, create-clinic, create-user, import-835, import-claims, import-notes,
-import-documents, process, generate-synthetic, anonymize, verify-audit, list-payers, set-payer,
-purge-clinic, serve.
+import-documents, process, generate-synthetic, anonymize, deanonymize, verify-audit, list-payers,
+set-payer, purge-clinic, serve.
 
 `anonymize IN_DIR --out OUT_DIR --key-out KEY.json [--key-in OLD.json]` (docs/SPEC.md section 16)
 pseudonymizes one raw clinic batch without touching the database (`--key-in` continues an earlier
 batch's pseudonyms); stdout carries paths, file names and counts, and residual findings by file, row,
-field and kind, never a value.
+field and kind, never a value. `deanonymize PACKAGE.zip ... --key KEY.json --out OUT_DIR` puts the
+real identifiers back into export packages on the clinic's computer (file and member names only).
 
 Output policy: stdout carries ids, counts, statuses and file names only. Passwords are never
 printed. The TOTP provisioning URI (which embeds the shared secret) is printed exactly once, on
@@ -418,6 +419,25 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
         return EXIT_ERROR
     print(
         f"key written to {result.key_path}: it holds the original identifiers and stays with the clinic",
+        file=sys.stderr,
+    )
+    return EXIT_OK
+
+
+def cmd_deanonymize(args: argparse.Namespace) -> int:
+    """Restore export packages made from a pseudonymized batch with the batch's key."""
+    from app.anonymize import AnonymizeError, restore_packages
+
+    try:
+        result = restore_packages(
+            [Path(package) for package in args.packages], key_path=Path(args.key), out_dir=Path(args.out)
+        )
+    except AnonymizeError as exc:
+        raise CliError(str(exc)) from exc
+    _emit(result.summary())
+    print(
+        f"{len(result.packages)} package(s) restored into {result.out_dir}: they carry the real identifiers "
+        "and stay on the clinic's computer",
         file=sys.stderr,
     )
     return EXIT_OK
@@ -872,6 +892,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.set_defaults(func=cmd_anonymize)
+
+    p = sub.add_parser(
+        "deanonymize",
+        help=(
+            "put the real identifiers back into export packages made from a pseudonymized batch, with "
+            "the batch's key, on the clinic's computer"
+        ),
+    )
+    p.add_argument(
+        "packages", nargs="+", metavar="PACKAGE.zip", help="export packages downloaded from the app"
+    )
+    p.add_argument(
+        "--key", required=True, metavar="KEY.json", help="the key of the batch the packages came from"
+    )
+    p.add_argument(
+        "--out", required=True, metavar="OUT_DIR", help="a folder outside the repository (never overwritten)"
+    )
+    p.set_defaults(func=cmd_deanonymize)
 
     p = sub.add_parser("verify-audit", help="verify the audit log hash chain (exit 1 when broken)")
     p.set_defaults(func=cmd_verify_audit)

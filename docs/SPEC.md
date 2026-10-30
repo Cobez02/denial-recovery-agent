@@ -54,15 +54,15 @@ denial-agent/
     audit/             append-only audit log with hash chain
     llm/               client protocol, Anthropic/stub/replay/recording clients, factory, prompt registry, guard
     auth/              users, argon2 passwords, TOTP MFA with replay guard, session login, CSRF
-    anonymize/         `denial-agent anonymize` (section 16): pseudonym maps and the key, free-text replacement and
-                       residual scan, the 835 rewrite and its check, the batch run
+    anonymize/         `denial-agent anonymize` / `deanonymize` (section 16): pseudonym maps and the key, free-text
+                       replacement and residual scan, the 835 rewrite and its check, the batch run, export-package restore
     jobs/              job runner (inline | rq), tasks, the masked rq worker entry point
     migrations/        alembic env + versions (0001_initial)
     templates/         Jinja2 templates (pages/, partials/, letters/*.txt.j2)
     static/            htmx.min.js, app.css
     cli.py             `denial-agent`: init-db, create-clinic, create-user, import-835, import-claims, import-notes,
-                       import-documents, process, generate-synthetic, anonymize, verify-audit, list-payers, set-payer,
-                       purge-clinic, serve
+                       import-documents, process, generate-synthetic, anonymize, deanonymize, verify-audit, list-payers,
+                       set-payer, purge-clinic, serve
   synthetic/           generators, specialty profile(s), x12 writer, follow-up 835s, committed labeled fixture set
   tests/               pytest suite + golden fixtures (tests/fixtures/835, tests/fixtures/claims, tests/fixtures/llm)
   docs/                SPEC.md (this), SECURITY_CHECKLIST.md, PILOT_CHECKLIST.md, TESTING.md, PHASES.md
@@ -315,7 +315,7 @@ Export package members: `summary.json` (work item, claim, payer, category, actio
 | Migrations | `test_migrations.py` | `alembic upgrade head` on a fresh SQLite file; the full `compare_metadata` diff against the models is empty; Postgres-only trigger in the offline SQL |
 | Outcomes, metrics | `test_outcomes.py`, `test_metrics.py` | the section 10 rule and gates; per-item counting |
 | Pipeline, jobs, matching, playbooks, drafting, synthetic, CLI | `test_pipeline.py`, `test_jobs.py`, `test_matching.py`, `test_playbooks.py`, `test_drafting.py`, `test_synthetic.py`, `test_cli.py` | sections 6, 9, 11, 12 and the CLI |
-| Pseudonymized real data | `test_anonymize.py` | no original identifier in any output byte; zero unmatched remittances and the same work items, categories and actions from two databases; the key restores every replaced value; `--seed` reproducible; a planted phone stops the run; repository paths refused; a later batch pseudonymized with `--key-in` matches the earlier claims and records the same outcomes (section 16) |
+| Pseudonymized real data | `test_anonymize.py` | no original identifier in any output byte; zero unmatched remittances and the same work items, categories and actions from two databases; the key restores every replaced value; `--seed` reproducible; a planted phone stops the run; repository paths refused; a later batch pseudonymized with `--key-in` matches the earlier claims and records the same outcomes; `deanonymize` turns the pseudonymized database's export packages into the raw database's, with no pseudonym left (section 16) |
 
 `tests/conftest.py` clears every `Settings` variable, sets `APP_ENV=test` (no `.env`), `LLM_PROVIDER=stub`, `JOB_BACKEND=inline`, a temp SQLite `DATABASE_URL`, `DATA_DIR`/`EXPORT_DIR` under the temp path, and provides `settings`, `engine`, `session`, `clinic`, `app`, `client` (FastAPI TestClient logged in through the real password + TOTP flow), `anon_client`, `reviewer`, `synthetic_batch` (generated once per session) and `captured_llm_payloads`. `tests/helpers.py` runs the whole batch once per module for the heavier suites.
 
@@ -347,7 +347,9 @@ The `.env` file is `<project root>/.env` whatever the current directory; process
 - `denial-agent anonymize` (section 16) refuses an output folder or key inside the repository and a key inside the
   output folder, never overwrites a key, writes nothing while a note or letter still carries an SSN-, phone-, e-mail-
   or DOB-shaped value, and prints file names, counts and residual findings by place and kind only; KEY.json is the
-  only file it writes an original value to.
+  only file it writes an original value to. `denial-agent deanonymize` (section 16) writes restored packages, which
+  carry the real identifiers, only outside the repository and never over an existing file, and refuses a package with
+  a pseudonym left.
 - Patient pseudonym: `patients.token` is `PT-` plus six hex characters of `sha256("<clinic_id>:<account_number>")` (unkeyed). It is a display label inside the clinic's own system, used where the patient block is left out (queue, letters without the header, the JSON API, corrected-claim JSON); it is not a security boundary and is not meant to resist a brute-force search by someone who already has the database.
 
 ## 16. Pseudonymized real data — `denial-agent anonymize` (`app/anonymize/`)
@@ -431,8 +433,26 @@ the import of OUT_DIR is audited like every import.
   maps, initials and the free-text records, the value maps (`patient_id`, `address_line`, `city`, `zip`,
   `claim_number`, `payer_claim_number`), `index`, `originals` and `name_pairs`: everything a later run needs. It is
   created with `O_EXCL` (never overwritten). `PseudonymKey` loads it and maps pseudonyms
-  back; `restore_claim_row(row, key)` restores a claim-export row exactly (what a person needs before a corrected claim
-  goes out under the patient's real identifiers).
+  back; `restore_claim_row(row, key)` restores a claim-export row exactly.
+- **Back to the real identifiers** (`denial-agent deanonymize PACKAGE.zip ... --key KEY.json --out OUT_DIR`,
+  `app/anonymize/restore.py`): before a corrected claim or an appeal from a pseudonymized batch goes out, the clinic
+  restores its export package (section 10) on its own computer. The package's patient is found by the corrected
+  claim's account number, else through its claim number and the key's index. `corrected_claim.csv` rows go through
+  `restore_claim_row` (a corrected claim's `<pseudonym>-R1` number back to `<original>-R1`) and are written like the
+  export writes them; `summary.json` and `corrected_claim.json` are restored field by field: claim numbers and patient
+  ids through the key, data dates (`deadline`, service and submission dates, a note's date; a change's `before` and
+  `after` by its path) moved back, free text (summary, rationale, citation and note text, a change's reason) restored
+  like a letter, while the app's own timestamps (`*_at`) and the date a reviewer typed a note stay. `appeal_letter.txt`
+  and `clinic_question.txt` get every pseudonym spelling of the patient back to its original (the patient's subject in
+  the key, reversed) and every other date moved back, except the letter's own date: its first line, the day it was
+  drafted. `appeal_letter.html` is rebuilt from the restored letter with `letter_html`, `appeal_letter.pdf` rendered
+  again (`README.txt` when WeasyPrint is missing), and `audit_excerpt.json` kept as exported (the app's hash-chained
+  record, in pseudonyms). Every restored member but the audit excerpt is then searched for a pseudonym left: the
+  patient's own spellings and every other patient's full name and long ids. Refused (exit 1, nothing written): a
+  missing package or key, a key or output folder inside the repository, a member an export package never holds, a
+  package whose patient the key does not know (another batch's key), a pseudonym left, a target file that exists.
+  Restored packages are named as the app names a package, with the real claim number; stdout lists, per package, the
+  file names, what was done to each member and how many identifiers were replaced.
 - **A later batch** (`--key-in OLD.json`): next month's export, the follow-up 835s that pay, partly pay, deny again or
   reverse submitted fixes, a letter about an earlier claim. The run starts from everything the old key holds
   (`Pseudonymizer.from_key`): every subject with its token and field maps, initials, date-of-birth offsets and the
@@ -465,4 +485,9 @@ the import of OUT_DIR is audited like every import.
   repository are refused; and, with `--key-in`, that follow-up 835s and a letter built from the raw batch's database
   match the same claims in the pseudonymized database (zero unmatched, the letter attached) and record exactly the
   outcomes they record in the raw one, with the first batch's pseudonyms and none of the originals, while mismatched
-  options and missing, foreign or version 1 keys are refused and the old key is never touched.
+  options and missing, foreign or version 1 keys are refused and the old key is never touched; and, for
+  `deanonymize`, that a corrected claim's and an appeal's export packages from the pseudonymized database, restored with
+  the key, equal the raw database's member for member (timestamps, the letter's drafting date and the audit excerpt
+  aside) with no pseudonym left, that the PDF is rendered again from the restored letter, and that a pseudonym left, a
+  foreign key, an unknown member, a file that is not a zip, an output inside the repository and an overwrite are
+  refused.

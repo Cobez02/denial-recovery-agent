@@ -294,10 +294,11 @@ class Subject:
     account number) or a remittance subject the export does not know (keyed by the payer's ids).
 
     The free-text replacer reads ``spellings``, ``surfaces``, ``dobs``, ``ids``, ``addresses`` and
-    ``claim_numbers`` to know every identifier this patient can appear under in a note or letter.
+    ``claim_numbers`` to know every identifier this patient can appear under in a note or letter. A
+    subject read back from a key for a restore has no owner: it maps nothing new.
     """
 
-    def __init__(self, key: str, kind: str, owner: Pseudonymizer) -> None:
+    def __init__(self, key: str, kind: str, owner: Pseudonymizer | None) -> None:
         self.key = key
         self.kind = kind
         self._owner = owner
@@ -313,6 +314,11 @@ class Subject:
 
     # -- names ------------------------------------------------------------------------------
 
+    def _pseudonymizer(self) -> Pseudonymizer:
+        if self._owner is None:
+            raise AnonymizeError("a subject read back from a key cannot draw new pseudonyms")
+        return self._owner
+
     def _used_pseudonyms(self) -> set[str]:
         return {name_key(v) for role in (GIVEN, FAMILY) for v in self.tokens[role].values()}
 
@@ -320,7 +326,7 @@ class Subject:
         key = name_key(surface)
         pseudonym = self.tokens[role].get(key)
         if pseudonym is None:
-            pseudonym = self._owner.draw_name(role, self._used_pseudonyms())
+            pseudonym = self._pseudonymizer().draw_name(role, self._used_pseudonyms())
             self.tokens[role][key] = pseudonym
         return pseudonym
 
@@ -330,7 +336,7 @@ class Subject:
         if pseudonym is None:
             used = set(self.initials.values()) | {key.upper()}
             choices = [ch for ch in LETTERS if ch not in used] or [ch for ch in LETTERS if ch != key.upper()]
-            pseudonym = self._owner.rng.choice(choices)
+            pseudonym = self._pseudonymizer().rng.choice(choices)
             self.initials[key] = pseudonym
         return pseudonym
 
@@ -340,7 +346,7 @@ class Subject:
         family_tokens = [t for t in NAME_TOKEN_RE.findall(last or "") if len(name_key(t)) > 1]
         if not given_tokens and not family_tokens:
             return
-        given, family = self._owner.draw_name_pair()
+        given, family = self._pseudonymizer().draw_name_pair()
         if given_tokens and name_key(given_tokens[0]) not in self.tokens[GIVEN]:
             self.tokens[GIVEN][name_key(given_tokens[0])] = given
         if family_tokens and name_key(family_tokens[0]) not in self.tokens[FAMILY]:
@@ -407,7 +413,7 @@ class Subject:
         }
 
     @classmethod
-    def from_document(cls, key: str, document: dict[str, Any], owner: Pseudonymizer) -> Subject:
+    def from_document(cls, key: str, document: dict[str, Any], owner: Pseudonymizer | None) -> Subject:
         subject = cls(key, str(document["kind"]), owner)
         subject.fields = {GIVEN: dict(document[GIVEN]), FAMILY: dict(document[FAMILY])}
         subject.tokens = {GIVEN: dict(document["tokens"][GIVEN]), FAMILY: dict(document["tokens"][FAMILY])}
@@ -742,6 +748,21 @@ class PseudonymKey:
         """The original of a pseudonymized identifier, address part or claim number."""
         original = self._reverse[family].get(value_key(pseudonym))
         return None if original is None else match_case(pseudonym, original)
+
+    def original_claim_number(self, pseudonym: str) -> str | None:
+        """A claim number back to its original. A number that extends a pseudonymized one after a
+        separator (the corrected claim's ``<pseudonym>-R1`` the app numbers) keeps its extension."""
+        original = self.original("claim_number", pseudonym)
+        if original is not None:
+            return original
+        stripped = pseudonym.strip()
+        for cut in range(len(stripped) - 1, 0, -1):
+            if stripped[cut].isalnum():
+                continue
+            base = self.original("claim_number", stripped[:cut])
+            if base is not None:
+                return base + stripped[cut:]
+        return None
 
     def unshift(self, value: date) -> date:
         return value - timedelta(days=self.date_shift_days)

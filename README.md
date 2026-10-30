@@ -161,9 +161,16 @@ uv run denial-agent anonymize D:/clinic/batch-2026-11 --out E:/pseudonymized/bat
 - **The key**: `KEY.json` is the only file that holds an original value. It stays with the clinic,
   on the clinic's computer; the command refuses to write it (or the output) inside the repository,
   refuses a key inside the output folder and never overwrites one. Only the output folder travels
-  to the encrypted disk of the machine that runs the app; import it with steps 7 to 10 above. When
-  an approved corrected claim or appeal goes out, the clinic maps its pseudonyms back with the key
-  (`app.anonymize.restore_claim_row` does it for claim-export rows).
+  to the encrypted disk of the machine that runs the app; import it with steps 7 to 10 above.
+- **Before anything goes out**: copy the downloaded export packages to the clinic's computer and
+  restore them there with the key: patient block, ids, claim numbers (a corrected claim's `-R1`
+  number included), letter text and dates come back; the HTML and PDF letter are rebuilt; the
+  audit excerpt stays as the app wrote it. A package with a pseudonym left (for example another
+  patient's name typed by a reviewer) is refused, and nothing is overwritten.
+
+  ```bash
+  uv run denial-agent deanonymize E:/pseudonymized/exports/work_item_14_DWW938899_v1_20261030T210501Z.zip --key D:/clinic/keys/batch-2026-11.key.json --out D:/clinic/to-submit
+  ```
 
 - **A later batch**: `--key-in` starts from the last key, so the follow-up 835s still match the
   claims and fixes already in the app (with `--replace-claim-numbers`, a corrected claim's `-R1`
@@ -222,7 +229,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-848 tests across 28 files at the time of writing, all on SQLite with the stub model client and
+851 tests across 28 files at the time of writing, all on SQLite with the stub model client and
 inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set classifies at 150/150 categories and 150/150 expected actions (bars 0.90 and 0.80;

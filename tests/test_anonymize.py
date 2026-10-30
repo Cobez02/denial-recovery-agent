@@ -12,10 +12,12 @@ refused; every 835 parses to the same transactions apart from the replaced value
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
 import re
 import shutil
+import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -26,12 +28,15 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.anonymize import AnonymizeOptions, PseudonymKey, anonymize_batch, restore_claim_row
+from app.anonymize import AnonymizeOptions, PseudonymKey, anonymize_batch, restore_claim_row, restore_packages
+from app.anonymize import restore as restore_module
 from app.anonymize.pseudonyms import Originals, Pseudonymizer
 from app.anonymize.text import DOB_FORMATS, TextReplacer, shift_text_dates, subject_pairs
+from app.auth.service import create_user
 from app.cli import main
 from app.config import PROJECT_ROOT, get_settings, reset_settings_cache
 from app.db import configure_engine, dispose_engine, init_db, make_engine, session_factory
+from app.drafting.pdf import letter_html
 from app.ingest.claims_import import (
     NOTE_COLUMNS,
     PAYER_DOCUMENT_COLUMNS,
@@ -45,6 +50,8 @@ from app.ingest.x12 import read_delimiters, tokenize
 from app.models import Claim, Clinic, Outcome, RemittanceClaim, WorkItem
 from app.pipeline import process_pending
 from app.redact.registry import date_formats
+from app.review import service as review_service
+from app.review.export import build_export_package
 from app.review.service import default_submitted_control_number
 from app.schemas import CLAIM_EXPORT_COLUMNS
 from synthetic.followup import PLAN_VALUES, generate_followup_files
@@ -949,3 +956,240 @@ def test_a_reused_key_must_exist_match_and_stay_untouched(raw_dir, runs, tmp_pat
     assert summary["key_in"] == str(key_path) and summary["options"]["reuses_key"] is True
     assert summary["counts"]["remittance_subjects"] == 0 and summary["patients"] > 0
     assert key_path.read_bytes() == before
+
+
+# --------------------------------------------------------------------------------------
+# Export packages back to the real identifiers (deanonymize)
+# --------------------------------------------------------------------------------------
+
+EXCERPT = "Separate, distinct procedure documented in the visit note."
+EXPORT_ACTIONS = ("corrected_claim", "appeal")
+
+
+def _reviewer(session: Session) -> Any:
+    user = create_user(
+        session, email="restore@example.test", password="correct horse battery staple 42!", role="reviewer"
+    )
+    session.commit()
+    return user
+
+
+def _approve_and_export(session: Session, ccn: str, reviewer: Any) -> tuple[str, bytes]:
+    """Approve the claim's work item (with a note excerpt when the proposal needs one) and download
+    its export package, the way a reviewer does on the item page."""
+    stmt = (
+        select(WorkItem).join(Claim, WorkItem.claim_id == Claim.id).where(Claim.claim_control_number == ccn)
+    )
+    work_item = session.execute(stmt.order_by(WorkItem.id)).scalars().first()
+    assert work_item is not None and work_item.current_proposal is not None
+    note = EXCERPT if review_service.needs_note_excerpt(work_item.current_proposal) else None
+    review_service.approve(session, work_item, reviewer, note_excerpt=note)
+    payload, name = build_export_package(session, work_item, reviewer)
+    session.commit()
+    return name, payload
+
+
+def _members(payload: bytes) -> dict[str, bytes]:
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _zip(members: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+@pytest.fixture(scope="module")
+def exported(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """A small batch, pseudonymized with both flags; in the raw and in the pseudonymized database the
+    same corrected claim and appeal are approved and exported."""
+    base = tmp_path_factory.mktemp("restore")
+    raw = base / "raw"
+    generate(seed=SEED + 5, n_claims=40, out_dir=raw)
+    as_of = date.fromisoformat(json.loads((raw / "manifest.json").read_text(encoding="utf-8"))["as_of"])
+    anon, key, _result = _anonymize(
+        raw, base, "anon", seed=31, replace_claim_numbers=True, shift_dates_days=SHIFT_DAYS
+    )
+    claim_numbers = _key(key).document["values"]["claim_number"]
+    packages: dict[str, dict[str, tuple[str, bytes]]] = {"raw": {}, "anon": {}}
+    with _database(base / "raw_db") as (session, clinic):
+        _import(session, clinic, raw)
+        process_pending(session, today=as_of)
+        session.commit()
+        items = _work_items(session)
+        chosen = {
+            action: min(ccn for ccn, item in items.items() if item["action"] == action)
+            for action in EXPORT_ACTIONS
+        }
+        reviewer = _reviewer(session)
+        for action, ccn in chosen.items():
+            packages["raw"][action] = _approve_and_export(session, ccn, reviewer)
+    with _database(base / "anon_db") as (session, clinic):
+        _import(session, clinic, anon)
+        process_pending(session, today=as_of + timedelta(days=SHIFT_DAYS))
+        session.commit()
+        reviewer = _reviewer(session)
+        for action, ccn in chosen.items():
+            packages["anon"][action] = _approve_and_export(session, claim_numbers[ccn], reviewer)
+    folder = base / "packages"
+    folder.mkdir()
+    for name, payload in packages["anon"].values():
+        (folder / name).write_bytes(payload)
+    return {
+        "raw": raw,
+        "anon": anon,
+        "key": key,
+        "chosen": chosen,
+        "claim_numbers": claim_numbers,
+        "packages": packages,
+        "folder": folder,
+    }
+
+
+def _pseudonyms(exported: dict[str, Any], ccn: str) -> list[tuple[str, str]]:
+    """(kind, value) of everything the pseudonymized batch calls this claim's patient by."""
+    pseudo_ccn = exported["claim_numbers"][ccn]
+    row = next(r for r in _rows(exported["anon"] / CLAIMS_FILE) if r["claim_control_number"] == pseudo_ccn)
+    dob = date.fromisoformat(row["patient_dob"])
+    found = [
+        (NAME, f"{row['patient_first_name']} {row['patient_last_name']}"),
+        (NAME_PART, row["patient_first_name"]),
+        (NAME_PART, row["patient_last_name"]),
+        (MEMBER_ID, row["member_id"]),
+        (ACCOUNT, row["patient_account_number"]),
+        (ACCOUNT, pseudo_ccn),
+        (ADDRESS, row["patient_address_line1"]),
+        (ADDRESS, row["patient_city"]),
+    ]
+    return found + [(DOB, spelling) for spelling in _dob_spellings(dob)]
+
+
+def _without_timestamps(summary: dict[str, Any]) -> dict[str, Any]:
+    """summary.json without the app's own timestamps (when this database's reviewer acted)."""
+    return {key: value for key, value in summary.items() if not key.endswith("_at")}
+
+
+def _without_patient_token(corrected: dict[str, Any]) -> dict[str, Any]:
+    """corrected_claim.json without patient_token, a hash of the account number the app saw."""
+    return {
+        key: (
+            {k: v for k, v in value.items() if k != "patient_token"} if key in ("before", "after") else value
+        )
+        for key, value in corrected.items()
+    }
+
+
+def test_export_packages_restore_to_the_raw_batchs_identifiers(exported, tmp_path, capsys):
+    """Restored with the key, the pseudonymized database's packages equal the raw database's member for
+    member (the app's own timestamps, the letter's drafting date and the audit excerpt aside), and
+    none of the patient's pseudonyms is left."""
+    folder, out = exported["folder"], tmp_path / "restored"
+    sources = [str(path) for path in sorted(folder.iterdir())]
+    assert main(["deanonymize", *sources, "--key", str(exported["key"]), "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert len(summary["packages"]) == len(EXPORT_ACTIONS) and "real identifiers" in captured.err
+    identifiers = _original_identifiers(exported["raw"])
+    assert not _leaks(captured.out + captured.err, identifiers, set())
+    restored = {path.name: _members(path.read_bytes()) for path in out.iterdir()}
+    for action, ccn in exported["chosen"].items():
+        _raw_name, raw_payload = exported["packages"]["raw"][action]
+        anon_name, anon_payload = exported["packages"]["anon"][action]
+        entry = next(entry for entry in summary["packages"] if entry["package"] == anon_name)
+        assert re.fullmatch(rf"work_item_\d+_{re.escape(ccn)}_v1_\d{{8}}T\d{{6}}Z\.zip", entry["restored"])
+        raw, anon, members = _members(raw_payload), _members(anon_payload), restored[entry["restored"]]
+        assert list(members) == list(anon) and set(members) == set(raw)
+        assert entry["members"]["audit_excerpt.json"].startswith("kept") and entry["identifiers_replaced"] > 0
+        assert members["audit_excerpt.json"] == anon["audit_excerpt.json"]
+        assert _without_timestamps(json.loads(members["summary.json"])) == _without_timestamps(
+            json.loads(raw["summary.json"])
+        )
+        if action == "corrected_claim":
+            assert members["corrected_claim.csv"] == raw["corrected_claim.csv"]
+            assert _without_patient_token(
+                json.loads(members["corrected_claim.json"])
+            ) == _without_patient_token(json.loads(raw["corrected_claim.json"]))
+        else:
+            letter = members["appeal_letter.txt"].decode("utf-8")
+            assert letter.splitlines()[1:] == raw["appeal_letter.txt"].decode("utf-8").splitlines()[1:]
+            # the letter's own date is the day the pseudonymized run drafted it, and stays
+            assert letter.splitlines()[0] == anon["appeal_letter.txt"].decode("utf-8").splitlines()[0]
+            assert members["appeal_letter.html"].decode("utf-8") == letter_html(
+                letter, f"Appeal of claim {ccn}"
+            )
+            assert members["README.txt"] == raw["README.txt"]
+        pseudonyms = _pseudonyms(exported, ccn)
+        for member, data in members.items():
+            if member != "audit_excerpt.json":
+                assert not _leaks(data.decode("utf-8"), pseudonyms, set()), (action, member)
+
+
+def test_a_restore_refuses_what_it_cannot_vouch_for(exported, tmp_path, capsys):
+    key = exported["key"]
+    appeal_name, appeal_payload = exported["packages"]["anon"]["appeal"]
+
+    def restore(package: Path, out: Path, key_path: Path = key) -> str:
+        assert main(["deanonymize", str(package), "--key", str(key_path), "--out", str(out)]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == "" and not out.exists()
+        return captured.err
+
+    # Another patient's pseudonym typed into the letter cannot be put back: the package is refused.
+    appeal_ccn = exported["claim_numbers"][exported["chosen"]["appeal"]]
+    rows = _rows(exported["anon"] / CLAIMS_FILE)
+    account = next(r["patient_account_number"] for r in rows if r["claim_control_number"] == appeal_ccn)
+    other = next(r for r in rows if r["patient_account_number"] != account)
+    members = _members(appeal_payload)
+    members["appeal_letter.txt"] += (
+        f"\nSee also {other['patient_first_name']} {other['patient_last_name']}.".encode()
+    )
+    tampered = tmp_path / "tampered" / appeal_name
+    tampered.parent.mkdir()
+    tampered.write_bytes(_zip(members))
+    err = restore(tampered, tmp_path / "out1")
+    assert "a pseudonym is left" in err and "appeal_letter.txt (PATIENT_NAME)" in err
+    assert other["patient_last_name"] not in err
+
+    # The key of another run does not know the package's patient.
+    _out, other_key, _result = _anonymize(
+        exported["raw"], tmp_path, "other", seed=99, replace_claim_numbers=True, shift_dates_days=SHIFT_DAYS
+    )
+    source = exported["folder"] / appeal_name
+    assert "not in this key" in restore(source, tmp_path / "out2", other_key)
+
+    # A member the export never writes, a file that is not a zip, an output inside the repository.
+    members = _members(appeal_payload)
+    members["notes.txt"] = b"anything"
+    extra = tmp_path / "extra" / appeal_name
+    extra.parent.mkdir()
+    extra.write_bytes(_zip(members))
+    assert "never holds: notes.txt" in restore(extra, tmp_path / "out3")
+    not_zip = tmp_path / "not_a_package.zip"
+    not_zip.write_text("not a zip", encoding="utf-8")
+    assert "is not a zip file" in restore(not_zip, tmp_path / "out4")
+    inside = PROJECT_ROOT / "data" / "restore-refusal-test"
+    assert "inside the repository" in restore(source, inside)
+
+    # A restored package is never overwritten.
+    out = tmp_path / "out5"
+    assert main(["deanonymize", str(source), "--key", str(key), "--out", str(out)]) == 0
+    [written] = list(out.iterdir())
+    before = written.read_bytes()
+    capsys.readouterr()
+    assert main(["deanonymize", str(source), "--key", str(key), "--out", str(out)]) == 1
+    assert "never overwritten" in capsys.readouterr().err and written.read_bytes() == before
+
+
+def test_a_restored_appeal_gets_its_pdf_rendered_again(exported, tmp_path, monkeypatch):
+    monkeypatch.setattr(restore_module, "render_pdf", lambda html: b"%PDF-1.7 restored letter")
+    appeal_name, payload = exported["packages"]["anon"]["appeal"]
+    source = tmp_path / appeal_name
+    source.write_bytes(payload)
+    result = restore_packages([source], key_path=exported["key"], out_dir=tmp_path / "out")
+    [package] = result.packages
+    members = _members((tmp_path / "out" / package.target).read_bytes())
+    assert "README.txt" not in members and members["appeal_letter.pdf"] == b"%PDF-1.7 restored letter"
+    assert package.members["appeal_letter.pdf"] == "rebuilt from the restored letter"

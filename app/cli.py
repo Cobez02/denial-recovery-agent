@@ -4,9 +4,10 @@ Subcommands: init-db, create-clinic, create-user, import-835, import-claims, imp
 import-documents, process, generate-synthetic, anonymize, verify-audit, list-payers, set-payer,
 purge-clinic, serve.
 
-`anonymize IN_DIR --out OUT_DIR --key-out KEY.json` (docs/SPEC.md section 16) pseudonymizes one raw
-clinic batch without touching the database; stdout carries paths, file names and counts, and
-residual findings by file, row, field and kind, never a value.
+`anonymize IN_DIR --out OUT_DIR --key-out KEY.json [--key-in OLD.json]` (docs/SPEC.md section 16)
+pseudonymizes one raw clinic batch without touching the database (`--key-in` continues an earlier
+batch's pseudonyms); stdout carries paths, file names and counts, and residual findings by file, row,
+field and kind, never a value.
 
 Output policy: stdout carries ids, counts, statuses and file names only. Passwords are never
 printed. The TOTP provisioning URI (which embeds the shared secret) is printed exactly once, on
@@ -400,6 +401,7 @@ def cmd_anonymize(args: argparse.Namespace) -> int:
         replace_claim_numbers=args.replace_claim_numbers,
         shift_dates_days=args.shift_dates or 0,
         allow_residual=args.allow_residual,
+        key_in=Path(args.key_in) if args.key_in else None,
     )
     try:
         result = anonymize_batch(Path(args.in_dir), Path(args.out), Path(args.key_out), options)
@@ -858,6 +860,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-residual",
         action="store_true",
         help="mask SSN-, phone-, e-mail- or DOB-shaped values left in free text instead of stopping",
+    )
+    p.add_argument(
+        "--key-in",
+        dest="key_in",
+        default=None,
+        metavar="OLD.json",
+        help=(
+            "the key of an earlier batch: values it maps keep their pseudonyms (a follow-up 835 still "
+            "matches); the extended key goes to --key-out, a new file"
+        ),
     )
     p.set_defaults(func=cmd_anonymize)
 

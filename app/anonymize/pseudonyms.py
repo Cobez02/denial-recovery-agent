@@ -17,16 +17,23 @@ the batch, so a pseudonym can never be mistaken for (or leak) another patient's 
 come from one ``random.Random(seed)`` in the order values are first met: a pseudonym is a function
 of where a value sits in the batch, not of the value, so knowing the seed does not let anyone test a
 guessed name against the output.
+
+The key (:meth:`Pseudonymizer.key_document`, read back by :class:`PseudonymKey`) holds every map in
+full, the originals of every batch it has seen and the claim index, so :meth:`Pseudonymizer.from_key`
+rebuilds the same state for a later batch: a returning value keeps its pseudonym, and every new
+pseudonym is still drawn outside the originals of all those batches.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import unicodedata
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from synthetic import names
@@ -157,6 +164,22 @@ class Originals:
             self.zips.add(value_key(zip_code))
             self.zips.add(value_key(zip_code.split("-", 1)[0]))
 
+    def merge(self, other: Originals) -> Originals:
+        for family in fields(self):
+            getattr(self, family.name).update(getattr(other, family.name))
+        return self
+
+    def to_document(self) -> dict[str, list[str]]:
+        document = {f.name: sorted(getattr(self, f.name)) for f in fields(self) if f.name != "dobs"}
+        document["dobs"] = sorted(d.isoformat() for d in self.dobs)
+        return document
+
+    @classmethod
+    def from_document(cls, document: dict[str, list[str]]) -> Originals:
+        originals = cls(**{f.name: set(document.get(f.name) or []) for f in fields(cls) if f.name != "dobs"})
+        originals.dobs = {date.fromisoformat(value) for value in document.get("dobs") or []}
+        return originals
+
 
 class ValueMap:
     """original -> pseudonym for one family of values: injective, never emitting an original.
@@ -202,6 +225,14 @@ class ValueMap:
     def items(self) -> list[tuple[str, str]]:
         """(original as first met, pseudonym) in the order they were drawn."""
         return [(self.first_seen[key], pseudonym) for key, pseudonym in self.forward.items()]
+
+    def restore(self, mapping: dict[str, str]) -> None:
+        """Take back the pairs a key recorded (original as first met -> pseudonym)."""
+        for original, pseudonym in mapping.items():
+            key = value_key(original)
+            self.forward[key] = pseudonym
+            self.first_seen[key] = original
+            self._emitted.add(value_key(pseudonym))
 
 
 class _Pool:
@@ -354,6 +385,44 @@ class Subject:
             self.spellings.append(spelling)
         return pseudo
 
+    # -- the key ------------------------------------------------------------------------------
+
+    def to_document(self) -> dict[str, Any]:
+        """Everything this subject maps, for the key (field maps first: they are what a person reads)."""
+        return {
+            "kind": self.kind,
+            "given": dict(self.fields[GIVEN]),
+            "family": dict(self.fields[FAMILY]),
+            "dob": {
+                original.isoformat(): {"pseudonym": pseudo.isoformat(), "offset_days": offset}
+                for original, (pseudo, offset) in self.dobs.items()
+            },
+            "tokens": {GIVEN: dict(self.tokens[GIVEN]), FAMILY: dict(self.tokens[FAMILY])},
+            "initials": dict(self.initials),
+            "surfaces": dict(self.surfaces),
+            "spellings": [asdict(spelling) for spelling in self.spellings],
+            "ids": dict(self.ids),
+            "addresses": [asdict(record) for record in self.addresses],
+            "claim_numbers": dict(self.claim_numbers),
+        }
+
+    @classmethod
+    def from_document(cls, key: str, document: dict[str, Any], owner: Pseudonymizer) -> Subject:
+        subject = cls(key, str(document["kind"]), owner)
+        subject.fields = {GIVEN: dict(document[GIVEN]), FAMILY: dict(document[FAMILY])}
+        subject.tokens = {GIVEN: dict(document["tokens"][GIVEN]), FAMILY: dict(document["tokens"][FAMILY])}
+        subject.initials = dict(document["initials"])
+        subject.surfaces = dict(document["surfaces"])
+        subject.spellings = [Spelling(**spelling) for spelling in document["spellings"]]
+        subject.dobs = {
+            date.fromisoformat(original): (date.fromisoformat(entry["pseudonym"]), int(entry["offset_days"]))
+            for original, entry in document["dob"].items()
+        }
+        subject.ids = dict(document["ids"])
+        subject.addresses = [AddressRecord(**record) for record in document["addresses"]]
+        subject.claim_numbers = dict(document["claim_numbers"])
+        return subject
+
 
 class Pseudonymizer:
     """Every mapping of one anonymize run (see the module docstring)."""
@@ -375,7 +444,7 @@ class Pseudonymizer:
         excluded = originals.name_tokens
         self._given = _Pool(names.FIRST_NAMES, excluded, self.rng)
         self._family = _Pool(names.LAST_NAMES, excluded, self.rng)
-        self._pairs: set[tuple[str, str]] = set()
+        self._pairs: dict[tuple[str, str], None] = {}  # ordered: the key is written the same way each run
         self.duplicate_name_pairs = 0
         self.subjects: dict[str, Subject] = {}
         self.patient_ids = ValueMap("patient identifier", originals.patient_ids)
@@ -403,7 +472,7 @@ class Pseudonymizer:
             for _ in range(tries):
                 pair = (self.rng.choice(given_words), self.rng.choice(family_words))
                 if pair not in self._pairs:
-                    self._pairs.add(pair)
+                    self._pairs[pair] = None
                     return pair
         self.duplicate_name_pairs += 1
         return (self._given.draw(set()), self._family.draw(set()))
@@ -414,6 +483,39 @@ class Pseudonymizer:
             subject = Subject(key, kind, self)
             self.subjects[key] = subject
         return subject
+
+    def value_maps(self) -> dict[str, ValueMap]:
+        """The value maps under the family names the key uses (``VALUE_FAMILIES``)."""
+        return {
+            "patient_id": self.patient_ids,
+            "address_line": self.address_lines,
+            "city": self.cities,
+            "zip": self.zips,
+            "claim_number": self.claim_numbers,
+            "payer_claim_number": self.payer_claim_numbers,
+        }
+
+    @classmethod
+    def from_key(cls, key: PseudonymKey, originals: Originals, *, seed: int) -> Pseudonymizer:
+        """The state a key recorded, ready for a later batch whose own originals are given: every
+        value the key maps keeps its pseudonym, and new draws avoid the originals of every batch."""
+        document = key.document
+        try:
+            merged = originals.merge(Originals.from_document(document["originals"]))
+            pseudo = cls(
+                merged,
+                seed=seed,
+                shift_days=key.date_shift_days,
+                replace_claim_numbers=key.replace_claim_numbers,
+            )
+            pseudo._pairs = {(str(given), str(family)): None for given, family in document["name_pairs"]}
+            for family, value_map in pseudo.value_maps().items():
+                value_map.restore(document["values"][family])
+            for subject_key, data in document["subjects"].items():
+                pseudo.subjects[subject_key] = Subject.from_document(subject_key, data, pseudo)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AnonymizeError("--key-in is not a complete anonymize key") from exc
+        return pseudo
 
     # -- identifiers --------------------------------------------------------------------------
 
@@ -578,44 +680,32 @@ class Pseudonymizer:
 
     # -- the key ------------------------------------------------------------------------------
 
-    def key_document(
-        self, *, seed: int | None, options: dict[str, Any], files: dict[str, str]
-    ) -> dict[str, Any]:
-        """The KEY.json content: the only place where an original value is written."""
-        subjects: dict[str, Any] = {}
-        for key, subject in self.subjects.items():
-            subjects[key] = {
-                "kind": subject.kind,
-                "given": dict(subject.fields[GIVEN]),
-                "family": dict(subject.fields[FAMILY]),
-                "dob": {
-                    original.isoformat(): {"pseudonym": pseudo.isoformat(), "offset_days": offset}
-                    for original, (pseudo, offset) in subject.dobs.items()
-                },
-            }
-        values = {
-            "patient_id": dict(self.patient_ids.items()),
-            "address_line": dict(self.address_lines.items()),
-            "city": dict(self.cities.items()),
-            "zip": dict(self.zips.items()),
-            "claim_number": dict(self.claim_numbers.items()),
-            "payer_claim_number": dict(self.payer_claim_numbers.items()),
-        }
+    def key_document(self, *, runs: list[dict[str, Any]], index: dict[str, Any]) -> dict[str, Any]:
+        """The KEY.json content: the only place where an original value is written.
+
+        It holds everything :meth:`from_key` needs to go on with a later batch: the options that
+        shape the maps, every subject in full, the value maps, the claim index, the originals of
+        every batch seen so far, the name pairs already given, and one entry per run.
+        """
         return {
             "format": KEY_FORMAT,
             "version": KEY_VERSION,
             "warning": KEY_WARNING,
-            "seed": seed,
-            "options": options,
-            "date_shift_days": self.shift_days,
-            "files": files,
-            "subjects": subjects,
-            "values": values,
+            "options": {
+                "replace_claim_numbers": self.replace_claim_numbers,
+                "shift_dates_days": self.shift_days,
+            },
+            "runs": runs,
+            "subjects": {key: subject.to_document() for key, subject in self.subjects.items()},
+            "values": {family: dict(value_map.items()) for family, value_map in self.value_maps().items()},
+            "index": index,
+            "originals": self.originals.to_document(),
+            "name_pairs": [list(pair) for pair in self._pairs],
         }
 
 
 KEY_FORMAT = "denial-agent/anonymize-key"
-KEY_VERSION = 1
+KEY_VERSION = 2  # 2: everything from_key needs; a version 1 key cannot be extended
 KEY_WARNING = (
     "This file holds the original patient identifiers of a pseudonymized batch. It stays with the "
     "clinic, on the clinic's own computer; never copy it next to the pseudonymized files."
@@ -631,13 +721,17 @@ VALUE_FAMILIES: tuple[str, ...] = (
 
 
 class PseudonymKey:
-    """A loaded KEY.json: maps every pseudonym of the batch back to its original."""
+    """A loaded KEY.json: maps every pseudonym back to its original, and seeds a later run."""
 
     def __init__(self, document: dict[str, Any]) -> None:
         if document.get("format") != KEY_FORMAT or document.get("version") != KEY_VERSION:
-            raise AnonymizeError("not an anonymize key (format or version differs)")
+            raise AnonymizeError(f"not an anonymize key of version {KEY_VERSION} (format or version differs)")
         self.document = document
-        self.date_shift_days = int(document.get("date_shift_days") or 0)
+        options = document.get("options") or {}
+        self.replace_claim_numbers = bool(options.get("replace_claim_numbers"))
+        self.date_shift_days = int(options.get("shift_dates_days") or 0)
+        self.runs: list[dict[str, Any]] = list(document.get("runs") or [])
+        self.index: dict[str, Any] = document.get("index") or {}
         self.subjects: dict[str, dict[str, Any]] = document.get("subjects") or {}
         self._reverse: dict[str, dict[str, str]] = {}
         for family in VALUE_FAMILIES:
@@ -670,10 +764,22 @@ class PseudonymKey:
         return None
 
 
+def load_key(path: Path) -> PseudonymKey:
+    """Read a KEY.json; anything else is refused by file name only (never by content)."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AnonymizeError(f"{path.name} is not a readable anonymize key") from exc
+    if not isinstance(document, dict):
+        raise AnonymizeError(f"{path.name} is not an anonymize key")
+    return PseudonymKey(document)
+
+
 __all__ = [
     "FAMILY",
     "GIVEN",
     "KEY_FORMAT",
+    "KEY_VERSION",
     "AnonymizeError",
     "Originals",
     "PseudonymKey",
@@ -682,6 +788,7 @@ __all__ = [
     "ValueMap",
     "match_case",
     "name_key",
+    "load_key",
     "shift_within_year",
     "value_key",
 ]

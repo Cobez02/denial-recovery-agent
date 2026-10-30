@@ -84,7 +84,8 @@ Each line names the code and the way to check it.
   clinic's own computer; it refuses an output folder or key inside the repository and a key inside the
   output folder, never overwrites a key, and writes nothing while a note or letter still carries an
   SSN-, phone-, e-mail- or DOB-shaped value. The key holds the originals: it stays with the clinic and
-  never travels with the batch. Check: `uv run pytest tests/test_anonymize.py -q`.
+  never travels with the batch; a later batch reads it with `--key-in` (never written) and the extended
+  key goes to a new file. Check: `uv run pytest tests/test_anonymize.py -q`.
 - **Patient pseudonym**: `patients.token` is `PT-` plus six hex characters of
   `sha256("<clinic_id>:<account_number>")`. It is a display label inside the clinic's own system (queue,
   letters without the patient block, API), not a security boundary: anyone with the database can read

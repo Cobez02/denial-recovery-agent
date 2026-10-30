@@ -315,7 +315,7 @@ Export package members: `summary.json` (work item, claim, payer, category, actio
 | Migrations | `test_migrations.py` | `alembic upgrade head` on a fresh SQLite file; the full `compare_metadata` diff against the models is empty; Postgres-only trigger in the offline SQL |
 | Outcomes, metrics | `test_outcomes.py`, `test_metrics.py` | the section 10 rule and gates; per-item counting |
 | Pipeline, jobs, matching, playbooks, drafting, synthetic, CLI | `test_pipeline.py`, `test_jobs.py`, `test_matching.py`, `test_playbooks.py`, `test_drafting.py`, `test_synthetic.py`, `test_cli.py` | sections 6, 9, 11, 12 and the CLI |
-| Pseudonymized real data | `test_anonymize.py` | no original identifier in any output byte; zero unmatched remittances and the same work items, categories and actions from two databases; the key restores every replaced value; `--seed` reproducible; a planted phone stops the run; repository paths refused (section 16) |
+| Pseudonymized real data | `test_anonymize.py` | no original identifier in any output byte; zero unmatched remittances and the same work items, categories and actions from two databases; the key restores every replaced value; `--seed` reproducible; a planted phone stops the run; repository paths refused; a later batch pseudonymized with `--key-in` matches the earlier claims and records the same outcomes (section 16) |
 
 `tests/conftest.py` clears every `Settings` variable, sets `APP_ENV=test` (no `.env`), `LLM_PROVIDER=stub`, `JOB_BACKEND=inline`, a temp SQLite `DATABASE_URL`, `DATA_DIR`/`EXPORT_DIR` under the temp path, and provides `settings`, `engine`, `session`, `clinic`, `app`, `client` (FastAPI TestClient logged in through the real password + TOTP flow), `anon_client`, `reviewer`, `synthetic_batch` (generated once per session) and `captured_llm_payloads`. `tests/helpers.py` runs the whole batch once per module for the heavier suites.
 
@@ -352,7 +352,7 @@ The `.env` file is `<project root>/.env` whatever the current directory; process
 
 ## 16. Pseudonymized real data — `denial-agent anonymize` (`app/anonymize/`)
 
-`denial-agent anonymize IN_DIR --out OUT_DIR --key-out KEY.json [--seed N] [--replace-claim-numbers] [--shift-dates DAYS] [--allow-residual]`
+`denial-agent anonymize IN_DIR --out OUT_DIR --key-out KEY.json [--key-in OLD.json] [--seed N] [--replace-claim-numbers] [--shift-dates DAYS] [--allow-residual]`
 turns one raw batch of a clinic's files into a pseudonymized batch the app processes exactly as before, plus a key.
 **A pseudonymized batch that keeps dates of service is a HIPAA limited data set, so it is still PHI**: the clinic BAA
 and `docs/SECURITY_CHECKLIST.md` apply to it unchanged, and it lives only on the encrypted disk. The command is defence
@@ -362,9 +362,11 @@ the import of OUT_DIR is audited like every import.
 
 - **Paths** (`check_paths`), refused before anything is read: OUT_DIR or KEY.json inside the repository (`PROJECT_ROOT`;
   resolved, so a relative path or a junction cannot slip in), KEY.json inside OUT_DIR, OUT_DIR equal to IN_DIR or not an
-  empty folder, an existing KEY.json (a key is never overwritten), `--shift-dates` beyond ±3650 days. Exit 1.
+  empty folder, an existing KEY.json (a key is never overwritten), `--shift-dates` beyond ±3650 days; with `--key-in`, a
+  key that is missing, unreadable, not version 2, inside the repository or OUT_DIR, or the same file as KEY.json. Exit 1.
 - **Input**, recognised by content, never by name: a CSV whose header carries every `CLAIM_EXPORT_COLUMNS` column is a
-  claim export (at least one is required); `NOTE_COLUMNS` / `PAYER_DOCUMENT_COLUMNS` (`app/ingest/claims_import.py`)
+  claim export (at least one is required, unless `--key-in` brings the patients); `NOTE_COLUMNS` /
+  `PAYER_DOCUMENT_COLUMNS` (`app/ingest/claims_import.py`)
   notes and payer documents; a file that starts with `ISA` an 835. Anything else is skipped and never copied. Output CSVs
   carry exactly the contract's columns (an extra column, which could hold anything, is dropped and counted); a note or
   document row whose claim the export does not carry is dropped and counted (the importer would skip it, and its
@@ -423,12 +425,28 @@ the import of OUT_DIR is audited like every import.
   `mask_generic` markers) and scans again to prove nothing is left. Known limits: a name the batch does not carry (a
   relative mentioned in a note) cannot be recognised; a patient name that is also an ordinary word is replaced wherever
   it appears in that patient's own notes and letters.
-- **KEY.json** (format `denial-agent/anonymize-key`, version 1) is the only place an original value is written:
-  options, `date_shift_days`, the file-name map, per subject the first/last/middle-name field maps and each date of
-  birth with its pseudonym and offset, and the value maps (`patient_id`, `address_line`, `city`, `zip`, `claim_number`,
-  `payer_claim_number`). It is created with `O_EXCL` (never overwritten). `PseudonymKey` loads it and maps pseudonyms
+- **KEY.json** (format `denial-agent/anonymize-key`, version 2) is the only place an original value is written:
+  `options` (`replace_claim_numbers`, `shift_dates_days`), `runs` (per run its seed, `allow_residual` and file-name
+  map), per subject the first/last/middle-name field maps, each date of birth with its pseudonym and offset, the token
+  maps, initials and the free-text records, the value maps (`patient_id`, `address_line`, `city`, `zip`,
+  `claim_number`, `payer_claim_number`), `index`, `originals` and `name_pairs`: everything a later run needs. It is
+  created with `O_EXCL` (never overwritten). `PseudonymKey` loads it and maps pseudonyms
   back; `restore_claim_row(row, key)` restores a claim-export row exactly (what a person needs before a corrected claim
   goes out under the patient's real identifiers).
+- **A later batch** (`--key-in OLD.json`): next month's export, the follow-up 835s that pay, partly pay, deny again or
+  reverse submitted fixes, a letter about an earlier claim. The run starts from everything the old key holds
+  (`Pseudonymizer.from_key`): every subject with its token and field maps, initials, date-of-birth offsets and the
+  spellings, ids, addresses and claim numbers its free text needs; every value map; the claim index (claim number ->
+  account, member id -> accounts, the provider and payer numbers that are not phones); the originals of every batch the
+  key has seen; the name pairs already given. So a known patient, member id, address or claim number keeps its
+  pseudonym, a new one is drawn outside the originals of all batches, and a CLP01 that names a known claim, or extends
+  one as a corrected claim's `-R1` number does, or a member id that names exactly one known patient, finds its patient
+  even when this batch has no claim export. With `--replace-claim-numbers` the corrected claim's `<ccn>-R1` maps to the
+  pseudonymized claim number plus `-R1`, which is what the app's "Mark submitted" defaults to, so the follow-up matches
+  by `submitted_ccn`. `--replace-claim-numbers` and `--shift-dates` must equal the old key's (refused otherwise: the
+  maps would no longer agree); `--seed` and `--allow-residual` are per run. The old key is read, never written; KEY.json
+  is a new file holding everything the old one did plus this run. A returning patient keeps their pseudonym even if a
+  later batch brings a real person of that name (the name then refers to someone else and points at no one real).
 - **Output**: stdout is one JSON object (`status` `ok` | `residual`, `written`, the two paths, options, per output file
   its kind and row/claim/segment counts, skipped files, patients, counts, residual findings); stderr says where the key
   is or why nothing was written; logs carry counts only. Exit 0, 1 (refusal, invalid input, residual, failed 835 check)
@@ -436,12 +454,15 @@ the import of OUT_DIR is audited like every import.
 - **Determinism**: pseudonyms come from one `random.Random(seed)` in the order values are first met, so `--seed` makes
   every output byte and the key reproducible, and a pseudonym is a function of where a value sits in the batch, not of
   the value (knowing the seed does not let anyone test a guessed name). Without `--seed` a random seed is used and not
-  recorded. Each run makes a fresh key: a later batch anonymized separately gets other pseudonyms, so anonymize a raw
-  batch (claims, notes, letters and its 835s) in one run.
+  recorded. A run without `--key-in` makes a fresh key: a later batch must reuse it with `--key-in` to keep the same
+  pseudonyms (the same old key and seed give the same bytes again).
 - Tests: `tests/test_anonymize.py` builds its own batches with `synthetic.generate.generate(...)` and proves that no
   original name, member id, account number, date of birth or address appears in any output byte; that the
   pseudonymized batch imports with zero unmatched remittance claims and yields the same work items, categories, actions,
   flags, dollars and deadlines as the original (two databases, rules with the stub model; with and without both flags);
   that the key restores the claim export and, with the 835 parse, every replaced 835 field; that `--seed` reproduces
-  every byte; that a phone number planted in a note stops the run without echoing it; and that output paths inside the
-  repository are refused.
+  every byte; that a phone number planted in a note stops the run without echoing it; that output paths inside the
+  repository are refused; and, with `--key-in`, that follow-up 835s and a letter built from the raw batch's database
+  match the same claims in the pseudonymized database (zero unmatched, the letter attached) and record exactly the
+  outcomes they record in the raw one, with the first batch's pseudonyms and none of the originals, while mismatched
+  options and missing, foreign or version 1 keys are refused and the old key is never touched.

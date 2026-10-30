@@ -18,6 +18,14 @@ with :func:`app.anonymize.remit.verify_835`. Nothing is written until all of tha
 residual scan found nothing (or ``allow_residual`` masked it): then KEY.json is created (never
 overwritten) and the output folder filled. The command needs no database, so it can run on the
 clinic's own computer; the import of the pseudonymized batch is audited as every import is.
+
+With ``key_in`` a later batch (next month's export, the follow-up 835s that pay or deny submitted
+fixes, a letter about an earlier claim) is pseudonymized with an earlier run's key: the run starts
+from everything that key maps (:meth:`Pseudonymizer.from_key`) and from its claim index, so a known
+patient, member id or claim number keeps its pseudonym and an 835 or letter about an earlier claim
+finds its patient; a claim export is then optional. The options that shape the maps
+(``replace_claim_numbers``, ``shift_dates_days``) must equal the key's, and the extended key is
+written to a new file: the key read is never overwritten.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ from app.anonymize.pseudonyms import (
     Pseudonymizer,
     PseudonymKey,
     Subject,
+    load_key,
     name_key,
     value_key,
 )
@@ -89,6 +98,7 @@ class AnonymizeOptions:
     replace_claim_numbers: bool = False
     shift_dates_days: int = 0
     allow_residual: bool = False
+    key_in: Path | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +106,7 @@ class AnonymizeOptions:
             "shift_dates_days": self.shift_dates_days,
             "allow_residual": self.allow_residual,
             "seed": "given" if self.seed is not None else "random",
+            "reuses_key": self.key_in is not None,
         }
 
 
@@ -118,6 +129,7 @@ class AnonymizeResult:
     key_path: Path
     written: bool
     options: AnonymizeOptions
+    key_in: Path | None = None
     files: list[dict[str, Any]] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
     patients: int = 0
@@ -132,6 +144,7 @@ class AnonymizeResult:
             "written": self.written,
             "out_dir": str(self.out_dir),
             "key_file": str(self.key_path),
+            "key_in": str(self.key_in) if self.key_in is not None else None,
             "options": self.options.as_dict(),
             "files": self.files,
             "skipped_files": self.skipped_files,
@@ -165,19 +178,41 @@ def _inside(path: Path, parent: Path) -> bool:
 
 
 def check_paths(
-    in_dir: Path, out_dir: Path, key_path: Path, *, project_root: Path = PROJECT_ROOT
-) -> tuple[Path, Path, Path]:
-    """Resolve the three paths and refuse every unsafe combination before anything is read.
+    in_dir: Path,
+    out_dir: Path,
+    key_path: Path,
+    *,
+    key_in: Path | None = None,
+    project_root: Path = PROJECT_ROOT,
+) -> tuple[Path, Path, Path, Path | None]:
+    """Resolve the paths and refuse every unsafe combination before anything is read.
 
     Refused: an input that is not a folder; an output folder or key inside the repository (a
     pseudonymized batch is still PHI and the key holds the originals: neither may ever be
     committed); a key inside the output folder (the key must never travel with the batch); an
-    output folder that is the input folder or is not empty; a key file that already exists.
+    output folder that is the input folder or is not empty; a key file that already exists; a
+    ``key_in`` that is missing, inside the repository or the output folder, or the same file as
+    the key to write.
     """
     source = in_dir.expanduser().resolve()
     out = out_dir.expanduser().resolve()
     key = key_path.expanduser().resolve()
+    reused = key_in.expanduser().resolve() if key_in is not None else None
     root = project_root.resolve()
+    if reused is not None:
+        if not reused.is_file():
+            raise AnonymizeError(f"--key-in {reused} not found")
+        if _inside(reused, root):
+            raise AnonymizeError(
+                f"--key-in {reused} is inside the repository {root}; a key never lives there: move it "
+                "back to the clinic's computer"
+            )
+        if _inside(reused, out):
+            raise AnonymizeError("--key-in must not be inside --out: the key never travels with the batch")
+        if reused == key:
+            raise AnonymizeError(
+                "--key-out must be a new file: the key read with --key-in is never overwritten"
+            )
     if not source.is_dir():
         raise AnonymizeError(f"input folder not found: {source}")
     if _inside(out, root):
@@ -198,7 +233,7 @@ def check_paths(
         raise AnonymizeError(f"--key-out {key} already exists; an existing key is never overwritten")
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise AnonymizeError(f"--out {out} exists and is not an empty folder")
-    return source, out, key
+    return source, out, key, reused
 
 
 # --------------------------------------------------------------------------------------
@@ -272,11 +307,36 @@ def _parse_date(file_name: str, row_number: int, column: str, value: str) -> dat
 
 @dataclass
 class _Index:
-    """What the first pass learns besides the originals."""
+    """What the first pass learns besides the originals (kept in the key as ``index``)."""
 
     ccn_accounts: dict[str, str] = field(default_factory=dict)  # value_key(claim number) -> account
     member_accounts: dict[str, set[str]] = field(default_factory=dict)  # value_key(member id) -> accounts
     keep_numbers: set[str] = field(default_factory=set)  # provider, payer, clinic and claim numbers
+
+    def account_for(self, control_number: str) -> str | None:
+        """The account of a claim number, or of the claim it extends (``CLM000123-R1``)."""
+        key = value_key(control_number)
+        account = self.ccn_accounts.get(key)
+        if account is None:
+            for cut in range(len(key) - 1, 0, -1):
+                if not key[cut].isalnum() and key[:cut] in self.ccn_accounts:
+                    return self.ccn_accounts[key[:cut]]
+        return account
+
+    def to_document(self) -> dict[str, Any]:
+        return {
+            "claims": dict(self.ccn_accounts),
+            "members": {member: sorted(accounts) for member, accounts in self.member_accounts.items()},
+            "keep_numbers": sorted(self.keep_numbers),
+        }
+
+    def add_document(self, document: dict[str, Any]) -> None:
+        """What an earlier batch learned, from its key; this batch's own claim entries win."""
+        for control_number, account in (document.get("claims") or {}).items():
+            self.ccn_accounts.setdefault(control_number, account)
+        for member, accounts in (document.get("members") or {}).items():
+            self.member_accounts.setdefault(member, set()).update(accounts)
+        self.keep_numbers.update(document.get("keep_numbers") or [])
 
 
 def _keep(index: _Index, value: str | None) -> None:
@@ -346,16 +406,27 @@ def _collect(csv_files: list[_CsvFile], remits: list[_RemitFile]) -> tuple[Origi
 class _Run:
     """One anonymize run over files already read (see the module docstring)."""
 
-    def __init__(self, options: AnonymizeOptions, originals: Originals, index: _Index) -> None:
+    def __init__(
+        self,
+        options: AnonymizeOptions,
+        originals: Originals,
+        index: _Index,
+        previous: PseudonymKey | None = None,
+    ) -> None:
         self.options = options
         self.index = index
         self.seed = options.seed if options.seed is not None else secrets.randbits(63)
-        self.pseudo = Pseudonymizer(
-            originals,
-            seed=self.seed,
-            shift_days=options.shift_dates_days,
-            replace_claim_numbers=options.replace_claim_numbers,
-        )
+        if previous is not None:
+            self.pseudo = Pseudonymizer.from_key(previous, originals, seed=self.seed)
+        else:
+            self.pseudo = Pseudonymizer(
+                originals,
+                seed=self.seed,
+                shift_days=options.shift_dates_days,
+                replace_claim_numbers=options.replace_claim_numbers,
+            )
+        self.restored = len(self.pseudo.subjects)
+        self.touched: dict[str, None] = {}  # subjects this batch mentions, in the order met
         self.keep_numbers = frozenset(index.keep_numbers)
         self.replacers: dict[str, TextReplacer] = {}
         self.counts: dict[str, int] = {
@@ -391,6 +462,7 @@ class _Run:
         if subject is None:
             subject = pseudo.subject(account, kind=PATIENT)
             subject.seed(row["patient_first_name"], row["patient_last_name"])
+        self.touched[subject.key] = None
         first, last, _middle = subject.person(row["patient_first_name"], row["patient_last_name"])
         out["patient_first_name"], out["patient_last_name"] = first, last
         out["patient_account_number"] = pseudo.patient_id(row["patient_account_number"], subject)
@@ -419,9 +491,10 @@ class _Run:
     # -- 835 ------------------------------------------------------------------------------------
 
     def resolve(self, control_number: str, member_ids: list[str], label: str) -> Subject:
-        """The subject of a claim loop: the claim export's patient when CLP01 or exactly one of the
-        loop's member ids points at one, else a remittance subject of its own."""
-        account = self.index.ccn_accounts.get(value_key(control_number)) if control_number else None
+        """The subject of a claim loop: the patient whose claim CLP01 names (or extends, as a
+        corrected claim's ``-R1`` number does) or whom exactly one of the loop's member ids names,
+        in this batch's export or an earlier one known from the key; else a remittance subject."""
+        account = self.index.account_for(control_number) if control_number else None
         if account is None:
             candidates: set[str] = set()
             for member_id in member_ids:
@@ -429,8 +502,12 @@ class _Run:
             if len(candidates) == 1:
                 account = next(iter(candidates))
         if account is not None and account in self.pseudo.subjects:
-            return self.pseudo.subjects[account]
-        return self.pseudo.subject("remittance:" + (member_ids[0] if member_ids else label), kind=REMITTANCE)
+            subject = self.pseudo.subjects[account]
+        else:
+            key = "remittance:" + (member_ids[0] if member_ids else label)
+            subject = self.pseudo.subject(key, kind=REMITTANCE)
+        self.touched[subject.key] = None
+        return subject
 
     def remit(self, remit: _RemitFile) -> tuple[str, dict[str, Any]]:
         result = RemitRewriter(self.pseudo, self.resolve, remit.name).rewrite(remit.text)
@@ -464,6 +541,7 @@ class _Run:
         if subject is None:
             self.counts["rows_dropped_unknown_claim"] += 1
             return None
+        self.touched[subject.key] = None
         out = dict(row)
         out["claim_control_number"] = self.pseudo.claim_number(row["claim_control_number"], subject)
         if self.pseudo.shift_days:
@@ -565,6 +643,20 @@ def _write_key(key_path: Path, document: dict[str, Any]) -> None:
         handle.write((json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
+def _check_key_options(previous: PseudonymKey, options: AnonymizeOptions) -> None:
+    """A reused key keeps the options that shaped its maps; the run must ask for the same ones."""
+    if previous.replace_claim_numbers != options.replace_claim_numbers:
+        how = "with" if previous.replace_claim_numbers else "without"
+        raise AnonymizeError(
+            f"--key-in was made {how} --replace-claim-numbers; run {how} it too (a reused key keeps its options)"
+        )
+    if previous.date_shift_days != options.shift_dates_days:
+        raise AnonymizeError(
+            "--key-in was made with another --shift-dates value; pass the value the key was made with "
+            "(a reused key keeps its options)"
+        )
+
+
 def anonymize_batch(
     in_dir: Path,
     out_dir: Path,
@@ -578,14 +670,22 @@ def anonymize_batch(
     options = options or AnonymizeOptions()
     if abs(options.shift_dates_days) > MAX_SHIFT_DAYS:
         raise AnonymizeError(f"--shift-dates must be between -{MAX_SHIFT_DAYS} and {MAX_SHIFT_DAYS} days")
-    source, out, key = check_paths(in_dir, out_dir, key_path, project_root=project_root)
+    source, out, key, reused = check_paths(
+        in_dir, out_dir, key_path, key_in=options.key_in, project_root=project_root
+    )
+    previous = load_key(reused) if reused is not None else None
+    if previous is not None:
+        _check_key_options(previous, options)
     csv_files, remits, skipped = _discover(source)
-    if not any(f.kind == CLAIMS for f in csv_files):
+    if previous is None and not any(f.kind == CLAIMS for f in csv_files):
         raise AnonymizeError(
-            "no claim export found in the input folder (a CSV whose header carries every claim-export column)"
+            "no claim export found in the input folder (a CSV whose header carries every claim-export "
+            "column); a batch without one needs --key-in, the key of the batch its claims came in"
         )
     originals, index = _collect(csv_files, remits)
-    run = _Run(options, originals, index)
+    if previous is not None:
+        index.add_document(previous.index)
+    run = _Run(options, originals, index, previous)
     kinds = [(f.name, f.kind) for f in csv_files] + [(r.name, REMIT) for r in remits]
     names = _output_names(sorted(kinds), originals)
 
@@ -612,8 +712,11 @@ def anonymize_batch(
         files.append({"file": output_name, "kind": csv_file.kind, "rows": len(rows)})
 
     pseudo = run.pseudo
-    patients = sum(1 for subject in pseudo.subjects.values() if subject.kind == PATIENT)
-    run.counts["remittance_subjects"] = sum(1 for s in pseudo.subjects.values() if s.kind == REMITTANCE)
+    touched = [pseudo.subjects[key] for key in run.touched]
+    patients = sum(1 for subject in touched if subject.kind == PATIENT)
+    run.counts["remittance_subjects"] = sum(1 for subject in touched if subject.kind == REMITTANCE)
+    run.counts["subjects_from_key_in"] = run.restored
+    run.counts["subjects_in_key"] = len(pseudo.subjects)
     run.counts["duplicate_name_pairs"] = pseudo.duplicate_name_pairs
     run.counts["residual"] = len(run.residual)
     skipped_names = sorted(_output_names([(name, "skipped") for name in skipped], originals).values())
@@ -622,6 +725,7 @@ def anonymize_batch(
         key_path=key,
         written=False,
         options=options,
+        key_in=reused,
         files=sorted(files, key=lambda f: f["file"]),
         skipped_files=skipped_names,
         patients=patients,
@@ -634,8 +738,11 @@ def anonymize_batch(
         )
         return result
 
-    document = pseudo.key_document(seed=options.seed, options=options.as_dict(), files=names)
-    _write_key(key, document)
+    runs = [
+        *(previous.runs if previous is not None else []),
+        {"seed": options.seed, "allow_residual": options.allow_residual, "files": names},
+    ]
+    _write_key(key, pseudo.key_document(runs=runs, index=run.index.to_document()))
     out.mkdir(parents=True, exist_ok=True)
     for name, data in sorted(outputs.items()):
         with open(out / name, "xb") as handle:

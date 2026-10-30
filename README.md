@@ -133,6 +133,10 @@ work items, categories and actions) with every patient identifier replaced.
 ```bash
 # On the clinic's own computer (the command needs no database), with one raw batch in one folder:
 uv run denial-agent anonymize D:/clinic/batch-2026-10 --out E:/pseudonymized/batch-2026-10 --key-out D:/clinic/keys/batch-2026-10.key.json
+
+# A later batch (next month's export, or the follow-up 835s that pay or deny submitted fixes): reuse
+# the last key so every known patient, member id and claim number keeps its pseudonym
+uv run denial-agent anonymize D:/clinic/batch-2026-11 --out E:/pseudonymized/batch-2026-11 --key-in D:/clinic/keys/batch-2026-10.key.json --key-out D:/clinic/keys/batch-2026-11.key.json
 ```
 
 - **Input**: the claim export CSV, optionally `notes.csv` and `payer_documents.csv`, and any number
@@ -161,9 +165,15 @@ uv run denial-agent anonymize D:/clinic/batch-2026-10 --out E:/pseudonymized/bat
   an approved corrected claim or appeal goes out, the clinic maps its pseudonyms back with the key
   (`app.anonymize.restore_claim_row` does it for claim-export rows).
 
-`--seed N` makes a run reproducible (the tests use it); leave it out for real data. Each run makes a
-fresh key, so a later batch (the next month's 835s, say) gets other pseudonyms: anonymize a raw
-batch as a whole, in one run. The full rules are in `docs/SPEC.md` section 16.
+- **A later batch**: `--key-in` starts from the last key, so the follow-up 835s still match the
+  claims and fixes already in the app (with `--replace-claim-numbers`, a corrected claim's `-R1`
+  number lines up with what **Mark submitted** defaults to) and a batch of 835s alone needs no claim
+  export. Pass the same `--replace-claim-numbers` and `--shift-dates` the key was made with (the
+  command refuses otherwise); the old key is only read, and `--key-out` gets a new key holding
+  everything the old one did plus this batch. Keep using the newest key from then on.
+
+`--seed N` makes a run reproducible (the tests use it); leave it out for real data. The full rules
+are in `docs/SPEC.md` section 16.
 
 ## Model configuration
 
@@ -212,7 +222,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-846 tests across 28 files at the time of writing, all on SQLite with the stub model client and
+848 tests across 28 files at the time of writing, all on SQLite with the stub model client and
 inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set classifies at 150/150 categories and 150/150 expected actions (bars 0.90 and 0.80;

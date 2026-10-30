@@ -17,25 +17,40 @@ import logging
 import re
 import shutil
 from collections.abc import Iterator
-from datetime import date, timedelta
+from contextlib import contextmanager
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.anonymize import AnonymizeOptions, PseudonymKey, anonymize_batch, restore_claim_row
 from app.anonymize.pseudonyms import Originals, Pseudonymizer
 from app.anonymize.text import DOB_FORMATS, TextReplacer, shift_text_dates, subject_pairs
 from app.cli import main
-from app.config import PROJECT_ROOT
-from app.ingest.claims_import import NOTE_COLUMNS
+from app.config import PROJECT_ROOT, get_settings, reset_settings_cache
+from app.db import configure_engine, dispose_engine, init_db, make_engine, session_factory
+from app.ingest.claims_import import (
+    NOTE_COLUMNS,
+    PAYER_DOCUMENT_COLUMNS,
+    import_claims_csv,
+    import_notes_csv,
+    import_payer_documents_csv,
+)
 from app.ingest.parse_835 import parse_835
+from app.ingest.remit_import import import_835
 from app.ingest.x12 import read_delimiters, tokenize
+from app.models import Claim, Clinic, Outcome, RemittanceClaim, WorkItem
+from app.pipeline import process_pending
 from app.redact.registry import date_formats
+from app.review.service import default_submitted_control_number
 from app.schemas import CLAIM_EXPORT_COLUMNS
+from synthetic.followup import PLAN_VALUES, generate_followup_files
 from synthetic.generate import generate
 from synthetic.profile import resolve_profile_path
+from tests.conftest import set_test_env
 
 SEED = 20261030
 N_CLAIMS = 160
@@ -178,16 +193,9 @@ def _anonymize(raw_dir: Path, base: Path, name: str, **options: Any) -> tuple[Pa
     return out, key, result
 
 
-def _process(batch_dir: Path, db_dir: Path, today: date) -> dict[str, Any]:
-    """Import the batch into a database of its own, run the pipeline, and return what it made."""
-    from app.config import get_settings, reset_settings_cache
-    from app.db import configure_engine, dispose_engine, init_db, make_engine, session_factory
-    from app.ingest.claims_import import import_claims_csv, import_notes_csv, import_payer_documents_csv
-    from app.ingest.remit_import import import_835
-    from app.models import Claim, Clinic, RemittanceClaim, WorkItem
-    from app.pipeline import process_pending
-    from tests.conftest import set_test_env
-
+@contextmanager
+def _database(db_dir: Path) -> Iterator[tuple[Session, Clinic]]:
+    """A database of its own with one clinic, wired like the conftest fixtures; closed on exit."""
     set_test_env(db_dir)
     reset_settings_cache()
     dispose_engine()
@@ -203,49 +211,103 @@ def _process(batch_dir: Path, db_dir: Path, today: date) -> dict[str, Any]:
         session.add(clinic)
         session.commit()
         settings.clinic_id = clinic.id
-        imports: dict[str, dict[str, Any]] = {}
-        for name, importer in (
-            (CLAIMS_FILE, import_claims_csv),
-            (NOTES_FILE, import_notes_csv),
-            (DOCUMENTS_FILE, import_payer_documents_csv),
-        ):
-            batch = importer(session, batch_dir / name, clinic_id=clinic.id, created_by="tests")
-            session.commit()
-            imports[name] = {"status": str(batch.status), **(batch.counts or {})}
-        for path in sorted(batch_dir.glob("*.835")):
-            batch = import_835(session, path, file_name=path.name, created_by="tests")
-            session.commit()
-            imports[path.name] = {"status": str(batch.status), **(batch.counts or {})}
-        process_pending(session, today=today)
-        session.commit()
-        items: dict[str, dict[str, Any]] = {}
-        stmt = select(WorkItem, Claim.claim_control_number).join(Claim, WorkItem.claim_id == Claim.id)
-        for work_item, ccn in session.execute(stmt):
-            proposal = work_item.current_proposal
-            assert proposal is not None
-            items[ccn] = {
-                "category": str(work_item.category),
-                "action": str(proposal.action_type),
-                "coding_change": proposal.coding_change,
-                "confidence": work_item.category_confidence,
-                "source": str(work_item.classification_source),
-                "dollar_value": work_item.dollar_value,
-                "flags": sorted(work_item.flags or []),
-                "deadline": work_item.deadline,
-                "deadline_kind": work_item.deadline_kind,
-                "priority_score": work_item.priority_score,
-                "status": str(work_item.status),
-            }
-        unmatched = session.execute(
-            select(func.count()).select_from(RemittanceClaim).where(RemittanceClaim.claim_id.is_(None))
-        ).scalar_one()
-        return {"imports": imports, "items": items, "unmatched": unmatched}
+        yield session, clinic
     finally:
         session.rollback()
         session.close()
         dispose_engine()
         engine.dispose()
         reset_settings_cache()
+
+
+def _import(session: Session, clinic: Clinic, batch_dir: Path) -> dict[str, dict[str, Any]]:
+    """Import whatever the folder holds: claims, notes, payer documents, then every 835."""
+    imports: dict[str, dict[str, Any]] = {}
+    for name, importer in (
+        (CLAIMS_FILE, import_claims_csv),
+        (NOTES_FILE, import_notes_csv),
+        (DOCUMENTS_FILE, import_payer_documents_csv),
+    ):
+        if (batch_dir / name).exists():
+            batch = importer(session, batch_dir / name, clinic_id=clinic.id, created_by="tests")
+            session.commit()
+            imports[name] = {"status": str(batch.status), **(batch.counts or {})}
+    for path in sorted(batch_dir.glob("*.835")):
+        batch = import_835(session, path, file_name=path.name, created_by="tests")
+        session.commit()
+        imports[path.name] = {"status": str(batch.status), **(batch.counts or {})}
+    return imports
+
+
+def _work_items(session: Session) -> dict[str, dict[str, Any]]:
+    items: dict[str, dict[str, Any]] = {}
+    stmt = select(WorkItem, Claim.claim_control_number).join(Claim, WorkItem.claim_id == Claim.id)
+    for work_item, ccn in session.execute(stmt):
+        proposal = work_item.current_proposal
+        assert proposal is not None
+        items[ccn] = {
+            "category": str(work_item.category),
+            "action": str(proposal.action_type),
+            "coding_change": proposal.coding_change,
+            "confidence": work_item.category_confidence,
+            "source": str(work_item.classification_source),
+            "dollar_value": work_item.dollar_value,
+            "flags": sorted(work_item.flags or []),
+            "deadline": work_item.deadline,
+            "deadline_kind": work_item.deadline_kind,
+            "priority_score": work_item.priority_score,
+            "status": str(work_item.status),
+        }
+    return items
+
+
+def _unmatched(session: Session) -> int:
+    stmt = select(func.count()).select_from(RemittanceClaim).where(RemittanceClaim.claim_id.is_(None))
+    return int(session.execute(stmt).scalar_one())
+
+
+def _process(batch_dir: Path, db_dir: Path, today: date) -> dict[str, Any]:
+    """Import the batch into a database of its own, run the pipeline, and return what it made."""
+    with _database(db_dir) as (session, clinic):
+        imports = _import(session, clinic, batch_dir)
+        process_pending(session, today=today)
+        session.commit()
+        return {"imports": imports, "items": _work_items(session), "unmatched": _unmatched(session)}
+
+
+def _submit(session: Session, ccns: list[str], day: date) -> list[WorkItem]:
+    """Mark the work items of these claims submitted on ``day`` under the app's default control
+    number (a corrected claim's ``-R1`` number, else the claim's own): what "Mark submitted" with
+    the defaults records."""
+    items: list[WorkItem] = []
+    for ccn in ccns:
+        stmt = (
+            select(WorkItem)
+            .join(Claim, WorkItem.claim_id == Claim.id)
+            .where(Claim.claim_control_number == ccn)
+            .order_by(WorkItem.id)
+        )
+        work_item = session.execute(stmt).scalars().first()
+        assert work_item is not None, "a chosen claim has no work item"
+        work_item.status = "submitted"
+        work_item.submitted_at = datetime(day.year, day.month, day.day, 12, 0, tzinfo=UTC)
+        work_item.submitted_claim_control_number = default_submitted_control_number(work_item)
+        items.append(work_item)
+    session.commit()
+    return items
+
+
+def _outcomes(session: Session) -> dict[str, tuple[str, str, str]]:
+    """{claim number: (outcome, paid amount, work item status)} for every recorded outcome."""
+    stmt = (
+        select(Outcome, WorkItem, Claim.claim_control_number)
+        .join(WorkItem, Outcome.work_item_id == WorkItem.id)
+        .join(Claim, WorkItem.claim_id == Claim.id)
+    )
+    return {
+        ccn: (str(outcome.result), str(outcome.paid_amount), str(work_item.status))
+        for outcome, work_item, ccn in session.execute(stmt)
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -408,7 +470,9 @@ def test_the_key_maps_every_pseudonym_back(raw_dir, runs):
         assert len(anonymized) == len(original)
         assert [restore_claim_row(row, key) for row in anonymized] == original, label
         document = key.document
-        assert document["date_shift_days"] == (SHIFT_DAYS if label == "flagged" else 0)
+        assert document["options"]["shift_dates_days"] == (SHIFT_DAYS if label == "flagged" else 0)
+        assert document["options"]["replace_claim_numbers"] is (label == "flagged")
+        assert len(document["runs"]) == 1
         assert set(document["subjects"]) == {row["patient_account_number"] for row in original}
 
 
@@ -652,7 +716,7 @@ def test_file_names_that_carry_an_identifier_are_renamed(tmp_path, capsys):
     assert member_id not in captured.out + captured.err
     assert "835_1.835" in {p.name for p in out.iterdir()}
     assert not any(member_id in p.name for p in out.iterdir())
-    assert _key(key).document["files"][f"eob_{member_id}.835"] == "835_1.835"
+    assert _key(key).runs[-1]["files"][f"eob_{member_id}.835"] == "835_1.835"
 
 
 def test_other_delimiters_and_crlf_line_ends_survive(tmp_path):
@@ -693,3 +757,195 @@ def test_extra_columns_and_rows_for_unknown_claims_are_dropped(tmp_path):
     assert "503-555-0101" not in (out / CLAIMS_FILE).read_text(encoding="utf-8")
     assert len(_rows(out / NOTES_FILE)) == len(notes) - 1
     assert result.counts["columns_dropped"] == 1 and result.counts["rows_dropped_unknown_claim"] == 1
+
+
+# --------------------------------------------------------------------------------------
+# A later batch with the same key (--key-in)
+# --------------------------------------------------------------------------------------
+
+FOLLOWUP_DAYS = 20
+
+
+def _chosen_claims(session: Session, per_action: int = 4) -> list[str]:
+    """Claim numbers of the first work items proposing a corrected claim and an appeal, so both
+    ways a follow-up CLP01 is written (the corrected claim's ``-R1`` number, the claim's own) are met."""
+    items = _work_items(session)
+    corrected = sorted(ccn for ccn, item in items.items() if item["action"] == "corrected_claim")
+    appeals = sorted(ccn for ccn, item in items.items() if item["action"] == "appeal")
+    assert len(corrected) >= per_action and len(appeals) >= per_action
+    return sorted(corrected[:per_action] + appeals[:per_action])
+
+
+def _followup_letter(folder: Path, raw_row: dict[str, str], received: date) -> None:
+    """A payer letter about an earlier claim, naming the patient the way letters do."""
+    text = (
+        f"Claim number: {raw_row['claim_control_number']}\n"
+        f"Member: {raw_row['patient_last_name']}, {raw_row['patient_first_name']}\n"
+        f"Member ID: {raw_row['member_id']}\n"
+        f"Date of birth: {date.fromisoformat(raw_row['patient_dob']):%m/%d/%Y}\n"
+        "The corrected claim was received and is being processed."
+    )
+    row = {
+        "claim_control_number": raw_row["claim_control_number"],
+        "document_type": "letter",
+        "received_date": received.isoformat(),
+        "text": text,
+    }
+    _write_rows(folder / DOCUMENTS_FILE, PAYER_DOCUMENT_COLUMNS, [row])
+
+
+def test_a_later_batch_reuses_the_key_and_its_remittances_find_their_claims(raw_dir, runs, as_of, tmp_path):
+    """The loop across batches. Follow-up 835s that pay, partly pay, deny again or reverse eight
+    submitted fixes, plus a letter, are built from the raw batch's database; pseudonymized with the
+    first run's key they match the same claims in the pseudonymized database and record exactly the
+    outcomes the raw ones record in the raw database."""
+    anon_dir, key_path, _result = runs["flagged"]
+    key_before = key_path.read_bytes()
+    claim_numbers = _key(key_path).document["values"]["claim_number"]
+    shift = timedelta(days=SHIFT_DAYS)
+    payment_date = as_of + timedelta(days=FOLLOWUP_DAYS)
+    raw_rows = {row["claim_control_number"]: row for row in _rows(raw_dir / CLAIMS_FILE)}
+    followup = tmp_path / "followup"
+    followup.mkdir()
+
+    with _database(tmp_path / "raw_db") as (session, clinic):
+        _import(session, clinic, raw_dir)
+        process_pending(session, today=as_of)
+        session.commit()
+        chosen = _chosen_claims(session)
+        items = _submit(session, chosen, as_of)
+        plan = {item.id: PLAN_VALUES[index % len(PLAN_VALUES)] for index, item in enumerate(items)}
+        for payer_id, text in generate_followup_files(session, items, plan, payment_date).items():
+            (followup / f"followup_{payer_id}.835").write_text(text, encoding="utf-8")
+        _followup_letter(followup, raw_rows[chosen[0]], payment_date)
+        raw_imports = _import(session, clinic, followup)
+        raw_outcomes = _outcomes(session)
+    assert len(raw_outcomes) == len(chosen)
+    assert {result for result, _paid, _status in raw_outcomes.values()} == set(PLAN_VALUES)
+
+    options = AnonymizeOptions(
+        seed=21, replace_claim_numbers=True, shift_dates_days=SHIFT_DAYS, key_in=key_path
+    )
+    out, new_key = tmp_path / "followup_anon", tmp_path / "followup.key.json"
+    result = anonymize_batch(followup, out, new_key, options)
+    assert result.written and result.counts["remittance_subjects"] == 0
+    assert result.patients == len({raw_rows[ccn]["patient_account_number"] for ccn in chosen})
+    again, again_key = tmp_path / "again", tmp_path / "again.key.json"
+    assert anonymize_batch(followup, again, again_key, options).written
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == {
+        p.name: p.read_bytes() for p in again.iterdir()
+    }
+    assert new_key.read_bytes() == again_key.read_bytes()
+
+    with _database(tmp_path / "anon_db") as (session, clinic):
+        _import(session, clinic, anon_dir)
+        process_pending(session, today=as_of + shift)
+        session.commit()
+        _submit(session, [claim_numbers[ccn] for ccn in chosen], as_of + shift)
+        anon_imports = _import(session, clinic, out)
+        anon_outcomes = _outcomes(session)
+    for name, counts in anon_imports.items():
+        assert counts["status"] == "done", name
+        if name.endswith(".835"):
+            assert counts["unmatched"] == 0 and counts["matched"] == counts["claims"], name
+    assert anon_imports[DOCUMENTS_FILE]["documents"] == 1
+    assert anon_imports == raw_imports
+    assert anon_outcomes == {claim_numbers[ccn]: value for ccn, value in raw_outcomes.items()}
+
+    # The second batch names its patients with the first batch's pseudonyms ...
+    anon_rows = {row["claim_control_number"]: row for row in _rows(anon_dir / CLAIMS_FILE)}
+    first = anon_rows[claim_numbers[chosen[0]]]
+    [letter] = _rows(out / DOCUMENTS_FILE)
+    assert letter["claim_control_number"] == first["claim_control_number"]
+    for expected in (
+        f"Member: {first['patient_last_name']}, {first['patient_first_name']}",
+        f"Member ID: {first['member_id']}",
+        f"Date of birth: {date.fromisoformat(first['patient_dob']):%m/%d/%Y}",
+    ):
+        assert expected in letter["text"]
+    expected_patients = {
+        (row["patient_last_name"].upper(), row["patient_first_name"].upper(), row["member_id"])
+        for row in (anon_rows[claim_numbers[ccn]] for ccn in chosen)
+    }
+    remitted = {
+        (claim.patient_last_name, claim.patient_first_name, claim.member_id)
+        for path in sorted(out.glob("*.835"))
+        for transaction in parse_835(path.read_text(encoding="utf-8"))
+        for claim in transaction.claims
+    }
+    assert remitted == expected_patients
+    # ... and carries none of the originals.
+    identifiers, background = _original_identifiers(raw_dir), _profile_words(raw_dir)
+    for path in sorted(out.iterdir()):
+        assert not _leaks(path.read_bytes().decode("utf-8"), identifiers, background), path.name
+
+    # The extended key keeps every pair of the first key and adds this run; the first key is untouched.
+    old, new = _key(key_path).document, _key(new_key).document
+    assert key_path.read_bytes() == key_before
+    for family, mapping in old["values"].items():
+        assert new["values"][family].items() >= mapping.items(), family
+    assert set(new["subjects"]) >= set(old["subjects"]) and new["options"] == old["options"]
+    assert len(new["runs"]) == 2 and new["runs"][0] == old["runs"][0]
+    assert result.counts["subjects_from_key_in"] == len(old["subjects"])
+
+
+def test_a_reused_key_must_exist_match_and_stay_untouched(raw_dir, runs, tmp_path, capsys):
+    _out, key_path, _result = runs["flagged"]
+    before = key_path.read_bytes()
+    followup = tmp_path / "followup"
+    followup.mkdir()
+    remit = sorted(raw_dir.glob("*.835"))[0]
+    shutil.copy(remit, followup / remit.name)  # a batch of 835s only: the patients come from the key
+    old_format = tmp_path / "old.json"
+    old_format.write_text(
+        json.dumps({"format": "denial-agent/anonymize-key", "version": 1}), encoding="utf-8"
+    )
+    flags = ["--replace-claim-numbers", "--shift-dates", str(SHIFT_DAYS)]
+    cases = [
+        ([], key_path, "run with it too"),
+        (["--replace-claim-numbers"], key_path, "another --shift-dates value"),
+        (
+            ["--replace-claim-numbers", "--shift-dates", str(SHIFT_DAYS + 1)],
+            key_path,
+            "another --shift-dates value",
+        ),
+        (flags, tmp_path / "missing.json", "not found"),
+        (flags, raw_dir / "labels.json", "is not an anonymize key"),
+        (flags, old_format, "version 2"),
+        (flags, None, "needs --key-in"),
+    ]
+    for index, (extra, key_in, message) in enumerate(cases):
+        out, key_out = tmp_path / f"out{index}", tmp_path / f"key{index}.json"
+        args = [
+            "anonymize",
+            str(followup),
+            "--out",
+            str(out),
+            "--key-out",
+            str(key_out),
+            "--seed",
+            "1",
+            *extra,
+        ]
+        assert main([*args, *(["--key-in", str(key_in)] if key_in is not None else [])]) == 1
+        captured = capsys.readouterr()
+        assert message in captured.err and captured.out == "", (index, captured.err)
+        assert not out.exists() and not key_out.exists()
+    same = ["anonymize", str(followup), "--out", str(tmp_path / "same"), "--key-out", str(key_path)]
+    assert main([*same, "--key-in", str(key_path), *flags]) == 1
+    assert "must be a new file" in capsys.readouterr().err
+    assert key_path.read_bytes() == before
+
+    accepted = [
+        "anonymize",
+        str(followup),
+        "--out",
+        str(tmp_path / "ok"),
+        "--key-out",
+        str(tmp_path / "ok.json"),
+    ]
+    assert main([*accepted, "--key-in", str(key_path), *flags]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["key_in"] == str(key_path) and summary["options"]["reuses_key"] is True
+    assert summary["counts"]["remittance_subjects"] == 0 and summary["patients"] > 0
+    assert key_path.read_bytes() == before

@@ -14,11 +14,11 @@ and the earlier wording is gone.
 
 | Rule from the plan | Enforcement in this codebase |
 |---|---|
-| No real patient data until the BAAs and the security checklist are done | `data/` is git-ignored; all fixtures are synthetic; `docs/SECURITY_CHECKLIST.md` must be dated before Phase 2; `denial-agent anonymize` (section 16) pseudonymizes a real batch as defence in depth, refuses to write it or its key inside the repository, and its output is still PHI (a limited data set) |
+| No real patient data until the BAAs and the security checklist are done | `data/` is git-ignored; all fixtures are synthetic; `docs/SECURITY_CHECKLIST.md` must be dated before Phase 2; `denial-agent anonymize` (section 16) pseudonymizes a real batch as defence in depth, refuses to write it or its key inside the repository or a synced folder, writes nothing its leak sweep finds an original in, and its output is still PHI (a limited data set) |
 | The software never submits anything | There is no clearinghouse/payer integration. Approved items become an **export package**; a human marks them submitted (`POST /items/{id}/mark-submitted`) |
 | Never change codes or add modifiers to raise payment unless documentation supports it | Every corrected-claim change carries `coding_change: bool`; a coding change sets `requires_note_excerpt=True`, is listed under `flags`, and the reviewer must attach a quoted note excerpt before approval (an excerpt typed by the reviewer is stored with source `reviewer` and labelled as such) |
 | Minimum-necessary data to the model; names, member IDs, addresses, DOBs tokenized | `app/redact` tokenizes before every model call and restores after; `app/llm/guard.py` is the only path to a client and refuses a payload the scanner flags |
-| Log every action by every person and agent | `app/audit` append-only, hash-chained log; every pipeline step, review action, import, login attempt and model call records an event |
+| Log every action by every person and agent | `app/audit` append-only, hash-chained log; every pipeline step, review action, import, login attempt and model call records an event. One exception: `denial-agent anonymize` and `deanonymize` run on the clinic's computer without a database; each completed run appends a line (user, command, key chain, file names, hashes, counts) to the run log next to the key (section 16) |
 | Payer letters, notes and portal text are untrusted | Documents **and note excerpts** are scanned for planted instructions on import and when a context is built, flagged on the work item, rendered as data inside `<untrusted_document>` tags; a flagged document or a model answer reporting injection never overrides the rules; a flagged note is never quoted; the injection test suite proves it, including against a deliberately obedient fake model |
 | The clinic can stop the pilot; data returned or destroyed | `denial-agent purge-clinic <id> --confirm` deletes every uploaded file and export package on disk, exports the clinic's rows to one zip, deletes the rows and writes a destruction record naming the files; the zip is the hand-over copy |
 
@@ -54,8 +54,9 @@ denial-agent/
     audit/             append-only audit log with hash chain
     llm/               client protocol, Anthropic/stub/replay/recording clients, factory, prompt registry, guard
     auth/              users, argon2 passwords, TOTP MFA with replay guard, session login, CSRF
-    anonymize/         `denial-agent anonymize` / `deanonymize` (section 16): pseudonym maps and the key, free-text
-                       replacement and residual scan, the 835 rewrite and its check, the batch run, export-package restore
+    anonymize/         `denial-agent anonymize` / `deanonymize` (section 16): word lists, folding and matching, pseudonym
+                       maps and the key chain, free text and the residual scan, the 835 rewrite and its check, the leak
+                       sweep, path and placement checks, the batch run, export-package restore
     jobs/              job runner (inline | rq), tasks, the masked rq worker entry point
     migrations/        alembic env + versions (0001_initial)
     templates/         Jinja2 templates (pages/, partials/, letters/*.txt.j2)
@@ -318,7 +319,7 @@ Export package members: `summary.json` (work item, claim, payer, category, actio
 | Migrations | `test_migrations.py` | `alembic upgrade head` on a fresh SQLite file; the full `compare_metadata` diff against the models is empty; Postgres-only trigger in the offline SQL |
 | Outcomes, metrics | `test_outcomes.py`, `test_metrics.py` | the section 10 rule and gates; per-item counting |
 | Pipeline, jobs, matching, playbooks, drafting, synthetic, CLI | `test_pipeline.py`, `test_jobs.py`, `test_matching.py`, `test_playbooks.py`, `test_drafting.py`, `test_synthetic.py`, `test_cli.py` | sections 6, 9, 11, 12 and the CLI |
-| Pseudonymized real data | `test_anonymize.py` | no original identifier in any output byte; zero unmatched remittances and the same work items, categories and actions from two databases; the key restores every replaced value; `--seed` reproducible; a planted phone stops the run; repository paths refused; a later batch pseudonymized with `--key-in` matches the earlier claims and records the same outcomes; `deanonymize` turns the pseudonymized database's export packages into the raw database's, with no pseudonym left (section 16) |
+| Pseudonymized real data | `test_anonymize.py` | no original identifier in any output byte (also for spelling variants, another patient named in a note, ordinary-word names, provider names, PLB-embedded member ids and files that are not 835s); zero unmatched remittances and the same work items from two databases; the leak sweep stops a run that missed a name; strict CSV reading; placement refusals; the key restores every replaced value and chains from month to month; `deanonymize` turns the pseudonymized database's export packages into the raw database's with the newest key only; a three-month rehearsal (section 16) |
 
 `tests/conftest.py` clears every `Settings` variable, sets `APP_ENV=test` (no `.env`), `LLM_PROVIDER=stub`, `JOB_BACKEND=inline`, a temp SQLite `DATABASE_URL`, `DATA_DIR`/`EXPORT_DIR` under the temp path, and provides `settings`, `engine`, `session`, `clinic`, `app`, `client` (FastAPI TestClient logged in through the real password + TOTP flow), `anon_client`, `reviewer`, `synthetic_batch` (generated once per session) and `captured_llm_payloads`. `tests/helpers.py` runs the whole batch once per module for the heavier suites.
 
@@ -347,150 +348,169 @@ The `.env` file is `<project root>/.env` whatever the current directory; process
 - `GET /api/items/{id}` tokenizes free text and omits letters, notes and the patient block (section 10).
 - `.gitleaks.toml` + pre-commit + CI (`ruff check`, `ruff format --check`, pytest); the allowlist covers only `synthetic/fixtures/`, `tests/fixtures/835/` and `tests/fixtures/claims/`, so recorded model fixtures are scanned; `data/` ignored; no real data in fixtures.
 - `denial-agent purge-clinic <id> --confirm` deletes every uploaded file under `DATA_DIR/uploads` and every export package under `EXPORT_DIR` (a single-clinic pilot: all of them), exports the clinic's rows to one zip, deletes the rows (remittances stay as the payment ledger: matched CLPs are unlinked, and every CLP, matched or not, loses the patient name and member id the payer echoed back; the unmatched ones are handed over as `remittance_claims_unmatched.json`), records `clinic_purged` with counts and the deleted file names, and refuses to report destruction when a file could not be removed. On SQLite it then runs `VACUUM` so the freed pages are rewritten (`vacuumed` in the report; a failed `VACUUM` exits 1 with `vacuum_error`), and every SQLite connection sets `PRAGMA secure_delete=ON` so routine deletes overwrite their bytes too; on PostgreSQL the DBA runs `VACUUM FULL` after a purge. The zip is the hand-over copy and is kept on purpose; delete it once delivered.
-- `denial-agent anonymize` (section 16) refuses an output folder or key inside the repository and a key inside the
-  output folder, never overwrites a key, writes nothing while a note or letter still carries an SSN-, phone-, e-mail-
-  or DOB-shaped value, and prints file names, counts and residual findings by place and kind only; KEY.json is the
-  only file it writes an original value to. `denial-agent deanonymize` (section 16) writes restored packages, which
-  carry the real identifiers, only outside the repository and never over an existing file, and refuses a package with
-  a pseudonym left.
+- `denial-agent anonymize` (section 16) refuses an input, output folder or key inside the repository (aliases and
+  junctions included), an output folder or key in a synced folder, a key inside or beside the output folder or on its
+  removable volume, and an older or another clinic's key; never overwrites a key and gives it an owner-only ACL; skips
+  every file that is not a contract CSV or an 835; writes nothing while a note or letter still carries an SSN-, phone-,
+  e-mail-, DOB- or labelled-id-shaped value, or while its leak sweep finds any original of the key in an output byte or
+  file name; and prints file names by position, counts and findings by place and kind only. KEY.json is the only file
+  it writes an original value to. `denial-agent deanonymize` (section 16) writes restored packages, which carry the
+  real identifiers, only outside the repository, synced folders and the packages' own folder, never over an existing
+  file, and only for packages that prove they belong to the newest key.
 - Patient pseudonym: `patients.token` is `PT-` plus six hex characters of `sha256("<clinic_id>:<account_number>")` (unkeyed). It is a display label inside the clinic's own system, used where the patient block is left out (queue, letters without the header, the JSON API, corrected-claim JSON); it is not a security boundary and is not meant to resist a brute-force search by someone who already has the database.
 
-## 16. Pseudonymized real data — `denial-agent anonymize` (`app/anonymize/`)
+## 16. Pseudonymized real data — `denial-agent anonymize` and `deanonymize` (`app/anonymize/`)
 
-`denial-agent anonymize IN_DIR --out OUT_DIR --key-out KEY.json [--key-in OLD.json] [--seed N] [--replace-claim-numbers] [--shift-dates DAYS] [--allow-residual]`
-turns one raw batch of a clinic's files into a pseudonymized batch the app processes exactly as before, plus a key.
+`denial-agent anonymize IN_DIR --out OUT_DIR --key-out KEY.json [--key-in NEWEST.json] [--replace-claim-numbers] [--allow-residual] [--test-only [--seed N] [--shift-dates DAYS]]`
+turns one raw batch of a clinic's files into a pseudonymized batch the app processes as before, plus a key.
 **A pseudonymized batch that keeps dates of service is a HIPAA limited data set, so it is still PHI**: the clinic BAA
 and `docs/SECURITY_CHECKLIST.md` apply to it unchanged, and it lives only on the encrypted disk. The command is defence
-in depth for the machine that runs the app; it needs no database, so it can run on the clinic's own computer, where the
-raw files and the key stay (only OUT_DIR travels). It records no audit event (there is no database to record into);
-the import of OUT_DIR is audited like every import.
+in depth for the machine that runs the app; it needs no database, so it runs on the clinic's own computer, where the
+raw files and the key stay (only OUT_DIR travels). **Audit exception** (section 0): neither command has a database to
+record into. Each completed run appends one JSON line to `denial-agent-runs.log` next to the key (time, operating-system
+user, command, key chain and run, key file name and hash, output or package names and hashes, counts; never a value),
+and the import of OUT_DIR is audited like every import.
 
-- **Paths** (`check_paths`), refused before anything is read: OUT_DIR or KEY.json inside the repository (`PROJECT_ROOT`;
-  resolved, so a relative path or a junction cannot slip in), KEY.json inside OUT_DIR, OUT_DIR equal to IN_DIR or not an
-  empty folder, an existing KEY.json (a key is never overwritten), `--shift-dates` beyond ±3650 days; with `--key-in`, a
-  key that is missing, unreadable, not version 2, inside the repository or OUT_DIR, or the same file as KEY.json. Exit 1.
-- **Input**, recognised by content, never by name: a CSV whose header carries every `CLAIM_EXPORT_COLUMNS` column is a
-  claim export (at least one is required, unless `--key-in` brings the patients); `NOTE_COLUMNS` /
-  `PAYER_DOCUMENT_COLUMNS` (`app/ingest/claims_import.py`)
-  notes and payer documents; a file that starts with `ISA` an 835. Anything else is skipped and never copied. Output CSVs
-  carry exactly the contract's columns (an extra column, which could hold anything, is dropped and counted); a note or
-  document row whose claim the export does not carry is dropped and counted (the importer would skip it, and its
-  patient is unknown, so its text cannot be pseudonymized). A file name that carries a patient's name token, id, ZIP or
-  date of birth is written as `<kind>_<n>.<ext>`; the key maps the names.
-- **Patients** are the export's account numbers. Each gets a first and last name from `synthetic/names.py` that no
-  other patient of the batch has; every other spelling met for that patient (the payer's NM1*QC, the subscriber's
-  NM1*IL, a corrected NM1*74, an other subscriber NM1*GB — an organization named there is the patient's employer, which
-  a limited data set leaves out too — a middle name, an initial) is mapped token by token inside the same patient, so
-  a surname the subscriber shares stays shared and every field maps back to exactly one original. Generational
-  suffixes stay. A remittance claim that matches no exported patient (by CLP01, or by exactly one member id) gets a
-  subject of its own.
-- **Replaced in the claim export**: `patient_first_name`, `patient_last_name`, `patient_account_number`, `member_id`
-  (identifiers keep their shape: ASCII digits become digits, letters letters of the same case, punctuation stays),
-  `patient_dob` (same year; day and month moved by a per-patient offset of 1 to 364 days inside that year: age drives
-  payer rules such as Medicare entitlement or pediatric limits and must stay right to the year, the birthday is not
-  needed), `patient_address_line1` (a synthetic street), `patient_city` (a synthetic town), `patient_zip` (same shape);
-  `patient_state` and `patient_sex` stay. **In the 835**: the names and NM109 of NM1*QC/IL/74/GB and REF*1W, 28, EA, IG,
-  SY and 1L in the claim and service loops, plus a PLB reference naming a replaced value.
-- **`--replace-claim-numbers`**: `claim_control_number`, `original_claim_control_number`, `line_item_control_number`,
-  CLP01 and REF*6R share one map (a number that extends a known claim number after a separator, `CLM000123-1` or
-  `CLM000123-R1`, keeps its extension on that number's pseudonym); CLP07 and REF*F8 have their own. Without the flag
-  every claim number stays (claim numbers are not among a limited data set's exclusions).
-- **`--shift-dates DAYS`** moves every date in every file by one offset: claim-export and CSV date columns, ISA09,
-  GS04, BPR16, every DTM (DTM02 and RD8 periods), PLB02, dates written in notes and letters (ISO, `M/D/YY(YY)`,
-  `M-D-YYYY`, month names, kept in their own format), and the date of birth after its per-patient move. It is **not**
-  HIPAA Safe Harbor (the offset is in the key, and intervals stay exact); deadlines on screen move with it, so the
-  pipeline's "today" must move too when comparing (the tests do).
-- **Kept everywhere**: every other date, procedure, diagnosis, modifier, CARC/RARC and place-of-service code, units,
-  amounts, payer ids and names, provider names and NPIs, trace numbers, the payer's and payee's addresses.
-- **Consistency**: every map is injective, case-insensitive and never emits a value that is an original of the same
-  family anywhere in the batch (a pseudonymized date of birth is never another patient's real one either), so CLP01 =
-  `claim_control_number` still matches and the member id + service date + charge fallback (`app/ingest/matching.py`)
-  sees the same equalities as before.
-- **835 validity** (`app/anonymize/remit.py`): the file is rewritten element by element with the delimiters of its own
-  ISA; every byte outside a replaced element (terminators and line breaks, empty elements, the fixed-width ISA) is
-  copied, so segment counts and control numbers are untouched. `verify_835` then proves each file: both are tokenized
-  and compared segment by segment (only the replaceable positions may differ; a PLB composite only in its reference),
-  and both are parsed with `app.ingest.parse_835` and compared field by field: everything outside the replaced fields
-  must be equal and every replaced field must hold the run's pseudonym of the original. A failure aborts the run (exit
-  1, field names only).
-- **Free text** (`app/anonymize/text.py`; note `text` and `author`, document `text`): every identifier of the row's
-  patient is collected in an `app.redact.registry.IdentifierRegistry` (`name_variants` of every spelling met, each date
-  of birth in every `date_formats` form plus zero-padded and comma-less month names, the address combinations of
-  `add_address`, account number, member ids, claim numbers with the flag) next to its replacement, and replaced in one
-  pass, longest first, with the tokenizer's matching rules, except that an id shorter than six characters must stand
-  alone (account `8941` never touches procedure code `98941`) and a date of birth must not sit inside a longer number or
-  date. Replaced spans stay `[[PSEUDONYM_n]]` tokens until the end; numbers the batch names as a provider's, payer's,
-  clinic's or claim's (NPIs, tax ids, payer phones, claim numbers) are wrapped `[[KEEP_n]]`. Then the **residual scan**:
-  `app.redact.scanner.scan_text` (registry leftovers; generic SSN, e-mail, phone with separators, a date next to "DOB"),
-  the bounded identifiers, and the masks of `app/logging_config.py` for SSN, e-mail and phone shapes (a phone without
-  separators included) and "DOB:", "SSN:" or "member id:" followed by a value with a digit (the log masks for plain
-  dates and id-like tokens are not used: service dates and claim numbers belong in a note). Any finding stops the run:
-  exit 1, nothing written, and stdout lists `{file, row, field, kind}` (the spreadsheet row number, never the value).
-  `--allow-residual` writes the batch with every finding masked as an unrestorable `[[MASKED_<KIND>_n]]` (the scanner's
-  `mask_generic` markers) and scans again to prove nothing is left. Known limits: a name the batch does not carry (a
-  relative mentioned in a note) cannot be recognised; a patient name that is also an ordinary word is replaced wherever
-  it appears in that patient's own notes and letters.
-- **KEY.json** (format `denial-agent/anonymize-key`, version 2) is the only place an original value is written:
-  `options` (`replace_claim_numbers`, `shift_dates_days`), `runs` (per run its seed, `allow_residual` and file-name
-  map), per subject the first/last/middle-name field maps, each date of birth with its pseudonym and offset, the token
-  maps, initials and the free-text records, the value maps (`patient_id`, `address_line`, `city`, `zip`,
-  `claim_number`, `payer_claim_number`), `index`, `originals` and `name_pairs`: everything a later run needs. It is
-  created with `O_EXCL` (never overwritten). `PseudonymKey` loads it and maps pseudonyms
-  back; `restore_claim_row(row, key)` restores a claim-export row exactly.
-- **Back to the real identifiers** (`denial-agent deanonymize PACKAGE.zip ... --key KEY.json --out OUT_DIR`,
-  `app/anonymize/restore.py`): before a corrected claim or an appeal from a pseudonymized batch goes out, the clinic
-  restores its export package (section 10) on its own computer. The package's patient is found by the corrected
-  claim's account number, else through its claim number and the key's index. `corrected_claim.csv` rows go through
-  `restore_claim_row` (a corrected claim's `<pseudonym>-R1` number back to `<original>-R1`) and are written like the
-  export writes them; `summary.json` and `corrected_claim.json` are restored field by field: claim numbers and patient
-  ids through the key, data dates (`deadline`, service and submission dates, a note's date; a change's `before` and
-  `after` by its path) moved back, free text (summary, rationale, citation and note text, a change's reason) restored
-  like a letter, while the app's own timestamps (`*_at`) and the date a reviewer typed a note stay. `appeal_letter.txt`
-  and `clinic_question.txt` get every pseudonym spelling of the patient back to its original (the patient's subject in
-  the key, reversed) and every other date moved back, except the letter's own date: its first line, the day it was
-  drafted. `appeal_letter.html` is rebuilt from the restored letter with `letter_html`, `appeal_letter.pdf` rendered
-  again (`README.txt` when WeasyPrint is missing), and `audit_excerpt.json` kept as exported (the app's hash-chained
-  record, in pseudonyms). Every restored member but the audit excerpt is then searched for a pseudonym left: the
-  patient's own spellings and every other patient's full name and long ids. Refused (exit 1, nothing written): a
-  missing package or key, a key or output folder inside the repository, a member an export package never holds, a
-  package whose patient the key does not know (another batch's key), a pseudonym left, a target file that exists.
-  Restored packages are named as the app names a package, with the real claim number; stdout lists, per package, the
-  file names, what was done to each member and how many identifiers were replaced.
-- **A later batch** (`--key-in OLD.json`): next month's export, the follow-up 835s that pay, partly pay, deny again or
-  reverse submitted fixes, a letter about an earlier claim. The run starts from everything the old key holds
-  (`Pseudonymizer.from_key`): every subject with its token and field maps, initials, date-of-birth offsets and the
-  spellings, ids, addresses and claim numbers its free text needs; every value map; the claim index (claim number ->
-  account, member id -> accounts, the provider and payer numbers that are not phones); the originals of every batch the
-  key has seen; the name pairs already given. So a known patient, member id, address or claim number keeps its
-  pseudonym, a new one is drawn outside the originals of all batches, and a CLP01 that names a known claim, or extends
-  one as a corrected claim's `-R1` number does, or a member id that names exactly one known patient, finds its patient
-  even when this batch has no claim export. With `--replace-claim-numbers` the corrected claim's `<ccn>-R1` maps to the
-  pseudonymized claim number plus `-R1`, which is what the app's "Mark submitted" defaults to, so the follow-up matches
-  by `submitted_ccn`. `--replace-claim-numbers` and `--shift-dates` must equal the old key's (refused otherwise: the
-  maps would no longer agree); `--seed` and `--allow-residual` are per run. The old key is read, never written; KEY.json
-  is a new file holding everything the old one did plus this run. A returning patient keeps their pseudonym even if a
-  later batch brings a real person of that name (the name then refers to someone else and points at no one real).
-- **Output**: stdout is one JSON object (`status` `ok` | `residual`, `written`, the two paths, options, per output file
-  its kind and row/claim/segment counts, skipped files, patients, counts, residual findings); stderr says where the key
-  is or why nothing was written; logs carry counts only. Exit 0, 1 (refusal, invalid input, residual, failed 835 check)
-  or 2 (unexpected; class name and frames only).
-- **Determinism**: pseudonyms come from one `random.Random(seed)` in the order values are first met, so `--seed` makes
-  every output byte and the key reproducible, and a pseudonym is a function of where a value sits in the batch, not of
-  the value (knowing the seed does not let anyone test a guessed name). Without `--seed` a random seed is used and not
-  recorded. A run without `--key-in` makes a fresh key: a later batch must reuse it with `--key-in` to keep the same
-  pseudonyms (the same old key and seed give the same bytes again).
-- Tests: `tests/test_anonymize.py` builds its own batches with `synthetic.generate.generate(...)` and proves that no
-  original name, member id, account number, date of birth or address appears in any output byte; that the
-  pseudonymized batch imports with zero unmatched remittance claims and yields the same work items, categories, actions,
-  flags, dollars and deadlines as the original (two databases, rules with the stub model; with and without both flags);
-  that the key restores the claim export and, with the 835 parse, every replaced 835 field; that `--seed` reproduces
-  every byte; that a phone number planted in a note stops the run without echoing it; that output paths inside the
-  repository are refused; and, with `--key-in`, that follow-up 835s and a letter built from the raw batch's database
-  match the same claims in the pseudonymized database (zero unmatched, the letter attached) and record exactly the
-  outcomes they record in the raw one, with the first batch's pseudonyms and none of the originals, while mismatched
-  options and missing, foreign or version 1 keys are refused and the old key is never touched; and, for
-  `deanonymize`, that a corrected claim's and an appeal's export packages from the pseudonymized database, restored with
-  the key, equal the raw database's member for member (timestamps, the letter's drafting date and the audit excerpt
-  aside) with no pseudonym left, that the PDF is rendered again from the restored letter, and that a pseudonym left, a
-  foreign key, an unknown member, a file that is not a zip, an output inside the repository and an overwrite are
-  refused.
+- **Real runs and test runs.** A real run draws every pseudonym from `random.SystemRandom`. `--seed` and
+  `--shift-dates` are refused without `--test-only` (synthetic test data only), which the key records: with a known seed
+  the draw order replays the offsets of the dates of birth; the app compares deadlines, days left, priorities and the
+  outcome gate with the real today (a shifted batch shows wrong deadline figures and drops or accepts the wrong
+  follow-up 835s); and a restore cannot tell a shifted date from a real one a reviewer typed. A real run never extends a
+  test key, nor a test run a real key.
+- **Paths** (`check_paths`, `app/anonymize/paths.py`), refused before anything is read (exit 1): IN_DIR, OUT_DIR or
+  KEY.json inside the repository (compared after folding the Windows aliases `\\?\…` and `\\localhost\C$\…`, and by
+  file identity, so a junction, an 8.3 name or an alias cannot slip in); IN_DIR and OUT_DIR the same or nested;
+  KEY.json inside OUT_DIR, in the folder that holds OUT_DIR, or on the removable or network volume OUT_DIR is on;
+  OUT_DIR or KEY.json under a sync client (OneDrive with the Documents and Desktop folders Windows redirects into it,
+  Dropbox, Google Drive, iCloud, Box and the like); OUT_DIR not an empty folder; an existing KEY.json; with `--key-in`,
+  a key that is missing, unreadable, not version 3, inside the repository, synced, inside OUT_DIR or KEY.json itself.
+- **Input**, recognised by content and named in every message by its position in the sorted listing ("input file 3"),
+  never by name: a CSV whose header (compared without case) carries every `CLAIM_EXPORT_COLUMNS` column is a claim
+  export (one is required unless `--key-in` brings the patients), `NOTE_COLUMNS` / `PAYER_DOCUMENT_COLUMNS` notes and
+  payer documents. A CSV that shares two or more columns with one of them but lacks some is refused with the missing
+  column names; a row whose field count differs from its header (an unquoted comma) is refused with its row number. A
+  file is read as UTF-8, else as Windows-1252 (counted); a recognised file holding U+FFFD is refused. A file that starts
+  with `ISA` is an 835 only when every interchange uses the first ISA's delimiters, every GS01 is `HP` and every ST01
+  `835` (`remit.interchange_problem`). An 837, a 277CA, a 271, any other file and any subfolder is skipped, never copied,
+  and listed by position and reason. Output CSVs carry exactly the contract's columns: extra columns are dropped and
+  counted, after their identity values (insured, subscriber or guarantor names, secondary or other member ids, an MRN,
+  a patient middle name) are mapped inside the patient so free text loses them too. A note or document row whose claim
+  number is blank or unknown is dropped and counted.
+- **Claim numbers that carry a patient id** (equal to the row's account number or member id, holding it as a part
+  between separators, or, six characters or more, starting or ending with it; in the export or an 835 claim loop)
+  refuse the run unless `--replace-claim-numbers` is given. The README recommends the flag for every real batch.
+- **Patients** are the export's account numbers. Each gets a first and last name from `app/anonymize/wordlists.py`
+  (frozen invented names, ordinary words left out) that no other patient has, drawn outside every patient name and every
+  provider, staff or organization name of the batch and the key (rendering providers, note authors that are staff,
+  NM1*82 and the other provider or payer NM1 names, N1 names, payer names, an employer named as a subscriber); the key
+  records those words so later batches avoid them too. Every other spelling met for a patient (NM1*QC/IL/74/GB, a middle
+  name, an initial, an insured or guarantor column) is mapped token by token inside the same patient; an organization
+  in NM1*QC/IL/74/GB (NM102 `2`) is mapped as one whole name. A remittance claim that matches no exported patient gets
+  a subject of its own.
+- **Replaced in the claim export**: the names, `patient_account_number`, `member_id` (same shape: digits for digits,
+  letters for letters, punctuation kept), `patient_dob` (same year; day and month moved by a per-patient offset, drawn
+  again until the result is neither an original date of birth of the key nor a service, payment or note date of the
+  batch), `patient_address_line1`, `patient_city`, `patient_zip`; `patient_state` and `patient_sex` stay. **In the
+  835**: the names and NM109 of NM1*QC/IL/74/GB; REF*1W, 28, EA, IG, SY, 1L and 6P; any other claim-loop element equal
+  to a patient id of the batch; PLB references, in a second pass once every file is read (a reference equal to a
+  replaced value; the HIC or MBI in positions 20 to 30 of a WO or FB reference, drawn as a patient id even for a
+  beneficiary the batch does not know; a patient id of eight characters or more, or a replaced claim number, inside a
+  reference).
+- **`--replace-claim-numbers`**: claim, original claim and line item numbers, CLP01 and REF*6R share one map (an
+  extension after a separator, `CLM000123-R1`, stays on the pseudonym); CLP07 and REF*F8 have their own.
+- **Kept**: every other date, procedure, diagnosis, modifier, CARC/RARC and place-of-service code, units, amounts, payer
+  ids and names, provider names and NPIs, trace numbers, the payer's and payee's addresses.
+- **Consistency**: every map is injective, case-insensitive and never emits an original of any identifier family of
+  the key, so CLP01 = `claim_control_number` still matches and the member id + service date + charge fallback
+  (`app/ingest/matching.py`) sees the same equalities.
+- **835 validity** (`app/anonymize/remit.py`): rewritten element by element with the file's own delimiters (the
+  repetition separator only when ISA12 is 00501 or later and ISA11 is punctuation; no letter or digit is ever taken out
+  of a value), every other byte copied. `verify_835` compares the files segment by segment and the `parse_835` results
+  field by field (only replaceable positions may differ, each replaced value must be the run's pseudonym), and refuses a
+  PLB reference that still holds a known patient id or an MBI-shaped value the run did not draw.
+- **Free text** (`app/anonymize/text.py`; note `author` and `text`, document `document_type` and `text`; an author
+  that is staff, with no patient's full name in it, is kept as written) uses one index of every patient of the batch and
+  of the key, so another patient named in a note or letter gets that patient's pseudonyms (the row's own patient wins a
+  shared spelling). Matching is on folded text (accents, `Æ` `Ø` `ß`, curly apostrophes and dashes, case): names as
+  spelled and with their parts joined any way (`O'Brien`, `O Brien`, `OBrien`; `Quiñonero-Vélez`, `QuinoneroVelez`),
+  each part alone, full-name forms (`First Last`, `Last, First`, `First M Last`, `F. Last`, `Last, F.`, `First L.`). A
+  part that is an ordinary word (`wordlists.FREQUENT_WORDS` always; `COMMON_WORDS` when the batch writes it in lower
+  case; any word written in lower case in three texts) or has two letters or fewer is replaced only in a name context:
+  capitalized, not hyphen-joined (`X-Ray`), after a title or label or next to another part of the same name. Provider
+  and organization names are kept; a surname or first name shared with a provider is replaced only when a title or the
+  patient's other name says it is the patient. Ids with or without separators, and the digits of an alphanumeric id
+  alone (six or more); an id shorter than six characters only standing alone and never when it is a procedure or
+  diagnosis code of the batch. Dates of birth in every form `matching.TEXT_DATE_RE` reads (ISO, `M/D/YY(YY)`,
+  `M-D-YY`, dotted, month names with or without a period, comma or ordinal, `D Mon YYYY`, CCYYMMDD; a two-digit year in
+  either century), written back in the same form; a date that is also a data date of the batch only after a
+  date-of-birth label. Street lines with their USPS spellings, with or without the unit; a city or ZIP only in an address
+  context (before a state code or ZIP, after a ZIP label), never a ZIP that is a procedure code of the batch.
+  **Residual scan**, for identifiers the batch does not know: SSNs (dashed, or after a label with or without
+  separators), e-mail addresses, phone numbers (the batch's own provider, payer and claim numbers are kept), a date after
+  a date-of-birth label, MBIs, and an id-like value after MRN, chart, account, policy, subscriber, member, ID#, MBI,
+  HICN, Medicare or Medicaid. Any finding stops the run (exit 1, nothing written; stdout lists `{file, row, field,
+  kind}`); `--allow-residual` masks each finding as a whole value with an unrestorable `[[MASKED_<KIND>_n]]` and scans
+  again.
+- **Leak sweep** (`app/anonymize/sweep.py`), the gate before anything is written: every output file name and byte is
+  searched for every original the new key holds (this batch's and every earlier one's): names folded, in every join of
+  their parts, as whole words (an ordinary-word part only in a name context); patient ids, and claim numbers when they
+  are replaced, of five characters or more with separators stripped (in an X12 element, eight or more anywhere inside
+  it); dates of birth in every written form outside the date columns and date elements; street lines anywhere, cities
+  and ZIPs in the address columns, N4 or an address context. Allowed: the payer and payee loops of an 835, provider and
+  organization names (their columns, kept spans, provider and payer NM1s), codes and amounts. One hit stops the run:
+  exit 1, nothing written, stdout lists `{file, place, field, kind}`.
+- **Output**: files named `pseudonymized_run<N>_<kind>_<n>.<ext>`, written into a temporary sibling of OUT_DIR that is
+  renamed at the end; KEY.json last, also under a temporary name, with an owner-only ACL (Windows: `icacls`, inherited
+  entries removed, OWNER RIGHTS only; elsewhere mode 600), never over an existing file; on any failure both are
+  removed. stdout is one JSON object (`status` `ok` | `residual` | `leak`, `written`, the paths, `chain`, `key_acl`,
+  options, per output file its kind and counts, skipped files by position and reason, patients, counts, residual
+  findings, sweep hits); stderr says where the key is or why nothing was written; logs carry counts only. Exit 0, 1
+  (refusal, invalid input, residual, sweep hit, failed 835 check) or 2 (unexpected; class name and frames only).
+- **KEY.json** (format `denial-agent/anonymize-key`, version 3) is the only place an original value is written:
+  `chain` (an id shared by every key of the clinic, the run number, the SHA-256 of the key it extends), `clinic`
+  (billing NPIs and tax ids from the export and the 835 payee loop), `options` (`replace_claim_numbers`,
+  `shift_dates_days`, `test_only`), `runs`, every subject in full (field and token maps, initials, organizations,
+  spellings, dates of birth with offsets, ids, addresses, claim numbers), the value maps, the claim `index`, `originals`
+  (with the provider tokens) and `name_pairs`. `PseudonymKey` loads it. `restore_claim_row(row, key)` restores a
+  claim-export row and refuses, naming the column, a value that does not map back to the patient its account names.
+- **A later batch** (`--key-in`): the newest key of the chain. The run starts from everything it holds
+  (`Pseudonymizer.from_key`), so known values keep their pseudonyms and a follow-up 835 or a letter finds its patient
+  without a claim export (a corrected claim's `<ccn>-R1` maps to the pseudonym plus `-R1`, what "Mark submitted"
+  defaults to). Refused: options other than the key's; a batch whose billing NPIs (else tax ids) share none with the
+  key's (another clinic's key); a key the run log next to it or next to KEY.json shows a later run for (a fork).
+  KEY.json is a new file; the key read is never written.
+- **Export marks** (`app/review/pseudonymized.py`; no schema change): the claims importer records the output file name
+  on the import batch and every claim points at its batch, so `build_export_package` knows a claim came from a
+  pseudonymized batch and marks its package: `PSEUDONYMIZED_` in front of the zip name, a banner on top of the letter
+  (so of its HTML and PDF too) and of the clinic question, `"pseudonymized": true` in `summary.json`, a
+  `pseudonymized_restore_before_submitting` column in the corrected claim CSV.
+- **Back to the real identifiers** (`denial-agent deanonymize PACKAGE.zip ... --key NEWEST.json --out OUT_DIR`,
+  `app/anonymize/restore.py`), on the clinic's computer. Refused before anything is read: a missing package or key; a
+  key or OUT_DIR inside the repository or a synced folder; an OUT_DIR that is, holds or sits inside a package's folder; a
+  key the run log next to it shows a later run for. Refused per package, with nothing written: a member the export never
+  writes, a member twice, a member over 10 MB (25 MB in all, or compressed more than 200 to 1); a patient the key does
+  not know; with replaced claim numbers, a claim number the key does not know (an already restored package, another
+  run's package); a patient-block value of the CSV or JSON that does not map back to that patient (an older key); a
+  letter line `Patient:`, `Member ID:`, `Date of birth:` or `Claim control number:` that is not this key's pseudonym of
+  that patient, or a patient block with nothing restored; another patient's pseudonym in the letter, the question or
+  the JSON (full names, name parts of four letters or more the patient does not share, ids, labelled dates of birth,
+  street lines, claim numbers), checked before anything is rewritten; a pseudonym or a mark left after the restore. Then
+  the marks go; `corrected_claim.csv` goes through `restore_claim_row`; `summary.json` and `corrected_claim.json` are
+  restored field by field; the letter and the question get every pseudonym spelling of the patient (initials and every
+  written form of the date of birth included) and every claim number of the key back; the HTML is rebuilt and the PDF
+  rendered again (else `README.txt`; the app's pseudonymized PDF is dropped); `audit_excerpt.json` is left out (the
+  app's own record, in pseudonyms; never part of a submission). A `[[MASKED_…]]` marker cannot be restored and is
+  reported per member. Packages are written under temporary names and renamed when all passed, never over an existing
+  file, named as the app names a package with the real claim number; stdout lists file and member names and counts
+  (`text_replacements`, `fields_restored`, `masked_markers`). With a test key that shifted dates, data dates move back
+  (the app's `*_at` timestamps, the date a reviewer typed a note and the letter's first-line drafting date stay).
+- **Known limits**: a name the batch does not carry (a relative who is not a patient) cannot be recognised, and unknown
+  ids only by the generic patterns; an ordinary-word name part without a name context, a bare surname or first name
+  shared with a provider, and a ZIP that is a procedure code stay as written (cities and five-digit ZIPs are
+  limited-data-set fields); the app's own redaction guard (`app/llm/guard.py`) blocks every model call for a patient
+  whose real name is an ordinary word of a prompt template ("May"), which the pseudonymized batch does not trigger, so
+  what the model decided can differ for such a patient; only export packages can be restored (the weekly open-items
+  list and the purge hand-over zip stay in pseudonyms); with replaced claim numbers a reviewer can enter only the app's
+  default number under "Mark submitted", so a resubmission under a new claim number of the clinic's own is matched only
+  once a later export carries that claim.
+- Tests: `tests/test_anonymize.py` (section 13, `docs/TESTING.md`).

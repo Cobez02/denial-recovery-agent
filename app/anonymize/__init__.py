@@ -1,11 +1,12 @@
-"""Pseudonymize one raw clinic batch for local work on real data (docs/SPEC.md section 16).
+"""Pseudonymize raw clinic batches for local work on real data (docs/SPEC.md section 16).
 
 ``anonymize_batch(in_dir, out_dir, key_path, options)`` is the entry point behind
-``denial-agent anonymize``: it writes a batch the app processes exactly like the original (same
-matches, same work items, categories and actions) with every patient identifier replaced, and a
-KEY.json that is the only place an original value is written. A pseudonymized batch that keeps
+``denial-agent anonymize``: it writes a batch the app processes like the original (same matches,
+same work items, categories and actions) with every patient identifier replaced, only after a leak
+sweep of every output byte found none of the originals, and a KEY.json that is the only place an
+original value is written; each key extends the clinic's chain. A pseudonymized batch that keeps
 dates of service is still a HIPAA limited data set, so it is still PHI. ``restore_packages`` (behind
-``denial-agent deanonymize``) puts the real identifiers back into export packages, with the key.
+``denial-agent deanonymize``) puts the real identifiers back into export packages, with the newest key.
 """
 
 from app.anonymize.batch import (

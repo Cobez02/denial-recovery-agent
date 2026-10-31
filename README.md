@@ -130,60 +130,107 @@ Real files come only after the clinic BAA is signed and `docs/SECURITY_CHECKLIST
 and dated; pseudonymizing a batch does not change that. A pseudonymized batch still carries dates
 of service, so it is a HIPAA limited data set: still PHI, still covered by the BAA, still kept only
 on the encrypted disk of the checklist. `denial-agent anonymize` is defence in depth on top: it
-turns one raw batch into a copy the app processes exactly as before (same remittance matches, same
-work items, categories and actions) with every patient identifier replaced.
+turns one raw batch into a copy the app processes as before (same remittance matches, same work
+items, categories and actions) with every patient identifier replaced, and it writes nothing unless
+a final sweep of every output byte finds none of the originals. `denial-agent deanonymize` puts the
+real identifiers back into the export packages before anything is submitted. Both run on the
+clinic's own computer, where the raw files and the key stay; only the pseudonymized folder travels.
+
+**Install on the clinic's computer** (no copy of the repository, no git credentials, no dev tools):
 
 ```bash
-# On the clinic's own computer (the command needs no database), with one raw batch in one folder:
-uv run denial-agent anonymize D:/clinic/batch-2026-10 --out E:/pseudonymized/batch-2026-10 --key-out D:/clinic/keys/batch-2026-10.key.json
-
-# A later batch (next month's export, or the follow-up 835s that pay or deny submitted fixes): reuse
-# the last key so every known patient, member id and claim number keeps its pseudonym
-uv run denial-agent anonymize D:/clinic/batch-2026-11 --out E:/pseudonymized/batch-2026-11 --key-in D:/clinic/keys/batch-2026-10.key.json --key-out D:/clinic/keys/batch-2026-11.key.json
+uv build --wheel
 ```
 
+builds `dist/denial_agent-0.1.0-py3-none-any.whl` on the Company machine (it fetches the build
+backend from PyPI once). On the clinic's computer:
+
+```bash
+uv tool install ./denial_agent-0.1.0-py3-none-any.whl
+```
+
+`uv tool install` downloads the runtime dependencies from PyPI (and Python 3.12 or later if the
+computer has none), so it needs internet once. Without internet, download the wheels on a connected
+machine (`uv export --no-dev --format requirements-txt` gives the list) into a folder and install with
+`uv tool install --offline --find-links WHEELS ./denial_agent-0.1.0-py3-none-any.whl`. The PDF
+renderer (WeasyPrint, the `pdf` extra) needs system libraries; without it a restored appeal carries
+`appeal_letter.html` and a `README.txt` instead of a PDF: open the HTML in a browser and print it.
+From an installed wheel, the "inside the repository" check compares against the installed package
+folder; keep batches and keys out of any checkout anyway.
+
+**Each month:**
+
+```bash
+# The first batch: a new key, and its folder becomes the clinic's key folder
+denial-agent anonymize D:/clinic/raw/2026-10 --out E:/to-company/2026-10 --key-out D:/clinic/keys/2026-10.key.json --replace-claim-numbers
+
+# Every later batch (next month's export, the follow-up 835s that pay or deny submitted fixes):
+# the newest key in, a new key out, in the same key folder
+denial-agent anonymize D:/clinic/raw/2026-11 --out E:/to-company/2026-11 --key-in D:/clinic/keys/2026-10.key.json --key-out D:/clinic/keys/2026-11.key.json --replace-claim-numbers
+
+# Before anything goes out: restore the downloaded export packages with the newest key
+denial-agent deanonymize D:/clinic/from-company/PSEUDONYMIZED_work_item_14_KXW938899_v1_20261130T210501Z.zip --key D:/clinic/keys/2026-11.key.json --out D:/clinic/to-submit
+```
+
+- **Use `--replace-claim-numbers` for every real batch.** Practice-management systems often build
+  claim numbers from the account number; a run whose claim numbers carry an account number or
+  member id is refused without the flag.
 - **Input**: the claim export CSV, optionally `notes.csv` and `payer_documents.csv`, and any number
-  of 835 files, recognised by their content (any other file is skipped, never copied).
-- **Replaced, consistently in every file**: each patient's first and last name (fictional names
-  from `synthetic/names.py`, one pair per patient; the payer's and the subscriber's spellings in the
-  835 map inside the same patient), account number and member id (same shape, so matching by member
-  id still works), date of birth (same year, day and month moved by a per-patient offset: age
-  drives payer rules, the birthday is not needed), address line, city and ZIP; in the 835 the
-  NM1*QC/IL/74/GB names and ids and REF*EA/1W style patient ids; in notes and letters every spelling
-  of those identifiers the registry knows.
-- **Kept**: every other date, procedure, diagnosis, modifier, CARC/RARC and place-of-service code,
-  units, amounts, payer ids and names, provider names and NPIs. `--replace-claim-numbers` also
-  replaces claim, line item and payer claim numbers (CLP01 and CLP07 included);
-  `--shift-dates DAYS` moves every date in every file by one offset (not HIPAA Safe Harbor: the
-  offset is in the key, and deadlines on screen move with it).
-- **Stops on leftovers**: a note or letter that still carries an SSN-, phone-, e-mail- or
-  DOB-shaped value after the replacement stops the run with exit 1 and a list of file, row, field
-  and kind (never the value); nothing is written. Fix those rows, or pass `--allow-residual` to mask
-  them. Names the batch does not know (a relative mentioned in a note) cannot be found: read the
-  notes before trusting them.
-- **The key**: `KEY.json` is the only file that holds an original value. It stays with the clinic,
-  on the clinic's computer; the command refuses to write it (or the output) inside the repository,
-  refuses a key inside the output folder and never overwrites one. Only the output folder travels
-  to the encrypted disk of the machine that runs the app; import it with steps 7 to 10 above.
-- **Before anything goes out**: copy the downloaded export packages to the clinic's computer and
-  restore them there with the key: patient block, ids, claim numbers (a corrected claim's `-R1`
-  number included), letter text and dates come back; the HTML and PDF letter are rebuilt; the
-  audit excerpt stays as the app wrote it. A package with a pseudonym left (for example another
-  patient's name typed by a reviewer) is refused, and nothing is overwritten.
+  of 835 files, recognised by their content and named in every message by their position in the
+  folder's sorted listing ("input file 3"), never by name. Headers are compared without case; a CSV
+  that looks like one of these but lacks a column is refused with the missing column names, and a
+  row with more or fewer fields than its header (an unquoted comma) is refused with its row number.
+  A file is read as UTF-8, else as Windows-1252 (Excel's CSV; counted); damaged text (U+FFFD) is
+  refused. An X12 file is used only when it is an 835 throughout: an 837, a 277CA or a 271 is
+  skipped, never copied, and listed. Anything else, and any subfolder, is skipped and listed too.
+- **Replaced, consistently in every file**: each patient's names (invented names, one pair per
+  patient, never a provider's or a payer's word), account number and member id (same shape), date of
+  birth (same year; the day moves), address line, city and ZIP, and the identity columns of the
+  export the contract drops (insured, guarantor, secondary ids) wherever they reappear; in the 835
+  the patient, subscriber and corrected names and ids, patient REF ids, and member ids Medicare puts
+  inside PLB references; in notes and letters every patient of the batch, also when a note about one
+  patient names another, with accents, apostrophes, joined or split surnames, ids written with
+  spaces or dashes, every way a date of birth is written and USPS street abbreviations. A name that
+  is an ordinary word ("May", "Low") is replaced only where it names someone ("Mrs. Low", "May
+  Fall"), never in "Low back pain". Provider and payer names stay as they are.
+- **Stops on leftovers**: a note or letter that still carries an SSN, phone, e-mail, a date after
+  "DOB", an MBI, or an id after an MRN, chart, account, policy, member, subscriber, ID#, HICN,
+  Medicare or Medicaid label stops the run with exit 1 and a list of file, row, field and kind
+  (never the value). Fix those rows, or pass `--allow-residual` to mask each one as a whole value.
+  Names the batch does not carry (a relative who is not a patient) cannot be found: read the notes.
+- **Stops on any leak**: before writing, every output byte and file name is searched for every
+  original value the key holds; one hit and nothing is written (that is a gap of the tool: report
+  the place it prints, never the value, and do not send the batch).
+- **Written last and all at once**: the output goes to a temporary folder renamed at the end, the
+  key last, with owner-only permissions (`icacls` on Windows), never over an existing file; a failed
+  run leaves neither behind.
+- **The key and its chain**: the key is the only file with original values. It stays in one folder
+  on the clinic's computer: never in the repository, never in OneDrive (Windows often redirects
+  Documents and Desktop there), Dropbox, Google Drive, iCloud or Box, never beside the output folder
+  and never on the removable drive the output goes to; the command refuses all of those. Each key
+  extends the one before it (same chain, next run number) and the run log `denial-agent-runs.log`
+  in the key folder records every run: an older key of the chain is refused for the next batch and
+  for restores, and a key of another clinic (no billing NPI in common) is refused. Keep backup copies
+  of the key folder on clinic media; only the newest key is used.
+- **Marked until restored**: the app marks every package it exports for a pseudonymized claim:
+  `PSEUDONYMIZED_` in front of the zip name, a banner on top of the letter and the clinic question,
+  `"pseudonymized": true` in `summary.json`, a marker column in the corrected claim CSV. A marked
+  package never goes to a payer.
+- **Restoring**: `deanonymize` refuses a package it cannot vouch for: one from another key or run,
+  one already restored, one whose patient block an older key cannot map, one naming another patient,
+  one whose provider name is the patient's pseudonym. It writes the restored packages (marks
+  removed, real patient block, ids, claim numbers, letter text; the HTML and PDF rebuilt) under the
+  app's package name with the real claim number, never into the folder the packages came in, never
+  over an existing file. The audit excerpt is left out (it is the app's record, in pseudonyms; the
+  original package keeps it). A `[[MASKED_...]]` marker cannot be restored: the command lists it,
+  fill it in by hand.
+- **Test-only options**: `--test-only` with `--seed N` (a reproducible run) or `--shift-dates DAYS`
+  (every date moved) is for synthetic data. Neither is allowed on a real batch: a seed makes the
+  date-of-birth offsets replayable, and the app compares deadlines and outcomes with the real today.
 
-  ```bash
-  uv run denial-agent deanonymize E:/pseudonymized/exports/work_item_14_DWW938899_v1_20261030T210501Z.zip --key D:/clinic/keys/batch-2026-11.key.json --out D:/clinic/to-submit
-  ```
-
-- **A later batch**: `--key-in` starts from the last key, so the follow-up 835s still match the
-  claims and fixes already in the app (with `--replace-claim-numbers`, a corrected claim's `-R1`
-  number lines up with what **Mark submitted** defaults to) and a batch of 835s alone needs no claim
-  export. Pass the same `--replace-claim-numbers` and `--shift-dates` the key was made with (the
-  command refuses otherwise); the old key is only read, and `--key-out` gets a new key holding
-  everything the old one did plus this batch. Keep using the newest key from then on.
-
-`--seed N` makes a run reproducible (the tests use it); leave it out for real data. The full rules
-are in `docs/SPEC.md` section 16.
+Neither command has a database, so neither records audit events; the run log is their record and
+the import of the pseudonymized folder is audited like every import. The full rules, every check
+and the known limits are in `docs/SPEC.md` section 16.
 
 ## Model configuration
 
@@ -232,7 +279,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-994 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
+1010 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
 key), all on SQLite with the stub model client and inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set (chiropractic, `synthetic/fixtures/labeled_set_v2`) classifies at 150/150 categories

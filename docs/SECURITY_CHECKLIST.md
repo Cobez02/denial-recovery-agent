@@ -80,14 +80,21 @@ Each line names the code and the way to check it.
   for the purged names).
 - **Pseudonymized batches** (`denial-agent anonymize`, `app/anonymize/`, `docs/SPEC.md` section 16): a
   pseudonymized batch keeps dates of service, so it is a limited data set and still PHI: every control
-  in this file applies to it as it does to raw data. The command needs no database and runs on the
-  clinic's own computer; it refuses an output folder or key inside the repository and a key inside the
-  output folder, never overwrites a key, and writes nothing while a note or letter still carries an
-  SSN-, phone-, e-mail- or DOB-shaped value. The key holds the originals: it stays with the clinic and
-  never travels with the batch; a later batch reads it with `--key-in` (never written) and the extended
-  key goes to a new file. `denial-agent deanonymize` restores export packages with the key on the
-  clinic's computer, never inside the repository or over an existing file, and refuses a package with a
-  pseudonym left. Check: `uv run pytest tests/test_anonymize.py -q`.
+  in this file applies to it as it does to raw data. The commands need no database and run on the
+  clinic's own computer, installed from a built wheel (README, Running real data). Checked by the code:
+  no input, output or key inside the repository (aliases and junctions included); no output or key in
+  OneDrive, Dropbox, Google Drive, iCloud or Box; the key never inside or beside the output folder nor on
+  its removable volume; an owner-only ACL on the key (Windows: `icacls`); nothing written while a note
+  still carries an identifier-shaped value or while the leak sweep finds any original of the key in an
+  output byte or file name; only real 835s copied; `--seed` and `--shift-dates` only with `--test-only`;
+  an older key of the chain and another clinic's key refused; export packages of a pseudonymized claim
+  marked until `denial-agent deanonymize` restores them with the newest key, outside the repository,
+  synced folders and the packages' folder, never over an existing file, the audit excerpt left out.
+  Procedure, not code: keep the key folder on the clinic's computer with dated backup copies on clinic
+  media, use only the newest key, never type real identifiers into the app, read the notes for names the
+  batch does not carry, and never send a package whose name starts with `PSEUDONYMIZED_`. The commands
+  record no audit events (no database); their run log `denial-agent-runs.log` sits next to the key.
+  Check: `uv run pytest tests/test_anonymize.py -q`.
 - **Patient pseudonym**: `patients.token` is `PT-` plus six hex characters of
   `sha256("<clinic_id>:<account_number>")`. It is a display label inside the clinic's own system (queue,
   letters without the patient block, API), not a security boundary: anyone with the database can read

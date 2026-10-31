@@ -3,25 +3,30 @@
 A :class:`Pseudonymizer` holds every mapping of one run and is the only place a pseudonym is drawn:
 
 - **Names, per patient.** Each patient of the claim export (keyed by account number) is a
-  :class:`Subject` with a first and last name from ``synthetic.names`` that no other patient of the
-  batch shares. Every other spelling met for that patient (the payer's in the 835, the subscriber's,
-  a middle name or an initial) is mapped token by token inside the subject, so a surname the patient
-  shares with the subscriber stays shared and each field maps back to exactly one original.
+  :class:`Subject` with a first and last name from ``app.anonymize.wordlists`` that no other patient
+  of the batch shares. Every other spelling met for that patient (the payer's in the 835, the
+  subscriber's, a middle name or an initial, an insured or guarantor column of the export) is
+  mapped token by token inside the subject, so a surname the patient shares with the subscriber
+  stays shared and each field maps back to exactly one original. Name pseudonyms are drawn outside
+  every patient name *and* every provider or organization name the batch (and the key) carries, so
+  a pseudonym is never a chiropractor's or a payer's name.
 - **Patient identifiers** (account numbers, member ids, the NM109 and REF ids of an 835) keep their
   shape: digits become digits, letters become letters of the same case, punctuation stays.
 - **Addresses, cities and ZIP codes**; **dates of birth** keep the year while day and month move by a
-  per-patient offset; **claim numbers** and **payer claim numbers** when asked; one global date shift.
+  per-patient offset, never landing on another patient's date of birth or on any service, payment
+  or note date of the batch; **claim numbers** and **payer claim numbers** when asked.
 
-Every map is injective and never emits a value that is an original of the same family anywhere in
-the batch, so a pseudonym can never be mistaken for (or leak) another patient's real value. Draws
-come from one ``random.Random(seed)`` in the order values are first met: a pseudonym is a function
-of where a value sits in the batch, not of the value, so knowing the seed does not let anyone test a
-guessed name against the output.
+Every map is injective and never emits a value that is an original of any identifier family of the
+batch, so a pseudonym can never be mistaken for (or leak) another patient's real value. Real runs
+draw from ``random.SystemRandom``; a fixed seed (``random.Random(seed)``) and a global date shift are
+test-only options (``--test-only``): with a known seed the draw order would let anyone replay the
+offsets of the dates of birth.
 
 The key (:meth:`Pseudonymizer.key_document`, read back by :class:`PseudonymKey`) holds every map in
-full, the originals of every batch it has seen and the claim index, so :meth:`Pseudonymizer.from_key`
-rebuilds the same state for a later batch: a returning value keeps its pseudonym, and every new
-pseudonym is still drawn outside the originals of all those batches.
+full, the originals of every batch it has seen, the claim index, the clinic's billing NPIs and tax
+ids and the chain (an id shared by every key of one clinic and the run number), so
+:meth:`Pseudonymizer.from_key` rebuilds the same state for a later batch: a returning value keeps
+its pseudonym, and every new pseudonym is still drawn outside the originals of all those batches.
 """
 
 from __future__ import annotations
@@ -29,14 +34,14 @@ from __future__ import annotations
 import json
 import random
 import re
-import unicodedata
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from synthetic import names
+from app.anonymize import wordlists
+from app.anonymize.matching import name_key
 
 # A name token: a run of letters in any script, with inner apostrophes ("O'Brien").
 NAME_TOKEN_RE = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
@@ -74,12 +79,6 @@ class AnonymizeError(Exception):
 
     Messages carry file names, row numbers, field names and counts only, never a value.
     """
-
-
-def name_key(token: str) -> str:
-    """Comparison form of a name token: accents and apostrophes dropped, case folded."""
-    decomposed = unicodedata.normalize("NFKD", token)
-    return "".join(ch for ch in decomposed if ch.isalpha() and not unicodedata.combining(ch)).casefold()
 
 
 def value_key(value: str) -> str:
@@ -134,12 +133,20 @@ class Originals:
     cities: set[str] = field(default_factory=set)
     zips: set[str] = field(default_factory=set)
     dobs: set[date] = field(default_factory=set)
+    # Provider, staff and organization name tokens: never patient identifiers, never pseudonyms.
+    provider_tokens: set[str] = field(default_factory=set)
 
     def add_name(self, value: str | None) -> None:
         for token in NAME_TOKEN_RE.findall(value or ""):
             key = name_key(token)
             if key:
                 self.name_tokens.add(key)
+
+    def add_provider(self, value: str | None) -> None:
+        for token in NAME_TOKEN_RE.findall(value or ""):
+            key = name_key(token)
+            if len(key) > 1:
+                self.provider_tokens.add(key)
 
     @staticmethod
     def _add(target: set[str], value: str | None) -> None:
@@ -202,6 +209,10 @@ class ValueMap:
     def available(self, candidate: str) -> bool:
         key = value_key(candidate)
         return key not in self._taken and key not in self._emitted
+
+    def is_pseudonym(self, value: str) -> bool:
+        """True when ``value`` is a pseudonym this map has given out."""
+        return value_key(value) in self._emitted
 
     def get(self, value: str, draw: Callable[[], str], *, preferred: str | None = None) -> str:
         key = value_key(value)
@@ -311,6 +322,7 @@ class Subject:
         self.ids: dict[str, str] = {}
         self.addresses: list[AddressRecord] = []
         self.claim_numbers: dict[str, str] = {}
+        self.organizations: dict[str, str] = {}  # an employer named as the subscriber: whole names only
 
     # -- names ------------------------------------------------------------------------------
 
@@ -379,6 +391,20 @@ class Subject:
         self.fields[role][value] = result
         return result
 
+    def organization(self, value: str) -> str:
+        """An organization named where a person is expected (the employer an 835 names as the
+        subscriber): every word replaced, and the name kept as a whole, never as a person's name
+        parts (its words are often ordinary ones)."""
+        known = self.organizations.get(value)
+        if known is not None:
+            return known
+        words = [
+            self._token(FAMILY, token) for token in NAME_TOKEN_RE.findall(value) if len(name_key(token)) > 1
+        ]
+        pseudonym = match_case(value, " ".join(words)) if words else value
+        self.organizations[value] = pseudonym
+        return pseudonym
+
     def person(self, first: str | None, last: str | None, middle: str | None = None) -> tuple[str, str, str]:
         """Map a person's first, last and middle name and remember the spelling for free text."""
         pseudo = (
@@ -410,6 +436,7 @@ class Subject:
             "ids": dict(self.ids),
             "addresses": [asdict(record) for record in self.addresses],
             "claim_numbers": dict(self.claim_numbers),
+            "organizations": dict(self.organizations),
         }
 
     @classmethod
@@ -427,6 +454,7 @@ class Subject:
         subject.ids = dict(document["ids"])
         subject.addresses = [AddressRecord(**record) for record in document["addresses"]]
         subject.claim_numbers = dict(document["claim_numbers"])
+        subject.organizations = dict(document.get("organizations") or {})
         return subject
 
 
@@ -437,25 +465,31 @@ class Pseudonymizer:
         self,
         originals: Originals,
         *,
-        seed: int,
+        seed: int | None = None,
         shift_days: int = 0,
         replace_claim_numbers: bool = False,
+        avoid_dates: Iterable[date] = (),
     ) -> None:
         if abs(shift_days) > MAX_SHIFT_DAYS:
             raise AnonymizeError(f"--shift-dates must be between -{MAX_SHIFT_DAYS} and {MAX_SHIFT_DAYS} days")
-        self.rng = random.Random(seed)
+        # A seed is a test-only option: real runs draw from the operating system's generator.
+        self.rng: random.Random = random.Random(seed) if seed is not None else random.SystemRandom()
         self.originals = originals
         self.shift_days = shift_days
         self.replace_claim_numbers = replace_claim_numbers
-        excluded = originals.name_tokens
-        self._given = _Pool(names.FIRST_NAMES, excluded, self.rng)
-        self._family = _Pool(names.LAST_NAMES, excluded, self.rng)
+        self.avoid_dates = frozenset(avoid_dates)
+        excluded = originals.name_tokens | originals.provider_tokens
+        self._given = _Pool(wordlists.GIVEN_NAMES, excluded, self.rng)
+        self._family = _Pool(wordlists.FAMILY_NAMES, excluded, self.rng)
         self._pairs: dict[tuple[str, str], None] = {}  # ordered: the key is written the same way each run
         self.duplicate_name_pairs = 0
         self.subjects: dict[str, Subject] = {}
-        self.patient_ids = ValueMap("patient identifier", originals.patient_ids)
-        self.claim_numbers = ValueMap("claim number", originals.claim_numbers)
-        self.payer_claim_numbers = ValueMap("payer claim number", originals.payer_claim_numbers)
+        # A pseudonym id is never an original of any id family (a claim number pseudonym that is
+        # another patient's account number would read as one).
+        ids = originals.patient_ids | originals.claim_numbers | originals.payer_claim_numbers
+        self.patient_ids = ValueMap("patient identifier", ids)
+        self.claim_numbers = ValueMap("claim number", ids)
+        self.payer_claim_numbers = ValueMap("payer claim number", ids)
         self.address_lines = ValueMap("address", originals.address_lines)
         self.cities = ValueMap("city", originals.cities)
         self.zips = ValueMap("ZIP code", originals.zips)
@@ -502,7 +536,14 @@ class Pseudonymizer:
         }
 
     @classmethod
-    def from_key(cls, key: PseudonymKey, originals: Originals, *, seed: int) -> Pseudonymizer:
+    def from_key(
+        cls,
+        key: PseudonymKey,
+        originals: Originals,
+        *,
+        seed: int | None = None,
+        avoid_dates: Iterable[date] = (),
+    ) -> Pseudonymizer:
         """The state a key recorded, ready for a later batch whose own originals are given: every
         value the key maps keeps its pseudonym, and new draws avoid the originals of every batch."""
         document = key.document
@@ -513,6 +554,7 @@ class Pseudonymizer:
                 seed=seed,
                 shift_days=key.date_shift_days,
                 replace_claim_numbers=key.replace_claim_numbers,
+                avoid_dates=avoid_dates,
             )
             pseudo._pairs = {(str(given), str(family)): None for given, family in document["name_pairs"]}
             for family, value_map in pseudo.value_maps().items():
@@ -593,13 +635,13 @@ class Pseudonymizer:
         return all(name_key(w) not in self.originals.name_tokens for w in NAME_TOKEN_RE.findall(text))
 
     def _street_candidates(self) -> list[str]:
-        streets = [s for s in names.STREET_NAMES if self._clean_words(s)]
+        streets = [s for s in wordlists.STREET_NAMES if self._clean_words(s)]
         if streets:
             return streets
         return [f"{w} {suffix}" for w in self._family.extended()[:20] for suffix in STREET_FALLBACK_SUFFIXES]
 
     def _cities(self) -> list[str]:
-        """Town names: the synthetic towns, then street-name words with a town suffix (never a
+        """Town names: the pool's towns, then street-name words with a town suffix (never a
         surname, so a patient is not called after the town written next to their name)."""
 
         def usable(candidates: Iterable[str]) -> list[str]:
@@ -607,8 +649,8 @@ class Pseudonymizer:
                 c for c in candidates if value_key(c) not in self.originals.cities and self._clean_words(c)
             ]
 
-        words = sorted({street.split()[0] for street in names.STREET_NAMES})
-        cities = usable([city for city, _state, _zip in names.CITIES])
+        words = sorted({street.split()[0] for street in wordlists.STREET_NAMES})
+        cities = usable(wordlists.TOWNS)
         cities += usable(f"{word} {suffix}" for word in words for suffix in CITY_SUFFIXES)
         if len(cities) < 2 * max(1, len(self.originals.cities)):  # a batch with very many towns
             cities += usable(
@@ -666,7 +708,9 @@ class Pseudonymizer:
         """Same year, day and month moved by the patient's offset; then the global shift.
 
         The offset is drawn again when the result would equal any original date of birth of the
-        batch, so a pseudonymized date of birth is never another patient's real one.
+        batch (a pseudonymized date of birth is never another patient's real one) or any service,
+        payment or note date of the batch (a restore maps the pseudonym back wherever it is written,
+        and must never turn an infant's date of service into a date of birth).
         """
         known = subject.dobs.get(value)
         if known is not None:
@@ -676,7 +720,7 @@ class Pseudonymizer:
         offset = earlier[1] if earlier is not None else self.rng.randint(*DOB_OFFSET_DAYS)
         for _ in range(MAX_DRAWS):
             pseudonym = self.shift(shift_within_year(value, offset))
-            if pseudonym not in self.originals.dobs:
+            if pseudonym not in self.originals.dobs and pseudonym not in self.avoid_dates:
                 break
             offset = self.rng.randint(*DOB_OFFSET_DAYS)
         else:
@@ -686,20 +730,33 @@ class Pseudonymizer:
 
     # -- the key ------------------------------------------------------------------------------
 
-    def key_document(self, *, runs: list[dict[str, Any]], index: dict[str, Any]) -> dict[str, Any]:
+    def key_document(
+        self,
+        *,
+        runs: list[dict[str, Any]],
+        index: dict[str, Any],
+        chain: dict[str, Any],
+        clinic: dict[str, list[str]],
+        test_only: bool,
+    ) -> dict[str, Any]:
         """The KEY.json content: the only place where an original value is written.
 
-        It holds everything :meth:`from_key` needs to go on with a later batch: the options that
-        shape the maps, every subject in full, the value maps, the claim index, the originals of
-        every batch seen so far, the name pairs already given, and one entry per run.
+        It holds everything :meth:`from_key` needs to go on with a later batch: the chain (one id
+        for every key of the clinic, the run number, the hash of the key it extends), the clinic's
+        billing NPIs and tax ids, the options that shape the maps, every subject in full, the value
+        maps, the claim index, the originals of every batch seen so far, the name pairs already
+        given, and one entry per run.
         """
         return {
             "format": KEY_FORMAT,
             "version": KEY_VERSION,
             "warning": KEY_WARNING,
+            "chain": chain,
+            "clinic": clinic,
             "options": {
                 "replace_claim_numbers": self.replace_claim_numbers,
                 "shift_dates_days": self.shift_days,
+                "test_only": test_only,
             },
             "runs": runs,
             "subjects": {key: subject.to_document() for key, subject in self.subjects.items()},
@@ -711,10 +768,13 @@ class Pseudonymizer:
 
 
 KEY_FORMAT = "denial-agent/anonymize-key"
-KEY_VERSION = 2  # 2: everything from_key needs; a version 1 key cannot be extended
+# 3: chain, clinic identity, test-only flag, provider tokens, accent-folded name keys. A version 1 or
+# 2 key cannot be read: its name keys were folded another way.
+KEY_VERSION = 3
 KEY_WARNING = (
     "This file holds the original patient identifiers of a pseudonymized batch. It stays with the "
-    "clinic, on the clinic's own computer; never copy it next to the pseudonymized files."
+    "clinic, on the clinic's own computer, outside any synced folder; never copy it next to the "
+    "pseudonymized files. Keep only the newest key of the chain in use."
 )
 VALUE_FAMILIES: tuple[str, ...] = (
     "patient_id",
@@ -736,13 +796,27 @@ class PseudonymKey:
         options = document.get("options") or {}
         self.replace_claim_numbers = bool(options.get("replace_claim_numbers"))
         self.date_shift_days = int(options.get("shift_dates_days") or 0)
+        self.test_only = bool(options.get("test_only"))
+        chain = document.get("chain") or {}
+        self.chain_id = str(chain.get("id") or "")
+        self.run_number = int(chain.get("run") or 0)
+        clinic = document.get("clinic") or {}
+        self.billing_npis = frozenset(clinic.get("billing_npis") or [])
+        self.tax_ids = frozenset(clinic.get("tax_ids") or [])
         self.runs: list[dict[str, Any]] = list(document.get("runs") or [])
         self.index: dict[str, Any] = document.get("index") or {}
         self.subjects: dict[str, dict[str, Any]] = document.get("subjects") or {}
+        if not self.chain_id or self.run_number < 1:
+            raise AnonymizeError("the key carries no chain id or run number")
         self._reverse: dict[str, dict[str, str]] = {}
         for family in VALUE_FAMILIES:
             mapping = (document.get("values") or {}).get(family) or {}
             self._reverse[family] = {value_key(pseudo): original for original, pseudo in mapping.items()}
+
+    def subject(self, key: str) -> Subject | None:
+        """A subject of the key, read back without a pseudonymizer (it maps nothing new)."""
+        document = self.subjects.get(key)
+        return None if document is None else Subject.from_document(key, document, None)
 
     def original(self, family: str, pseudonym: str) -> str | None:
         """The original of a pseudonymized identifier, address part or claim number."""

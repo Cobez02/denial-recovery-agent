@@ -14,7 +14,7 @@ uv run pytest tests/test_classifier_set.py -q -s    # one file, with the per-cat
 On this machine (Windows, path with a space) the same thing is
 `"C:/Users/conno/Denial Agent/.venv/Scripts/python.exe" -m pytest tests -q -o addopts=""`.
 
-Counted on Oct 30, 2026 with `pytest tests --co -q`: **994 tests in 28 files**. One of them
+Counted on Oct 30, 2026 with `pytest tests --co -q`: **1010 tests in 28 files**. One of them
 (`tests/test_prompt_regression.py::test_live_model_outputs_are_schema_valid_and_faithful`, marker
 `live_llm`) skips unless `ANTHROPIC_API_KEY` and `LLM_PROVIDER=anthropic` are set; nothing else skips.
 The numbers move as the suite grows; the commands above regenerate them.
@@ -45,7 +45,7 @@ Other layers the plan implies:
 | Pipeline, jobs, matching | `tests/test_pipeline.py`, `tests/test_jobs.py`, `tests/test_matching.py` | One proposed work item per label with every citation resolving, savepoint isolation of a failing claim, inline and rq job runners, the worker's masked failures, every matching method |
 | Playbooks and drafting | `tests/test_playbooks.py`, `tests/test_drafting.py` | Every category's behaviour (the chiropractic modifier situations: AT with and without note support, never over an ABN modifier, never on documented maintenance care and only for the payers that use it, GP on therapy lines, AT removed from an E/M line, the CMT / 97140 bundled pair with and without a separate region and with the modifier missing or billed, an E/M bundled into CMT, once-per-day CMT, the medical-necessity keyword families and the primary-diagnosis rule), deadlines counted from the remittance, corrected-claim builder and diff (a new claim to another payer included), letters for every category, fact check, PDF fallback |
 | Synthetic data | `tests/test_synthetic.py` | The chiropractic profile's contract and payer billing rules (ages, G0283, sequestration, the ordering provider on X-ray claims), what the loader rejects, determinism, the committed fixture reproduced byte for byte, 835 balancing (non-covered PR lines in CLP05, CO-253), labels versus adjustments and the ingest rule's dollar value, region-paired diagnoses, the SOAP elements in the active-treatment notes and plan arithmetic that adds up, follow-up amounts following the outcome rule |
-| Pseudonymized real data | `tests/test_anonymize.py` | `denial-agent anonymize` on batches the tests generate themselves: no original name, member id, account number, date of birth or address in any output byte; zero unmatched remittances and the same work items, categories, actions, flags, dollars and deadlines from two databases (with and without `--replace-claim-numbers` and `--shift-dates`); every 835 parses to the original once the key's values are put back; the key restores the claim export; `--seed` reproducible; a planted phone stops the run without echoing it; repository paths refused; subscriber, corrected-name, employer and REF ids in the 835; other delimiters and CRLF; a later batch (follow-up 835s and a letter) pseudonymized with `--key-in` matches the earlier claims and records the same outcomes as the raw one, and mismatched options or foreign keys are refused; `deanonymize` turns the pseudonymized database's corrected-claim and appeal packages into the raw database's with no pseudonym left, renders the PDF again, and refuses leftovers, foreign keys, unknown members, repository paths and overwrites |
+| Pseudonymized real data | `tests/test_anonymize.py` | 40 | `denial-agent anonymize`: no identifier left (variants, other patients, ordinary-word and provider names, PLB ids, non-835 files), same processing in two databases, 835 parse and key round trip, the leak sweep, strict CSVs, placement and key-chain refusals, test-only options, a later batch with `--key-in`; `deanonymize` restoring export packages with the newest key; a three-month rehearsal |
 | CLI | `tests/test_cli.py` | Every command including `list-payers`/`set-payer`, exit codes (`partial` pipeline runs exit 1), `serve` refusing a placeholder `SECRET_KEY` with a readable error, `purge-clinic` deleting uploads and export packages, refusing to report destruction when a file survives, clearing unmatched CLPs and leaving no purged name in the SQLite file |
 
 ## Milestone done-when checks that are tests
@@ -63,7 +63,7 @@ Other layers the plan implies:
 
 ## Tests per file
 
-From `pytest tests --co -q` on Oct 30, 2026 (994 in all).
+From `pytest tests --co -q` on Oct 30, 2026 (1010 in all).
 
 | File | Tests | Covers |
 |---|---|---|

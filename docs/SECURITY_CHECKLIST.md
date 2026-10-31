@@ -78,6 +78,23 @@ Each line names the code and the way to check it.
   file; on PostgreSQL the DBA runs `VACUUM FULL` after a purge. The zip is the hand-over copy: delete it
   once delivered. Check: `uv run pytest tests/test_cli.py -q -k purge` (one test greps the SQLite file
   for the purged names).
+- **Pseudonymized batches** (`denial-agent anonymize`, `app/anonymize/`, `docs/SPEC.md` section 16): a
+  pseudonymized batch keeps dates of service, so it is a limited data set and still PHI: every control
+  in this file applies to it as it does to raw data. The commands need no database and run on the
+  clinic's own computer, installed from a built wheel (README, Running real data). Checked by the code:
+  no input, output or key inside the repository (aliases and junctions included); no output or key in
+  OneDrive, Dropbox, Google Drive, iCloud or Box; the key never inside or beside the output folder nor on
+  its removable volume; an owner-only ACL on the key (Windows: `icacls`); nothing written while a note
+  still carries an identifier-shaped value or while the leak sweep finds any original of the key in an
+  output byte or file name; only real 835s copied; `--seed` and `--shift-dates` only with `--test-only`;
+  an older key of the chain and another clinic's key refused; export packages of a pseudonymized claim
+  marked until `denial-agent deanonymize` restores them with the newest key, outside the repository,
+  synced folders and the packages' folder, never over an existing file, the audit excerpt left out.
+  Procedure, not code: keep the key folder on the clinic's computer with dated backup copies on clinic
+  media, use only the newest key, never type real identifiers into the app, read the notes for names the
+  batch does not carry, and never send a package whose name starts with `PSEUDONYMIZED_`. The commands
+  record no audit events (no database); their run log `denial-agent-runs.log` sits next to the key.
+  Check: `uv run pytest tests/test_anonymize.py -q`.
 - **Patient pseudonym**: `patients.token` is `PT-` plus six hex characters of
   `sha256("<clinic_id>:<account_number>")`. It is a display label inside the clinic's own system (queue,
   letters without the patient block, API), not a security boundary: anyone with the database can read

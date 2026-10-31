@@ -6,6 +6,11 @@ the appeal letter as text, HTML and PDF (or a README when the PDF renderer is mi
 appeal, ``clinic_question.txt`` for a question to the clinic, and ``audit_excerpt.json`` with the
 audit rows of the claim. The first export moves the item to ``exported``; later downloads of an
 exported or submitted item are allowed and audited again.
+
+A claim imported from a pseudonymized batch (``app/review/pseudonymized.py``) gets a package that
+cannot pass for a real one: ``PSEUDONYMIZED_`` in front of the zip name, a banner on top of the
+letter and the clinic question, ``"pseudonymized": true`` in ``summary.json`` and a marker column in
+the corrected claim CSV. ``denial-agent deanonymize`` removes them while it restores the package.
 """
 
 from __future__ import annotations
@@ -28,8 +33,8 @@ from app.config import get_settings
 from app.drafting.corrected_claim import corrected_claim_to_csv_rows
 from app.drafting.pdf import letter_html, render_pdf
 from app.enums import ActionType, ReviewActionType, WorkItemStatus
-from app.models import AuditLog, Patient, WorkItem
-from app.review import service
+from app.models import AuditLog, Claim, ImportBatch, Patient, WorkItem
+from app.review import pseudonymized, service
 from app.schemas import CLAIM_EXPORT_COLUMNS
 
 log = logging.getLogger(__name__)
@@ -57,6 +62,11 @@ def _dumps(data: Any) -> bytes:
     )
 
 
+def _money(value: Decimal | None) -> str | None:
+    """A dollar amount at a fixed two-decimal scale: '385.00' whether or not the row was reloaded."""
+    return None if value is None else str(Decimal(value).quantize(Decimal("0.01")))
+
+
 def patient_fields(patient: Patient | None) -> dict[str, Any]:
     """The patient block of the claim export, taken from the patient record (not from the proposal)."""
     if patient is None:
@@ -75,13 +85,29 @@ def patient_fields(patient: Patient | None) -> dict[str, Any]:
     }
 
 
-def csv_bytes(rows: list[dict[str, str]]) -> bytes:
+def csv_bytes(rows: list[dict[str, str]], *, pseudonymized_marker: bool = False) -> bytes:
+    columns = [*CLAIM_EXPORT_COLUMNS, *([pseudonymized.CSV_COLUMN] if pseudonymized_marker else [])]
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=list(CLAIM_EXPORT_COLUMNS), lineterminator="\n")
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     for row in rows:
-        writer.writerow({column: row.get(column, "") for column in CLAIM_EXPORT_COLUMNS})
+        out = {column: row.get(column, "") for column in CLAIM_EXPORT_COLUMNS}
+        if pseudonymized_marker:
+            out[pseudonymized.CSV_COLUMN] = pseudonymized.CSV_VALUE
+        writer.writerow(out)
     return buffer.getvalue().encode("utf-8")
+
+
+def from_pseudonymized_batch(session: Session, claim: Claim) -> bool:
+    """True when the claim's last import came from a file `denial-agent anonymize` wrote."""
+    if claim.import_batch_id is None:
+        return False
+    batch = session.get(ImportBatch, claim.import_batch_id)
+    return batch is not None and pseudonymized.is_pseudonymized_file(batch.file_name)
+
+
+def _bannered(text: str, marked: bool) -> str:
+    return f"{pseudonymized.BANNER}\n\n{text}" if marked else text
 
 
 def audit_rows_for_claim(session: Session, claim_id: int | None) -> list[dict[str, Any]]:
@@ -107,9 +133,10 @@ def audit_rows_for_claim(session: Session, claim_id: int | None) -> list[dict[st
     ]
 
 
-def package_file_name(work_item: WorkItem, version: int, now: datetime) -> str:
+def package_file_name(work_item: WorkItem, version: int, now: datetime, *, marked: bool = False) -> str:
     ccn = _SAFE.sub("-", work_item.claim.claim_control_number or "claim").strip("-")[:40]
-    return f"work_item_{work_item.id}_{ccn}_v{version}_{now.strftime('%Y%m%dT%H%M%SZ')}.zip"
+    prefix = pseudonymized.ZIP_PREFIX if marked else ""
+    return f"{prefix}work_item_{work_item.id}_{ccn}_v{version}_{now.strftime('%Y%m%dT%H%M%SZ')}.zip"
 
 
 def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tuple[bytes, str]:
@@ -121,6 +148,7 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
     payer = claim.payer
     now = datetime.now(UTC)
     action_type = str(proposal.action_type)
+    marked = from_pseudonymized_batch(session, claim)
     members: dict[str, bytes] = {}
 
     summary = {
@@ -135,7 +163,7 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
         "rationale": proposal.rationale,
         "deadline": work_item.deadline,
         "deadline_kind": work_item.deadline_kind,
-        "dollar_value": work_item.dollar_value,
+        "dollar_value": _money(work_item.dollar_value),
         "citations": proposal.citations or [],
         "flags": list(work_item.flags or []),
         "coding_change": bool(proposal.coding_change),
@@ -165,6 +193,8 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
         "submitted_by_software": False,
         "note": "Produced by the Denial Recovery Agent for a human to submit. Nothing has been sent.",
     }
+    if marked:
+        summary[pseudonymized.SUMMARY_KEY] = True
     members["summary.json"] = _dumps(summary)
 
     if action_type == str(ActionType.CORRECTED_CLAIM):
@@ -172,10 +202,10 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
         if corrected is not None:
             members["corrected_claim.json"] = _dumps(corrected.model_dump(mode="json"))
             members["corrected_claim.csv"] = csv_bytes(
-                corrected_claim_to_csv_rows(corrected, patient_fields(patient))
+                corrected_claim_to_csv_rows(corrected, patient_fields(patient)), pseudonymized_marker=marked
             )
     if action_type == str(ActionType.APPEAL) and proposal.appeal_letter:
-        letter = proposal.appeal_letter
+        letter = _bannered(proposal.appeal_letter, marked)
         title = f"Appeal of claim {claim.claim_control_number}"
         members["appeal_letter.txt"] = letter.encode("utf-8")
         html = letter_html(letter, title)
@@ -186,7 +216,7 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
         else:
             members["README.txt"] = PDF_README.encode("utf-8")
     if action_type == str(ActionType.CLINIC_QUESTION) and proposal.clinic_question:
-        members["clinic_question.txt"] = proposal.clinic_question.encode("utf-8")
+        members["clinic_question.txt"] = _bannered(proposal.clinic_question, marked).encode("utf-8")
     members["audit_excerpt.json"] = _dumps(audit_rows_for_claim(session, work_item.claim_id))
 
     buffer = io.BytesIO()
@@ -195,7 +225,7 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
             zf.writestr(name, data)
     payload = buffer.getvalue()
 
-    file_name = package_file_name(work_item, proposal.version, now)
+    file_name = package_file_name(work_item, proposal.version, now, marked=marked)
     export_dir: Path = get_settings().export_path
     export_dir.mkdir(parents=True, exist_ok=True)
     (export_dir / file_name).write_bytes(payload)
@@ -229,4 +259,11 @@ def build_export_package(session: Session, work_item: WorkItem, user: Any) -> tu
     return payload, file_name
 
 
-__all__ = ["PDF_README", "audit_rows_for_claim", "build_export_package", "csv_bytes", "patient_fields"]
+__all__ = [
+    "PDF_README",
+    "audit_rows_for_claim",
+    "build_export_package",
+    "csv_bytes",
+    "from_pseudonymized_batch",
+    "patient_fields",
+]

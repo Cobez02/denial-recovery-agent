@@ -902,7 +902,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         required=True,
         metavar="OUT_DIR",
-        help="a new or empty folder outside the repository and any synced folder (the folder that travels)",
+        help=(
+            "a new or empty folder outside the repository and any synced folder (the folder the clinic "
+            "uploads through the secure transfer service)"
+        ),
     )
     p.add_argument(
         "--key-out",
@@ -910,8 +913,8 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="KEY.json",
         help=(
-            "the key file to create, in the clinic's key folder: not in or beside OUT_DIR, not on its removable "
-            "drive, not in the repository or a synced folder"
+            "the key file to create, in the clinic's key folder: not in or beside OUT_DIR, not on a "
+            "removable or network volume it is written to, not in the repository or a synced folder"
         ),
     )
     p.add_argument(

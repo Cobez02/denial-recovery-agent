@@ -103,8 +103,11 @@ legal or coding advice and does not replace the Clinic's biller, coder or provid
 
 2.3 **Operation.** BTP operates the Software on its own workstation in the United States, within a
 dedicated operating-system account used only for this work, on an encrypted disk, in accordance with
-BTP's written security policies. The Software does not send any information to a language model
-provider until the conditions in Exhibit B of the BAA are met and the Clinic has received written notice.
+BTP's written security policies. The Clinic runs only the Software's anonymize and deanonymize
+commands, on a Clinic computer, under Section 5(h); BTP does not operate them and does not receive
+the Clinic's original files, the key files or restored Export Packages. The Software does not send
+any information to a language model provider until the conditions in Exhibit B of the BAA are met
+and the Clinic has received written notice.
 
 2.4 **Possible overpayments.** If BTP notices a possible overpayment to the Clinic, such as a duplicate
 payment or a payment made in error, it shall tell the Clinic in writing within five (5) Business Days,
@@ -161,25 +164,33 @@ unprocessable, which is resubmitted as a new claim within twelve (12) months of 
 with an authenticator application enrolled, and tell BTP the same day when a person's access
 should end;
 
-(e) not enter patient names or other patient identifiers in the Software's free-text reason fields, which
-are retained in the Software's permanent audit log;
+(e) not enter patient names or other patient identifiers, including the Clinic's own claim numbers
+for pseudonymized claims, in any field of the Software (reason fields are retained in its permanent
+audit log);
 
 (f) tell BTP promptly about any suspected security incident on the Clinic's side that may affect
-the pilot; and
+the pilot;
 
-(g) confirm each payer's filing, corrected-claim and appeal deadlines from its contracts or payer manuals.
+(g) confirm each payer's filing, corrected-claim and appeal deadlines from its contracts or payer
+manuals; and
+
+(h) pseudonymize its files with the Software's anonymize command before each transfer and restore
+each Export Package with the Software's deanonymize command before submitting it, both on a Clinic
+computer and as Exhibit B describes; keep the key files, with backup copies, under the Clinic's
+control and use only the newest; and never submit an Export Package whose name begins with
+"PSEUDONYMIZED_".
 
 ### 6. Data in Scope; Minimum Necessary
 
 6.1 **In scope:** (a) the remittance files for the Claims in Scope; (b) a report of denied claims only,
-with the fields listed in Exhibit B; (c) clinical note excerpts, only for denied claims in scope, limited
-to the denied visit and, for a medical-necessity denial, the initial examination or the latest
-re-examination; (d) the text of payer letters and portal messages for those claims; and (e) each payer's
-filing, corrected-claim and appeal deadlines.
+and of the claims the Clinic sent to replace them, with the fields listed in Exhibit B; (c) clinical
+note excerpts, only for denied claims in scope, limited to the denied visit and, for a medical-necessity
+denial, the initial examination or the latest re-examination; (d) the text of payer letters and portal
+messages for those claims; and (e) each payer's filing, corrected-claim and appeal deadlines.
 
 6.2 **Out of scope:** complete medical records, Social Security numbers, images of insurance cards or
 identification documents, payment card or bank account information, and claims that were not denied
-(other than as they appear in remittance files).
+(other than as they appear in remittance files, and the claims the Clinic sent to replace denied claims).
 
 6.3 **Use.** BTP uses Clinic Data only as permitted by the BAA.
 
@@ -292,8 +303,9 @@ misleading, and shall disclose any material connection between the parties as re
 ### 13. Liability and Insurance
 
 13.1 **Responsibility.** Each party is responsible for its own acts and omissions, its own personnel and its
-own compliance with law. BTP is responsible for operating the Software and protecting Clinic Data
-as the BAA requires; the Clinic is responsible for its decisions and submissions under Section 4.
+own compliance with law. BTP is responsible for operating the Software, other than the commands the
+Clinic runs under Section 5(h), and protecting Clinic Data as the BAA requires; the Clinic is
+responsible for its decisions and submissions under Section 4.
 
 13.2 **Limitation of liability.** This Section 13.2 applies to claims under this Agreement and under the
 BAA. Each party's total liability arising out of or relating to this Agreement or the BAA shall not exceed

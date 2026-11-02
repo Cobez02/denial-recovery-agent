@@ -93,6 +93,7 @@ CLOSING_RESULTS: frozenset[OutcomeResult] = frozenset(
 # Results a later reversal can take back: a closed item's latest outcome must be one of these.
 TAKEBACK_RESULTS: frozenset[OutcomeResult] = frozenset({OutcomeResult.PAID, OutcomeResult.PARTIAL})
 MATCH_CLAIM_ID = "claim_id"
+MATCH_ORIGINAL_CLAIM = "original_claim"
 MATCH_SUBMITTED_CCN = "submitted_ccn"
 # Why a candidate work item was not given an outcome (logged with the ids, stored nowhere).
 SKIP_BEFORE_SUBMISSION = "remittance_before_submission"
@@ -297,13 +298,26 @@ def names_corrected_claim(work_item: WorkItem, rc: RemittanceClaim) -> bool:
     return bool(pcn) and submitted == pcn and submitted != original
 
 
+def replaces_claim(work_item: WorkItem, rc: RemittanceClaim) -> bool:
+    """The CLP's claim replaces the work item's claim: the claims import linked them through the
+    export's original claim number (a corrected claim the clinic numbered itself)."""
+    claim = rc.claim
+    return (
+        claim is not None
+        and claim.original_claim_id is not None
+        and claim.original_claim_id == work_item.claim_id
+    )
+
+
 def skip_reason(work_item: WorkItem, rc: RemittanceClaim) -> str | None:
     """Why `rc` cannot be the outcome of `work_item`, or None when it can.
 
     A remittance dated before the submission cannot answer the fix (backfilled or re-delivered
     835s). A same-claim CLP from another payer is a coincidence (a secondary payer's remittance,
-    say), unless it names the corrected claim's own control number: that claim may have been sent
-    to the payer a letter named. A remittance whose payer is unknown is accepted.
+    say), unless it names the corrected claim's own control number (that claim may have been sent
+    to the payer a letter named) or comes from the payer of the claim that replaces the work item's
+    claim (the clinic may have sent its replacement elsewhere). A remittance whose payer is unknown
+    is accepted.
     """
     remittance = rc.remittance
     dated = remittance_date(remittance)
@@ -316,17 +330,23 @@ def skip_reason(work_item: WorkItem, rc: RemittanceClaim) -> str | None:
         and claim_payer_id is not None
         and remittance_payer_id != claim_payer_id
         and not names_corrected_claim(work_item, rc)
+        and not (replaces_claim(work_item, rc) and rc.claim.payer_id == remittance_payer_id)
     ):
         return SKIP_OTHER_PAYER
     return None
 
 
 def _matching_work_items(session: Session, rc: RemittanceClaim, statuses: tuple[str, ...]) -> list[WorkItem]:
-    """Work items in `statuses` on the CLP's claim or carrying CLP01 as their submitted control
-    number, by id, without the work item the CLP itself created (a denial is not its own outcome)."""
+    """Work items in `statuses` on the CLP's claim, on the claim it replaces (a corrected claim the
+    clinic numbered itself, linked by the export's original claim number) or carrying CLP01 as their
+    submitted control number, by id, without the work item the CLP itself created (a denial is not
+    its own outcome)."""
     conditions = []
     if rc.claim_id is not None:
         conditions.append(WorkItem.claim_id == rc.claim_id)
+        original_id = rc.claim.original_claim_id if rc.claim is not None else None
+        if original_id is not None:
+            conditions.append(WorkItem.claim_id == original_id)
     pcn = (rc.patient_control_number or "").strip()
     if pcn:
         conditions.append(WorkItem.submitted_claim_control_number == pcn)
@@ -337,16 +357,24 @@ def _matching_work_items(session: Session, rc: RemittanceClaim, statuses: tuple[
 
 
 def _match_method(work_item: WorkItem, rc: RemittanceClaim) -> str:
+    """How the CLP reached the work item; the number the reviewer recorded outranks the claim link."""
     if rc.claim_id is not None and work_item.claim_id == rc.claim_id:
         return MATCH_CLAIM_ID
+    pcn = (rc.patient_control_number or "").strip()
+    if pcn and (work_item.submitted_claim_control_number or "").strip() == pcn:
+        return MATCH_SUBMITTED_CCN
+    if replaces_claim(work_item, rc):
+        return MATCH_ORIGINAL_CLAIM
     return MATCH_SUBMITTED_CCN
 
 
 def candidate_work_items(session: Session, rc: RemittanceClaim) -> list[tuple[WorkItem, str]]:
     """Submitted work items this CLP can answer, with how each matched.
 
-    Match methods: "claim_id" (same claim) or "submitted_ccn" (CLP01 equals the control number of
-    the corrected claim the clinic submitted for the work item). Work items the remittance cannot
+    Match methods: "claim_id" (same claim), "original_claim" (the CLP's claim replaces the work
+    item's claim: a corrected claim the clinic numbered itself) or "submitted_ccn" (CLP01 equals the
+    control number of the corrected claim the clinic submitted for the work item). Work items the
+    remittance cannot
     answer (see :func:`skip_reason`) are left out and logged by id. Closed items are never
     candidates here; a reversal reaches them through :func:`takeback_candidates`.
     """
@@ -364,7 +392,7 @@ def takeback_candidates(session: Session, rc: RemittanceClaim) -> list[tuple[Wor
     """Closed work items whose payment this reversal CLP takes back, with how each matched.
 
     Empty for anything but a CLP02 22. A closed item qualifies when it was submitted, its latest
-    outcome (:func:`latest_outcome`) is paid or partial, the CLP matches it the two usual ways
+    outcome (:func:`latest_outcome`) is paid or partial, the CLP matches it the usual ways
     without being its own originating CLP, the gates of :func:`skip_reason` pass, and the reversal's
     remittance is dated on or after that outcome (:func:`outcome_date`); an earlier one is skipped
     and logged by id as `remittance_before_outcome`. Items closed by hand (no outcome), closed by a
@@ -440,7 +468,7 @@ def record_outcome(
         payment_date = remittance_date(rc.remittance)
 
     result, details = classify_outcome(rc, work_item.dollar_value, reasons=work_item.all_reasons)
-    details["match"] = match or (MATCH_CLAIM_ID if rc.claim_id == work_item.claim_id else MATCH_SUBMITTED_CCN)
+    details["match"] = match or _match_method(work_item, rc)
     details["remittance_id"] = rc.remittance_id
     now = datetime.now(UTC)
     paid = Decimal(rc.paid_amount or 0)
@@ -595,6 +623,7 @@ __all__ = [
     "existing_outcome",
     "latest_outcome",
     "names_corrected_claim",
+    "replaces_claim",
     "on_disputed_lines",
     "ordered_outcomes",
     "outcome_date",

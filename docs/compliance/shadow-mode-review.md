@@ -42,9 +42,15 @@ begin the live phase.
 Plumbline's answer.
 
 **Category agreement.** The biller's categories are recorded in a labels file inside CBWORK that maps each
-claim number to a category, using Plumbline's category names: `eligibility`, `authorization`,
-`modifier`, `duplicate`, `timely_filing`, `medical_necessity`, `bundling`, `coordination_of_benefits`,
-`missing_information`, `contractual`, `patient_responsibility` and `other`.
+claim number, as Plumbline shows it, to a category, using Plumbline's category names: `eligibility`,
+`authorization`, `modifier`, `duplicate`, `timely_filing`, `medical_necessity`, `bundling`,
+`coordination_of_benefits`, `missing_information`, `contractual`, `patient_responsibility` and `other`.
+When claim numbers are replaced in a pseudonymized batch, these are the pseudonyms. BTP gives the biller,
+through the secure transfer service, a list of the period's claims, each with its work item number, if it
+has one, and its claim number as Plumbline shows it, with payer, dates of service, procedure codes,
+denial codes and amounts but without Plumbline's category or action; the biller ties each to its own
+claim at the Clinic, with the Clinic's key or its own records. The Clinic's own claim numbers are never
+written into CBWORK.
 
 The biller labels each claim with the one category Plumbline would give it:
 

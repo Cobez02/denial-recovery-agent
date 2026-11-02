@@ -606,6 +606,52 @@ def test_match_via_submitted_control_number_on_corrected_claim_row(
     assert claim.status == "paid" and corrected.status == "paid"
 
 
+def test_a_corrected_claim_the_clinic_numbered_itself_answers_the_item(
+    session, clinic, payer, patient, submitted_item
+):
+    """The clinic's system gave the resubmission a number of its own (not CLM-0001-R1) and the later
+    claim export links it to the original claim: the payment reaches the item through that link."""
+    claim, _, _, work_item = submitted_item
+    corrected = make_claim(session, clinic, payer, patient, "CL7-000042", frequency_code="7", original=claim)
+    followup = make_remittance(session, payer)
+    rc = make_rc(session, followup, pcn="CL7-000042", claim=corrected, status_code="1", paid="100.00")
+
+    assert [(wi.id, how) for wi, how in candidate_work_items(session, rc)] == [
+        (work_item.id, "original_claim")
+    ]
+    [outcome] = record_outcomes_for_remittance(session, followup)
+    assert outcome.result == "paid"
+    assert outcome.details["match"] == "original_claim"
+    assert work_item.status == "closed"
+    assert claim.status == "paid" and corrected.status == "paid"
+
+
+def test_a_replacement_sent_to_another_payer_answers_through_that_payer(
+    session, clinic, payer, other_payer, patient, submitted_item
+):
+    """The clinic sent its own replacement claim to another payer: that payer's answer reaches the
+    item through the original-claim link, while a third payer's CLP on the same claim is still skipped."""
+    claim, _, _, work_item = submitted_item
+    corrected = make_claim(
+        session, clinic, other_payer, patient, "CL7-000043", frequency_code="7", original=claim
+    )
+    third = Payer(name="Third Synthetic Plan", payer_id="SYN003")
+    session.add(third)
+    session.flush()
+    stray = make_remittance(session, third)
+    stray_rc = make_rc(session, stray, pcn="CL7-000043", claim=corrected, status_code="1", paid="100.00")
+    assert candidate_work_items(session, stray_rc) == []
+    assert record_outcomes_for_remittance(session, stray) == []
+
+    followup = make_remittance(session, other_payer)
+    rc = make_rc(session, followup, pcn="CL7-000043", claim=corrected, status_code="1", paid="100.00")
+    assert [(wi.id, how) for wi, how in candidate_work_items(session, rc)] == [
+        (work_item.id, "original_claim")
+    ]
+    [outcome] = record_outcomes_for_remittance(session, followup)
+    assert outcome.result == "paid" and work_item.status == "closed"
+
+
 def test_match_unlinked_clp_by_submitted_control_number(session, payer, submitted_item):
     claim, _, _, work_item = submitted_item
     followup = make_remittance(session, payer)

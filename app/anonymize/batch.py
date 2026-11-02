@@ -29,12 +29,15 @@ every note and letter is rewritten with every patient of the batch and of the ke
 (``app.anonymize.sweep``) searches every output byte and file name for every original the new key
 holds; one hit and nothing is written.
 
-**Output.** Files are written as ``pseudonymized_run<N>_<kind>_<n>.<ext>`` (the importer records the
-name, and the export marks every package of such a claim) into a temporary sibling of OUT_DIR that is
-renamed at the end; KEY.json is written last, also under a temporary name, with an owner-only ACL,
-and never over an existing file. On any failure both are removed. One JSON line goes to the run log
-next to the key. The command needs no database and audits nothing (SPEC section 0 lists the
-exception); the import of the pseudonymized batch is audited as every import is.
+**Output.** The claim export carries the contract's columns in order plus one last column,
+``pseudonymized_batch`` = ``yes`` (``app.review.pseudonymized``): the importer records it on every
+claim of the batch, so the export marks every package of such a claim whatever the file is called;
+notes, payer documents and 835s carry no marker. Files are written as
+``pseudonymized_run<N>_<kind>_<n>.<ext>`` into a temporary sibling of OUT_DIR that is renamed at the
+end; KEY.json is written last, also under a temporary name, with an owner-only ACL, and never over an
+existing file. On any failure both are removed. One JSON line goes to the run log next to the key.
+The command needs no database and audits nothing (SPEC section 0 lists the exception); the import of
+the pseudonymized batch is audited as every import is.
 
 **A later batch** (``key_in``) is pseudonymized with the newest key of the clinic's chain: the run
 starts from everything that key maps and from its claim index, so a known patient, member id or
@@ -311,10 +314,10 @@ def check_paths(
 
     Refused: an input that is not a folder; an input, output folder or key inside the repository;
     input and output folders that are the same or nested; a key inside or beside the output folder
-    (the folder that travels), or on the same removable or network volume; an output folder or key
-    in a synced folder; an output folder that is not empty; a key file that already exists; a
-    ``key_in`` that is missing, inside the repository, synced, inside the output folder or the
-    same file as the key to write.
+    (the folder the clinic uploads through the secure transfer service), or on the same removable or
+    network volume; an output folder or key in a synced folder; an output folder that is not empty;
+    a key file that already exists; a ``key_in`` that is missing, inside the repository, synced,
+    inside the output folder or the same file as the key to write.
     """
     source = paths.canonical(in_dir)
     out = paths.canonical(out_dir)
@@ -1096,11 +1099,19 @@ class _Run:
 
 
 def _render_csv(kind: str, rows: list[dict[str, str]]) -> bytes:
+    """The contract's columns in order; the claim export also carries the marker column last
+    (``pseudonymized_batch`` = ``yes``), which the importer records on every claim of the batch."""
+    columns = COLUMNS[kind]
+    header: list[str] = list(columns)
+    marker: list[str] = []
+    if kind == CLAIMS:
+        header.append(pseudonymized.IMPORT_COLUMN)
+        marker.append(pseudonymized.IMPORT_VALUE)
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
-    writer.writerow(COLUMNS[kind])
+    writer.writerow(header)
     for row in rows:
-        writer.writerow([row[column] for column in COLUMNS[kind]])
+        writer.writerow([*(row[column] for column in columns), *marker])
     return buffer.getvalue().encode("utf-8")
 
 
@@ -1121,8 +1132,10 @@ def restore_claim_row(row: dict[str, str], key: PseudonymKey) -> dict[str, str]:
     Every non-empty patient-block value must map back, and to the patient the account number names
     (a later batch's pseudonym, kept by an older key, is refused rather than copied onto a claim);
     so must every claim number when the key replaced them. Refusals name the column, never a value.
+    The batch's marker column (``pseudonymized_batch``), when the row carries it, is dropped.
     """
     out = dict(row)
+    out.pop(pseudonymized.IMPORT_COLUMN, None)
     subject = (
         key.subject_for_account(row["patient_account_number"]) if row["patient_account_number"] else None
     )

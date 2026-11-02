@@ -14,7 +14,7 @@ uv run pytest tests/test_classifier_set.py -q -s    # one file, with the per-cat
 On this machine (Windows, path with a space) the same thing is
 `"C:/Users/conno/Denial Agent/.venv/Scripts/python.exe" -m pytest tests -q -o addopts=""`.
 
-Counted on Oct 30, 2026 with `pytest tests --co -q`: **1010 tests in 28 files**. One of them
+Counted on Nov 2, 2026 with `pytest tests --co -q`: **1013 tests in 28 files**. One of them
 (`tests/test_prompt_regression.py::test_live_model_outputs_are_schema_valid_and_faithful`, marker
 `live_llm`) skips unless `ANTHROPIC_API_KEY` and `LLM_PROVIDER=anthropic` are set; nothing else skips.
 The numbers move as the suite grows; the commands above regenerate them.
@@ -41,11 +41,11 @@ Other layers the plan implies:
 | Review queue | `tests/test_review_queue.py` | Ordering, pagination with exact totals, every action and its status rule, the note-excerpt gate, export packages (and that an export without the session cookie is refused), the JSON API tokenizing free text, the health-check cache, 20 items cleared over HTTP |
 | Auth / MFA | `tests/test_auth.py` | Wrong password or code rejected, a TOTP code accepted once, lockout, CSRF and origin checks, anonymous uploads refused before the body is read, oversized uploads refused before parsing |
 | Migrations | `tests/test_migrations.py` | `alembic upgrade head` on a fresh SQLite file equals the models (the full `compare_metadata` diff is empty), downgrade and re-upgrade, the Postgres-only audit trigger in the offline SQL |
-| Outcomes and metrics | `tests/test_outcomes.py`, `tests/test_metrics.py` | The outcome rule, the date and payer gates, reversals leaving the item submitted, take-backs reopening a closed item (the two passes, the reopen events, the date-before-outcome gate, what can never be reopened, idempotence, a take-back from an 835 without a payment date still leaving recovered dollars), per-work-item counting by latest outcome, reversed fixes and taken-back dollars |
+| Outcomes and metrics | `tests/test_outcomes.py`, `tests/test_metrics.py` | The outcome rule, the date and payer gates, the original-claim link for a resubmission the clinic numbered itself, reversals leaving the item submitted, take-backs reopening a closed item (the two passes, the reopen events, the date-before-outcome gate, what can never be reopened, idempotence, a take-back from an 835 without a payment date still leaving recovered dollars), per-work-item counting by latest outcome, reversed fixes and taken-back dollars |
 | Pipeline, jobs, matching | `tests/test_pipeline.py`, `tests/test_jobs.py`, `tests/test_matching.py` | One proposed work item per label with every citation resolving, savepoint isolation of a failing claim, inline and rq job runners, the worker's masked failures, every matching method |
 | Playbooks and drafting | `tests/test_playbooks.py`, `tests/test_drafting.py` | Every category's behaviour (the chiropractic modifier situations: AT with and without note support, never over an ABN modifier, never on documented maintenance care and only for the payers that use it, GP on therapy lines, AT removed from an E/M line, the CMT / 97140 bundled pair with and without a separate region and with the modifier missing or billed, an E/M bundled into CMT, once-per-day CMT, the medical-necessity keyword families and the primary-diagnosis rule), deadlines counted from the remittance, corrected-claim builder and diff (a new claim to another payer included), letters for every category, fact check, PDF fallback |
 | Synthetic data | `tests/test_synthetic.py` | The chiropractic profile's contract and payer billing rules (ages, G0283, sequestration, the ordering provider on X-ray claims), what the loader rejects, determinism, the committed fixture reproduced byte for byte, 835 balancing (non-covered PR lines in CLP05, CO-253), labels versus adjustments and the ingest rule's dollar value, region-paired diagnoses, the SOAP elements in the active-treatment notes and plan arithmetic that adds up, follow-up amounts following the outcome rule |
-| Pseudonymized real data | `tests/test_anonymize.py` | 40 | `denial-agent anonymize`: no identifier left (variants, other patients, ordinary-word and provider names, PLB ids, non-835 files), same processing in two databases, 835 parse and key round trip, the leak sweep, strict CSVs, placement and key-chain refusals, test-only options, a later batch with `--key-in`; `deanonymize` restoring export packages with the newest key; a three-month rehearsal |
+| Pseudonymized real data | `tests/test_anonymize.py` (41 tests) | `denial-agent anonymize`: no identifier left (variants, other patients, ordinary-word and provider names, PLB ids, non-835 files), same processing in two databases, 835 parse and key round trip, the leak sweep, strict CSVs, placement and key-chain refusals, test-only options, a later batch with `--key-in`, the `pseudonymized_batch` marker column that keeps a renamed claims file's packages marked; `deanonymize` restoring export packages with the newest key; a three-batch rehearsal |
 | CLI | `tests/test_cli.py` | Every command including `list-payers`/`set-payer`, exit codes (`partial` pipeline runs exit 1), `serve` refusing a placeholder `SECRET_KEY` with a readable error, `purge-clinic` deleting uploads and export packages, refusing to report destruction when a file survives, clearing unmatched CLPs and leaving no purged name in the SQLite file |
 
 ## Milestone done-when checks that are tests
@@ -63,11 +63,11 @@ Other layers the plan implies:
 
 ## Tests per file
 
-From `pytest tests --co -q` on Oct 30, 2026 (1010 in all).
+From `pytest tests --co -q` on Nov 2, 2026 (1013 in all).
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_anonymize.py` | 24 | `denial-agent anonymize`: no identifier left, same processing in two databases, 835 parse and key round trip, determinism, residual check, refusals, a later batch with `--key-in`; `deanonymize` restoring export packages |
+| `tests/test_anonymize.py` | 41 | `denial-agent anonymize`: no identifier left, same processing in two databases, 835 parse and key round trip, determinism, residual check, refusals, a later batch with `--key-in`, the `pseudonymized_batch` marker column that keeps a renamed claims file's packages marked; `deanonymize` restoring export packages |
 | `tests/test_audit.py` | 11 | append-only guards, hash chain, canonical JSON |
 | `tests/test_auth.py` | 15 | accounts, login, TOTP replay guard (row-level), lockout, CSRF, upload gates and the declared-size refusal |
 | `tests/test_claims_import_golden.py` | 27 | claim export golden file, re-imports, notes and documents with the real injection scanner, payer windows |
@@ -84,7 +84,7 @@ From `pytest tests --co -q` on Oct 30, 2026 (1010 in all).
 | `tests/test_matching.py` | 11 | each matching method and its refusals |
 | `tests/test_metrics.py` | 13 | dashboard numbers, per-item counting, reversed fixes and taken-back dollars (totals and JSON), buckets, category agreement |
 | `tests/test_migrations.py` | 4 | upgrade/downgrade, model parity, Postgres trigger SQL |
-| `tests/test_outcomes.py` | 65 | the outcome rule and its gates (patient-responsibility codes, procedure-scoped lines, reversal status), take-backs reopening closed items and the two passes, what a reversal never reopens, outcomes dated by their remittance when the 835 carries no payment date |
+| `tests/test_outcomes.py` | 67 | the outcome rule and its gates (patient-responsibility codes, procedure-scoped lines, reversal status), a corrected claim the clinic numbered itself answering the item through the original-claim link (also from the other payer it was sent to), take-backs reopening closed items and the two passes, what a reversal never reopens, outcomes dated by their remittance when the 835 carries no payment date |
 | `tests/test_parser_golden.py` | 25 | 835 parser golden files and edge cases |
 | `tests/test_phi_in_logs.py` | 3 | raw log scan, route exceptions, uvicorn folding |
 | `tests/test_pipeline.py` | 4 | M3 done-when, one work item per label, audit trail and flags, idempotence and regenerate |

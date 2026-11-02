@@ -85,7 +85,7 @@ ePHI.
 
 ```mermaid
 flowchart LR
-    PM["Clinic practice-management system and clearinghouse"] -->|"835 files, claims report, notes, letters"| SH["Secure transfer service"]
+    PM["Clinic practice-management system and clearinghouse"] -->|"835 files, claims report, notes, letters, pseudonymized on a Clinic computer with anonymize (the original files and the key stay there)"| SH["Secure transfer service"]
     SH -->|"encrypted download in the CBWORK account"| TF["Transfer folder"]
     TF -->|"import"| DB[("Software database and uploads")]
     DB --> PL["Classification, proposals and letter drafting"]
@@ -94,14 +94,16 @@ flowchart LR
     PL --> RQ["Review queue on the local machine"]
     RQ -->|"approve and export"| EX["Export packages"]
     EX -->|"upload"| SH
-    SH --> CL["Clinic reviews and submits through its own channels"]
+    SH --> CL["Clinic restores with deanonymize on its own computer, reviews and submits through its own channels"]
     DB -->|"encrypted backup"| BK[("Encrypted backup drive")]
     DB -->|"clinic purge"| HZ["Hand-over file"]
     HZ -->|"upload, then delete"| SH
 ```
 
 1. The Clinic exports remittance files, a report of denied claims, clinical note excerpts and payer
-   letters, and places them on the secure transfer service.
+   letters, pseudonymizes them on its own computer with the Software's anonymize command (the original
+   files and the key stay with the Clinic, outside this analysis), and places the pseudonymized files on
+   the secure transfer service.
 2. The Security Official downloads them in the CBWORK account and imports them. Files imported from the
    command line are read in place; files uploaded through the imports page are copied to the Software's
    upload folder.
@@ -114,7 +116,9 @@ flowchart LR
    detects a remaining identifier of these kinds is blocked and recorded. Other dates, names of other
    persons, group numbers and prior authorization and payment trace numbers can remain in a request (R9).
 4. Clinic reviewers approve, edit or reject items in the review queue. Each approved item becomes an export
-   package returned to the Clinic through the secure transfer service. The Clinic submits.
+   package returned to the Clinic through the secure transfer service. Export packages of pseudonymized
+   claims are marked `PSEUDONYMIZED_`; the Clinic restores them with the Software's deanonymize command
+   on its own computer before it submits.
 5. Later remittance files record outcomes. Backups copy the data folder to the encrypted drive.
 6. At the end of the engagement, the clinic purge produces the hand-over file and deletes the Clinic's
    records; the remaining copies are destroyed as recorded in the Certificate of Return and Destruction.
@@ -215,7 +219,7 @@ Section 9 before ePHI is received.
 | M14 | Use a unique password from a password manager and multi-factor authentication on the secure transfer service and e-mail accounts | R12, R13 | | | |
 | M15 | Record the latest audit-log entry and its hash in each weekly review record | R18 | | | |
 | M16 | Rehearse the clinic purge and the Certificate of Return and Destruction on a synthetic clinic, in a separate installation with its own database, data folder and export folder, never in the CBWORK installation that holds the Clinic's data (the purge removes every uploaded file and export package and every unmatched remittance in its installation, whatever the clinic); a second clinic is served from its own installation | R21 | | | |
-| M17 | Each week, deliver to the Clinic through the secure transfer service a list of open items (claim number, payer, action, deadline) | R19, R25 | | | |
+| M17 | Each week, deliver to the Clinic through the secure transfer service a list of open items (work item number, claim number as the Software shows it, payer, date of service, total charge, proposed action, deadline; for a pseudonymized batch the claim number is the pseudonym the Clinic's newest key maps back) | R19, R25 | | | |
 | M18 | Complete training and the policy acknowledgment before receiving ePHI, then annually; give each Clinic reviewer the Software orientation | R6, R24 | | | |
 | M19 | Monthly: confirm Windows and browser updates; review and test dependency updates before installing them in CBWORK | R3, R26 | | | |
 | M20 | Business associate agreements and insurance in place; Vendor Register complete | All | | | |

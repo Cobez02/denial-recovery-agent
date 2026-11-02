@@ -29,6 +29,10 @@ claim lists the change, and your biller files it the way the payer requires.
 - The data is kept on one encrypted computer, in an account used only for this pilot, with no cloud
   synchronization, and on that computer's encrypted backup drive. Files move only through an encrypted file
   share or SFTP service, never by e-mail.
+- Before each upload, your team runs Plumbline's anonymize command on one of your computers: it replaces
+  patient names, identifiers, claim numbers, dates of birth and addresses, and the key that reverses this
+  never leaves that computer (your team keeps it, with dated backups). Packages come back marked
+  PSEUDONYMIZED_, and your team restores them with the deanonymize command before submitting.
 - Each of your reviewers has an individual login with a password and an authenticator app, and every
   approval, edit and export is recorded in an audit log.
 - Plumbline starts out working entirely offline. An AI model is used only after a separate business
@@ -40,20 +44,21 @@ claim lists the change, and your biller files it the way the payer requires.
   Other dates, names of other people and authorization or payment reference numbers can still be sent.
   Consumer AI tools never see your data.
 - When the pilot ends, you receive a copy of your records in Plumbline (patients, claims, notes, letters,
-  work items, proposals, review actions and outcomes); everything else, including remittance details and
-  the audit log, is destroyed, and you receive a signed certificate of return and destruction.
+  work items, proposals, review actions and outcomes), in the pseudonyms your key maps back. Everything
+  else, including remittance details and the audit log, is destroyed, and you receive a signed
+  certificate of return and destruction.
 
 ## What we ask of your team
 
 | When | What | Time |
 |---|---|---|
 | Before the start | Review and sign the business associate agreement and the pilot agreement (owner or an officer); a one-time data pull by your biller; payer deadlines from your contracts; account setup for each reviewer | A few hours in total |
-| Weeks 1 to 3: shadow phase | Plumbline works denials you have already handled, and nothing is sent anywhere. In a weekly review, your biller's decisions are compared with Plumbline's | 30 minutes a week, plus your biller's notes on each compared item |
-| Weeks 4 to 12: live phase | A weekly upload of new 835 files and denials; your reviewers approve, edit or reject each item at BTP's workstation, in a session BTP opens and attends; you submit what you approve | 30-minute weekly review; a target of under 5 minutes of review per item |
+| Before the first upload, then weekly | Install Plumbline's anonymize and deanonymize commands on one clinic computer, from the file BTP supplies (once); run anonymize on each batch before uploading it and deanonymize on each approved package before you submit it; a package marked PSEUDONYMIZED_ is never sent to a payer | Under an hour once; minutes each time |
+| Weeks 1 to 3: shadow phase | Plumbline works denials you have already handled, and nothing is sent anywhere. In a weekly review, your biller's decisions are compared with Plumbline's | 30 minutes a week, plus the biller's notes |
+| Weeks 4 to 12: live phase | A weekly upload of new 835 files and denials; your reviewers approve, edit or reject each item at BTP's workstation, in a session BTP opens and attends; you submit what you approve | 30 minutes a week; under 5 minutes per item |
 | End | Confirm receipt of your data copy | A few minutes |
 
-Moving from the shadow phase to the live phase requires your written approval, after Plumbline has
-matched your biller's decisions closely enough for two weeks in a row.
+Going live requires your written approval, after two weeks in a row of close agreement with your biller.
 
 ## Fees
 
@@ -77,9 +82,8 @@ Either side can end the pilot with 30 days' notice.
 1. Questions and a short demonstration using sample data.
 2. Review of the business associate agreement and the pilot agreement; signature by the owner or an
    officer.
-3. Agreement on the date range, followed by the data request; your biller uploads the files.
-4. Reviewer accounts set up in person, with each reviewer's authenticator app; the shadow phase begins on
-   the start date in the pilot agreement.
+3. Agreement on the date range, then the data request; your biller pseudonymizes and uploads the files.
+4. Reviewer accounts set up in person; the shadow phase begins on the start date in the pilot agreement.
 
 ## Contact
 

@@ -32,6 +32,7 @@ after any change to the Markdown versions.
 |---|---|---|
 | [Pilot Overview](clinic-pilot-overview.md) | Summary for the Clinic owner | Clinic owner |
 | [Clinic Data Request](clinic-data-request.md) | What the Clinic sends, in what format, and how | Clinic biller |
+| [Clinic Set-up Sheet](clinic-setup-sheet.md) | Installing and running the anonymize and deanonymize commands on a Clinic computer | Clinic biller or IT contact |
 | [Weekly Shadow-Phase Review](shadow-mode-review.md) | Weekly comparison of Plumbline with the Clinic's biller | BTP; Clinic biller |
 | [Coder Review Worksheet](coder-review-worksheet.md) | Review of coding assumptions and rules with a certified coder | BTP; certified coder |
 | [Insurance Checklist](insurance-checklist.md) | Questions for the insurance broker | BTP |
@@ -45,17 +46,21 @@ after any change to the Markdown versions.
 2. Pilot Overview provided to the Clinic; Business Associate Agreement and Pilot Agreement signed, with the
    Clinic Data Request as Exhibit B and the certificates of insurance attached as Exhibit C.
 3. Business associate agreement signed with any transfer or video service BTP provides; reviewer
-   orientation given and reviewer accounts set up; then the Clinic sends its files. Each payer's deadlines
-   (Clinic Data Request, Section 6) are entered with `denial-agent set-payer` after the claims import and
-   before the first 835 import, because a work item's deadline is fixed when the item is created.
+   orientation given and reviewer accounts set up; then the Clinic sends its files, pseudonymized on a
+   Clinic computer with Plumbline's anonymize command (installed from the wheel BTP supplies) before
+   each upload. Each payer's deadlines (Clinic Data Request, Section 6) are entered with
+   `denial-agent set-payer` after the claims import and before the first 835 import, because a work
+   item's deadline is fixed when the item is created.
 4. Coder review completed; shadow phase begins, with a weekly review.
 5. Model provider engaged only after its business associate agreement and the configuration checks are
    complete, with written notice to the Clinic.
 6. At the end of the engagement, the Certificate of Return and Destruction is completed and signed.
 
-The Data Use Agreement is not needed while the Business Associate Agreement is in effect. If the parties
-nevertheless choose an evaluation on a limited data set, the Data Use Agreement is signed before any
-limited data set is sent, and the Business Associate Agreement also applies to that data.
+The Data Use Agreement is not needed while the Business Associate Agreement is in effect: the pilot's
+pseudonymized batches are limited data sets, which the Business Associate Agreement covers. If the
+parties nevertheless choose a separate evaluation on a limited data set under the Data Use Agreement,
+it is signed before any such data is sent, and the Business Associate Agreement also applies to that
+data.
 
 Signed and completed copies are kept with BTP's compliance records for six years from the date each was
 signed or last in effect, whichever is later.

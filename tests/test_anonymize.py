@@ -7,7 +7,8 @@ in a note, ordinary-word names, provider names, embedded PLB ids and files that 
 pseudonymized batch imports with zero unmatched remittance claims and yields the same work items,
 categories and actions as the original (two databases, rules with the stub model); the leak sweep
 stops a run that missed something; the key maps every pseudonym back and chains from month to
-month; export packages restore to the raw database's, with the newest key only.
+month; export packages restore to the raw database's, with the newest key only; the marks of a
+pseudonymized batch come from the marker column the importer records, not from the file name.
 """
 
 from __future__ import annotations
@@ -1071,7 +1072,7 @@ def test_extra_columns_are_dropped_after_their_identities_are_harvested(tmp_path
     _write_rows(raw / NOTES_FILE, NOTE_COLUMNS, notes)
     out, _key_path, result = _anonymize(raw, tmp_path, "out", seed=9)
     with open(_one(out, CLAIMS), newline="", encoding="utf-8") as handle:
-        assert next(csv.reader(handle)) == list(CLAIM_EXPORT_COLUMNS)
+        assert next(csv.reader(handle)) == [*CLAIM_EXPORT_COLUMNS, pseudonymized.IMPORT_COLUMN]
     output = "".join(path.read_text(encoding="utf-8") for path in out.iterdir())
     for value in ("503-555-0101", "Marchbanks", "ZX99887766"):
         assert value not in output
@@ -2005,6 +2006,99 @@ def test_a_restored_appeal_gets_its_pdf_rendered_again(exported, tmp_path, monke
     members = _members((tmp_path / "out" / package.target).read_bytes())
     assert "README.txt" not in members and members["appeal_letter.pdf"] == b"%PDF-1.7 restored letter"
     assert package.members["appeal_letter.pdf"] == "rebuilt from the restored letter"
+
+
+def test_the_marks_come_from_the_marker_column_not_the_file_name(exported, tmp_path):
+    """The claim export anonymize writes carries a last column, ``pseudonymized_batch`` = ``yes``,
+    which the importer records on every claim: a batch renamed by date and type (the way a biller
+    files things) still exports marked packages, a later import of the same claims without the column
+    keeps the mark, and a raw import carries none."""
+    anon, raw = exported["anon"], exported["raw"]
+    as_of = date.fromisoformat(json.loads((raw / "manifest.json").read_text(encoding="utf-8"))["as_of"])
+    with open(_one(anon, CLAIMS), newline="", encoding="utf-8") as handle:
+        assert next(csv.reader(handle)) == [*CLAIM_EXPORT_COLUMNS, pseudonymized.IMPORT_COLUMN]
+    anon_rows = _rows(_one(anon, CLAIMS))
+    assert anon_rows and all(
+        row[pseudonymized.IMPORT_COLUMN] == pseudonymized.IMPORT_VALUE for row in anon_rows
+    )
+    for kind in (NOTES, DOCUMENTS):
+        with open(_one(anon, kind), newline="", encoding="utf-8") as handle:
+            assert pseudonymized.IMPORT_COLUMN not in next(csv.reader(handle))
+
+    upload = tmp_path / "upload"
+    upload.mkdir()
+    renamed = {  # the files renamed the way a biller files them: by date and type
+        CLAIMS: "2026-11-02_claims.csv",
+        NOTES: "2026-11-02_notes.csv",
+        DOCUMENTS: "2026-11-02_payer_documents.csv",
+    }
+    for kind, name in renamed.items():
+        shutil.copy(_one(anon, kind), upload / name)
+    remits = [
+        Path(shutil.copy(path, upload / f"2026-11-02_remit_{number}.835"))
+        for number, path in enumerate(_files(anon)[REMITS], start=1)
+    ]
+    claims = upload / renamed[CLAIMS]
+    chosen = {action: exported["claim_numbers"][ccn] for action, ccn in exported["chosen"].items()}
+    with _database(tmp_path / "renamed_db") as (session, clinic):
+        batch = import_claims_csv(session, claims, clinic_id=clinic.id, created_by="tests")
+        session.commit()
+        session.expire_all()  # read the mark back from the database, not from the identity map
+        assert str(batch.status) == "done" and not pseudonymized.is_pseudonymized_file(batch.file_name)
+        claims_in_db = session.execute(select(Claim)).scalars().all()
+        assert len(claims_in_db) == len({row["claim_control_number"] for row in anon_rows})
+        assert all(claim.extra.get(pseudonymized.EXTRA_KEY) is True for claim in claims_in_db)
+        for importer, kind in ((import_notes_csv, NOTES), (import_payer_documents_csv, DOCUMENTS)):
+            companion = importer(session, upload / renamed[kind], clinic_id=clinic.id, created_by="tests")
+            assert str(companion.status) == "done", kind
+        for remit in remits:
+            assert str(import_835(session, remit, file_name=remit.name, created_by="tests").status) == "done"
+        session.commit()
+        process_pending(session, today=as_of + timedelta(days=SHIFT_DAYS))
+        session.commit()
+        reviewer = _reviewer(session)
+        marks: set[str] = set()
+        for action, ccn in chosen.items():
+            name, payload = _approve_and_export(session, ccn, reviewer)
+            members = _members(payload)
+            assert name.startswith(pseudonymized.ZIP_PREFIX), action
+            assert json.loads(members["summary.json"])[pseudonymized.SUMMARY_KEY] is True
+            if "corrected_claim.csv" in members:
+                assert pseudonymized.CSV_COLUMN in members["corrected_claim.csv"].decode("utf-8")
+                marks.add("csv column")
+            for member in ("appeal_letter.txt", "clinic_question.txt"):
+                if member in members:
+                    assert members[member].decode("utf-8").startswith(pseudonymized.BANNER)
+                    marks.add("banner")
+        assert marks == {"csv column", "banner"}
+
+        # The same claims imported again without the column (a later export carries none): the mark
+        # is sticky, and the new import's file name proves nothing either.
+        later = upload / "2026-11-09_claims.csv"
+        _write_rows(
+            later, CLAIM_EXPORT_COLUMNS, [{c: row[c] for c in CLAIM_EXPORT_COLUMNS} for row in anon_rows]
+        )
+        batch = import_claims_csv(session, later, clinic_id=clinic.id, created_by="tests")
+        session.commit()
+        session.expire_all()
+        assert str(batch.status) == "done" and batch.counts["claims_updated"] == len(claims_in_db)
+        assert all(claim.extra.get(pseudonymized.EXTRA_KEY) is True for claim in claims_in_db)
+        work_item = _work_item_for(session, chosen["corrected_claim"])
+        payload, name = build_export_package(session, work_item, reviewer)
+        session.commit()
+        assert name.startswith(pseudonymized.ZIP_PREFIX)
+        assert json.loads(_members(payload)["summary.json"])[pseudonymized.SUMMARY_KEY] is True
+
+    with _database(tmp_path / "raw_db") as (session, clinic):
+        batch = import_claims_csv(session, raw / CLAIMS_FILE, clinic_id=clinic.id, created_by="tests")
+        session.commit()
+        assert str(batch.status) == "done"
+        assert not any(
+            pseudonymized.is_marked_claim(claim.extra) for claim in session.execute(select(Claim)).scalars()
+        )
+    for name, payload in exported["packages"]["raw"].values():
+        assert not name.startswith(pseudonymized.ZIP_PREFIX)
+        assert pseudonymized.SUMMARY_KEY not in json.loads(_members(payload)["summary.json"])
 
 
 def test_a_pseudonym_typed_in_another_form_comes_back_right():

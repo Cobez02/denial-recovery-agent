@@ -169,7 +169,7 @@ def check_restore_paths(
 ) -> tuple[list[Path], Path, Path]:
     """Refused before anything is read: a missing package or key; a key or an output folder inside
     the repository or a synced folder (restored packages carry the real identifiers); an output that
-    is not a folder, or that is, holds or sits inside the folder of a package (the travel disk)."""
+    is not a folder, or that is, holds or sits inside the folder of a package (the download folder)."""
     root = paths.canonical(project_root)
     key = paths.canonical(key_path)
     out = paths.canonical(out_dir)
@@ -201,8 +201,8 @@ def check_restore_paths(
     for source in sources:
         if paths.overlap(out, source.parent):
             raise AnonymizeError(
-                "--out must not be, hold or sit inside the folder a package came in (that folder goes back "
-                "to the Company); write the restored packages to a folder of their own"
+                "--out must not be, hold or sit inside the folder a package came in (that folder holds "
+                "what came from the Company); write the restored packages to a folder of their own"
             )
     if out.exists() and not out.is_dir():
         raise AnonymizeError(f"--out {out} exists and is not a folder")

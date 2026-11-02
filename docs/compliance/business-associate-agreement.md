@@ -193,7 +193,10 @@ Security Incident.
 2.17 **Audit records.** Make available to Covered Entity on request the Software's audit records for
 Covered Entity's data. The Software keeps an append-only, hash-chained audit log of the imports,
 processing steps, model requests, item views, review actions and log-ins performed through it; Business
-Associate records other access to PHI in its access and incident logs.
+Associate records other access to PHI in its access and incident logs. The Software's anonymize and
+deanonymize commands, which Covered Entity runs on its own computer, record no audit events; each
+completed run is recorded in a run log in Covered Entity's key folder, and each import of a
+pseudonymized batch is audited like every import.
 
 ## 3. Permitted Uses and Disclosures
 

@@ -180,14 +180,17 @@ Incident Response Plan.
 ## 8. Audit Controls and Activity Review (§§ 164.308(a)(1)(ii)(D), 164.312(b))
 
 **Policy.** Every import, processing step, model request, item view, review action and log-in attempt in
-the Software is recorded; other access to PHI is recorded in the access and incident logs; and the records
-are reviewed.
+BTP's installation of the Software is recorded; other access to PHI is recorded in the access and
+incident logs; and the records are reviewed.
 
 **Procedure.**
 
 1. The Software records every import, processing step, model request, item view, review action and log-in
    attempt in an append-only, hash-chained audit log. Page views other than item views, direct database
-   queries and file handling in CBWORK are not recorded there.
+   queries and file handling in CBWORK are not recorded there. The Software's anonymize and deanonymize
+   commands, which the Clinic runs on its own computer, record no audit events; each completed run is
+   recorded in a run log in the Clinic's key folder, and each import of a pseudonymized batch is audited
+   like every import.
 2. Weekly, as part of the review: run `denial-agent verify-audit` (it prints "OK"; any other result opens
    an incident); record the latest audit entry and its hash in the review record, using the audit query in
    Section 2 of the Weekly Shadow-Phase Review, because the Software shows no hash on its pages; confirm
@@ -222,8 +225,11 @@ duplication; payer letters and notes are screened for planted instructions.
    72 hours.
 4. Emergency operations: the Software is not on the Clinic's critical path. The Clinic retains its source
    data and makes every submission, and receives each week, through the secure transfer service, a list of
-   open items and their deadlines so that it can continue without the Software. The list is copied from the
-   queue's claim number, payer, proposed action and deadline only, without patient names.
+   open items and their deadlines so that it can continue without the Software. The list carries, for each
+   item, the work item number, the claim number as the Software shows it, the payer, the date of service,
+   the total charge, the proposed action and the deadline only, without patient names. For a
+   pseudonymized batch the claim number is the batch's pseudonym, which the Clinic's newest key maps
+   back; the date of service and the charge are unchanged by pseudonymization.
 5. Criticality: the Software's database is the only asset that cannot be rebuilt from the Clinic's files
    (work status, approvals and the audit log).
 
@@ -232,11 +238,12 @@ duplication; payer letters and notes are screened for planted instructions.
 **Policy.** BTP requests, uses and discloses only the PHI the work requires.
 
 **Procedure.** Requests are limited to the Clinic Data Request (denied claims within the agreed remittance
-dates, the claim fields the Software needs, and note excerpts only for denied claims in scope, limited to
-the denied visit and, for a medical-necessity denial, the initial examination or the latest
-re-examination). The model provider receives only the tokenized context for one denial at a time. The
-Software's data interface omits patient names, dates of birth, member identifiers, addresses and account
-numbers, but carries claim numbers and service dates. Messages and records use work item numbers.
+dates and the claims sent to replace them, the claim fields the Software needs, and note excerpts only
+for denied claims in scope, limited to the denied visit and, for a medical-necessity denial, the initial
+examination or the latest re-examination). The model provider receives only the tokenized context for
+one denial at a time. The Software's data interface omits patient names, dates of birth, member
+identifiers, addresses and account numbers, but carries claim numbers and service dates. Messages and
+records use work item numbers.
 
 ## 12. Vendor Management (§§ 164.308(b), 164.314(a))
 

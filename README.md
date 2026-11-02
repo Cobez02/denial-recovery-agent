@@ -126,24 +126,33 @@ dashboard counts each work item once, by its latest outcome. For a synthetic run
 
 ## Running real data
 
-Real files come only after the clinic BAA is signed and `docs/SECURITY_CHECKLIST.md` is complete
-and dated; pseudonymizing a batch does not change that. A pseudonymized batch still carries dates
-of service, so it is a HIPAA limited data set: still PHI, still covered by the BAA, still kept only
-on the encrypted disk of the checklist. `denial-agent anonymize` is defence in depth on top: it
-turns one raw batch into a copy the app processes as before (same remittance matches, same work
-items, categories and actions) with every patient identifier replaced, and it writes nothing unless
-a final sweep of every output byte finds none of the originals. `denial-agent deanonymize` puts the
-real identifiers back into the export packages before anything is submitted. Both run on the
-clinic's own computer, where the raw files and the key stay; only the pseudonymized folder travels.
+Real files come only after the steps before "the Clinic sends its files" in the order of execution
+in `docs/compliance/README.md` are done (the clinic BAA and the Pilot Agreement signed among them)
+and `docs/SECURITY_CHECKLIST.md` is complete and dated; pseudonymizing a batch does not change that.
+A pseudonymized batch still carries dates of service, so it is a HIPAA limited data set: still PHI,
+still covered by the BAA, moved only through the secure transfer service to the encrypted disk of
+the checklist. Pseudonymizing is this pilot's standard procedure, not an option: the clinic
+pseudonymizes every batch before it uploads it and restores every package before it submits it.
+`denial-agent anonymize` is defence in depth on top of those controls: it turns one raw batch into
+a copy the app processes as before (same remittance matches, same work items, categories and
+actions) with every patient identifier replaced, and it writes nothing unless a final sweep of
+every output byte finds none of the originals. `denial-agent deanonymize` puts the real identifiers
+back into the export packages before anything is submitted. The clinic's workforce runs both on the
+clinic's own computer, where the raw files and the key stay; only the pseudonymized folder leaves
+it, uploaded through the secure transfer service (the Pilot Agreement's Secure Transfer Method;
+never by e-mail or on removable media), and the marked packages come back the same way.
 
 **Install on the clinic's computer** (no copy of the repository, no git credentials, no dev tools):
+the clinic's workforce installs both commands there, from a wheel the Company supplies, and runs
+them; the Company never runs the commands, never handles the key and never receives the raw files
+or the restored packages. On the Company machine,
 
 ```bash
 uv build --wheel
 ```
 
-builds `dist/denial_agent-0.1.0-py3-none-any.whl` on the Company machine (it fetches the build
-backend from PyPI once). On the clinic's computer:
+builds `dist/denial_agent-0.1.0-py3-none-any.whl` (it fetches the build backend from PyPI once).
+On the clinic's computer:
 
 ```bash
 uv tool install ./denial_agent-0.1.0-py3-none-any.whl
@@ -158,18 +167,24 @@ renderer (WeasyPrint, the `pdf` extra) needs system libraries; without it a rest
 From an installed wheel, the "inside the repository" check compares against the installed package
 folder; keep batches and keys out of any checkout anyway.
 
-**Each month:**
+**Each upload** (the backlog first, then once a week in the live phase, as the Pilot Agreement
+requires; one run per upload, on the clinic's computer):
 
 ```bash
-# The first batch: a new key, and its folder becomes the clinic's key folder
-denial-agent anonymize D:/clinic/raw/2026-10 --out E:/to-company/2026-10 --key-out D:/clinic/keys/2026-10.key.json --replace-claim-numbers
+# The first batch: a new key, and its folder becomes the clinic's key folder. The output folder is
+# a local folder apart from the key folder; the raw folder and the key folder stay on this computer
+denial-agent anonymize D:/clinic/raw/2026-11-02 --out D:/clinic/to-company/2026-11-02 --key-out D:/clinic/keys/2026-11-02.key.json --replace-claim-numbers
 
-# Every later batch (next month's export, the follow-up 835s that pay or deny submitted fixes):
-# the newest key in, a new key out, in the same key folder
-denial-agent anonymize D:/clinic/raw/2026-11 --out E:/to-company/2026-11 --key-in D:/clinic/keys/2026-10.key.json --key-out D:/clinic/keys/2026-11.key.json --replace-claim-numbers
+# Then upload D:/clinic/to-company/2026-11-02, as anonymize wrote it, through the secure transfer
+# service (never by e-mail, never on a USB drive)
 
-# Before anything goes out: restore the downloaded export packages with the newest key
-denial-agent deanonymize D:/clinic/from-company/PSEUDONYMIZED_work_item_14_KXW938899_v1_20261130T210501Z.zip --key D:/clinic/keys/2026-11.key.json --out D:/clinic/to-submit
+# Every later batch (the next week's files, including the follow-up 835s that pay or deny submitted
+# fixes): the newest key in, a new key out, in the same key folder; then upload the output folder
+denial-agent anonymize D:/clinic/raw/2026-11-09 --out D:/clinic/to-company/2026-11-09 --key-in D:/clinic/keys/2026-11-02.key.json --key-out D:/clinic/keys/2026-11-09.key.json --replace-claim-numbers
+
+# Before anything goes out: restore the export packages downloaded from the secure transfer
+# service, with the newest key
+denial-agent deanonymize D:/clinic/from-company/PSEUDONYMIZED_work_item_14_KXW938899_v1_20261112T210501Z.zip --key D:/clinic/keys/2026-11-09.key.json --out D:/clinic/to-submit
 ```
 
 - **Use `--replace-claim-numbers` for every real batch.** Practice-management systems often build
@@ -205,14 +220,18 @@ denial-agent deanonymize D:/clinic/from-company/PSEUDONYMIZED_work_item_14_KXW93
   key last, with owner-only permissions (`icacls` on Windows), never over an existing file; a failed
   run leaves neither behind.
 - **The key and its chain**: the key is the only file with original values. It stays in one folder
-  on the clinic's computer: never in the repository, never in OneDrive (Windows often redirects
-  Documents and Desktop there), Dropbox, Google Drive, iCloud or Box, never beside the output folder
-  and never on the removable drive the output goes to; the command refuses all of those. Each key
-  extends the one before it (same chain, next run number) and the run log `denial-agent-runs.log`
-  in the key folder records every run: an older key of the chain is refused for the next batch and
-  for restores, and a key of another clinic (no billing NPI in common) is refused. Keep backup copies
-  of the key folder on clinic media; only the newest key is used.
-- **Marked until restored**: the app marks every package it exports for a pseudonymized claim:
+  on the clinic's computer and is never uploaded: never in the repository, never in OneDrive
+  (Windows often redirects Documents and Desktop there), Dropbox, Google Drive, iCloud or Box,
+  never inside or beside the output folder and never on a removable or network volume the output
+  is written to; the command refuses all of those places. Each key extends the one before it (same
+  chain, next run number) and the run log `denial-agent-runs.log` in the key folder records every
+  run: an older key of the chain is refused for the next batch and for restores, and a key of
+  another clinic (no billing NPI in common) is refused. Keep dated backup copies of the key folder
+  on clinic media; only the newest key is used.
+- **Marked until restored**: the claims file anonymize writes carries one extra, last column after
+  the contract's columns, `pseudonymized_batch` = `yes`; the claims importer records it on every
+  claim of that import, so the marks do not depend on the file's name (the upload folder is still
+  sent as anonymize wrote it). The app marks every package it exports for such a claim:
   `PSEUDONYMIZED_` in front of the zip name, a banner on top of the letter and the clinic question,
   `"pseudonymized": true` in `summary.json`, a marker column in the corrected claim CSV. A marked
   package never goes to a payer.
@@ -279,7 +298,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-1010 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
+1013 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
 key), all on SQLite with the stub model client and inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set (chiropractic, `synthetic/fixtures/labeled_set_v2`) classifies at 150/150 categories
@@ -310,5 +329,7 @@ SQLite, runs `VACUUM` so the deleted rows' bytes leave the file; on PostgreSQL h
 See `docs/SPEC.md` section 0 and section 15: no submission; coding changes flagged and gated on a
 quoted note excerpt; minimum-necessary, tokenized model calls through one guard; payer letters and
 note excerpts treated as untrusted data; identifiers never in logs; an append-only, hash-chained
-audit log of every action by a person or an agent; a placeholder `SECRET_KEY` refused; `purge-clinic`
-for pilot termination.
+audit log of every action by a person or an agent (one exception: `anonymize` and `deanonymize`,
+which the clinic runs on its own computer, record no audit events; each completed run goes to the
+run log in the clinic's key folder, and the import of a pseudonymized batch is audited like every
+import); a placeholder `SECRET_KEY` refused; `purge-clinic` for pilot termination.

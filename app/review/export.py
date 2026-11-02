@@ -99,7 +99,12 @@ def csv_bytes(rows: list[dict[str, str]], *, pseudonymized_marker: bool = False)
 
 
 def from_pseudonymized_batch(session: Session, claim: Claim) -> bool:
-    """True when the claim's last import came from a file `denial-agent anonymize` wrote."""
+    """True when the claim came from a batch `denial-agent anonymize` wrote: the importer recorded the
+    batch's marker column on the claim (``Claim.extra``, kept by later imports), or, for a batch
+    imported before that column existed, the claim's last import is a file named as anonymize names
+    them."""
+    if pseudonymized.is_marked_claim(claim.extra):
+        return True
     if claim.import_batch_id is None:
         return False
     batch = session.get(ImportBatch, claim.import_batch_id)

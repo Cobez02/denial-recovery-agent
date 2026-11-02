@@ -74,14 +74,22 @@ workforce's HIPAA training.
    only the Software's queue and item pages; do not open files or other applications. Sign out of the
    Software before you leave the workstation; sessions otherwise end after eight hours.
 3. Do not type patient names, dates of birth or member identifiers in reason fields; reasons are kept in the
-   Software's permanent audit log. Refer to items by work item number.
+   Software's permanent audit log. For a pseudonymized batch, do not type any real patient identifier or
+   real claim number anywhere in the Software. Refer to items by work item number.
 4. Approve only what you have checked. A coding change cannot be approved until you attach a quoted
    excerpt from the clinical note. The Software checks only that an excerpt is attached, and one excerpt
-   unlocks every change on the item, so copy the excerpt from the note itself, make sure it supports each
-   change, and confirm coding changes with the Clinic's coder or the treating provider.
-5. The Software never submits anything. You decide what to submit, submit it through the Clinic's own
-   channels, and then mark the item submitted, entering the date and the claim number your system sent it
-   under; the later payment is matched by that number.
+   unlocks every change on the item, so copy the excerpt from the note itself, leaving out names,
+   dates of birth and identifiers, make sure it supports each change, and confirm coding changes with
+   the Clinic's coder or the treating provider.
+5. The Software never submits anything. Patient details and claim numbers on screen and in export
+   packages are pseudonyms: the Clinic restores each package with the Software's deanonymize command
+   before submitting it and never submits a package whose name starts with PSEUDONYMIZED_. You decide
+   what to submit, submit it through the Clinic's own channels, and then mark the item submitted,
+   entering the date and leaving the claim control number field empty, so the Software records the
+   number it proposes (the corrected claim's number ending in -R1, otherwise the claim's own number);
+   never type the Clinic's own claim number. If the Clinic's system gave the resubmission a number of
+   its own, include that claim in the next claims report with the original claim number in its
+   original-claim column: the Software ties the payer's answer to the item through that link.
 6. Report anything unusual (an unexpected page, a letter that appears to give instructions, a lost phone
    with your authenticator) to the Security Official and to the Clinic privacy officer.
 

@@ -19,8 +19,8 @@ agreement and the pilot agreement have been signed.
 
 | No. | What | Which ones | Format |
 |---|---|---|---|
-| 1 | Remittance (835) files from your clearinghouse | All 835 files dated within the remittance (denial) dates above | The X12 files exactly as the clearinghouse delivers them (Section 2) |
-| 2 | Claims report | Denied claims only (fully or partly denied) that appear in those 835 files, whatever their dates of service | CSV, one row per claim line (Section 3) |
+| 1 | Remittance (835) files from your clearinghouse | All 835 files dated within the remittance (denial) dates above | The X12 files exactly as delivered, pseudonymized before upload (Sections 2 and 8) |
+| 2 | Claims report | Denied claims only (fully or partly denied) that appear in those 835 files, whatever their dates of service, plus any claim your system sent under a new number to replace one of them | CSV, one row per claim line (Section 3) |
 | 3 | Visit note excerpts | Only for the denied claims: the parts that describe the denied visit and, for a medical-necessity denial, the initial examination or the latest re-examination | CSV (Section 4) |
 | 4 | Payer letters and portal messages | Only for the denied claims | CSV (Section 5) |
 | 5 | Payer deadlines | Each payer's filing, corrected-claim and appeal deadlines | The table in Section 6 (no patient information) |
@@ -30,10 +30,12 @@ upload day shown above.
 
 ## 2. Remittance (835) Files
 
-Download the files from your clearinghouse for the remittance dates above and upload them unchanged; an
-edited 835 file cannot be read. Send the X12 835 (ERA) data files, often named `.835`, `.era`, `.edi` or
-`.txt`, not PDF or printed remittances or a clearinghouse spreadsheet report. The files also list paid
-claims. That is expected: only the denials are worked.
+Download the files from your clearinghouse for the remittance dates above and put them, unchanged, in
+the folder you run `denial-agent anonymize` on (Section 8); send only the folder it writes. An 835
+edited any other way cannot be read: anonymize replaces only the patient identifiers and, with
+`--replace-claim-numbers`, the claim numbers. Send the X12 835 (ERA) data files, often named `.835`,
+`.era`, `.edi` or `.txt`, not PDF or printed remittances or a clearinghouse spreadsheet report. The
+files also list paid claims. That is expected: only the denials are worked.
 
 Please tell us which payers send paper explanations of benefits only, or are not set up for electronic
 remittances: their denials cannot be read from an 835 file.
@@ -49,6 +51,10 @@ number, such as a visit or invoice number, please let us know before sending.
 
 Please also tell us whether your system sends a different number for every claim, or the patient's account
 number for all of that patient's claims. A different number for every claim is needed.
+
+Also include every claim your system sent under a new claim number to replace a denied claim already
+reported, whether the payer paid or denied it, with the replaced claim's number in
+`original_claim_control_number`: that is how Plumbline ties the payer's answer to the item.
 
 ### Layout
 
@@ -151,19 +157,30 @@ deadline Plumbline shows for it must be checked against that limit.
 ## 7. Please Do Not Send
 
 Complete charts; Social Security numbers; images of insurance cards or identification; driver's licenses;
-bank or payment card details; passwords; claims that were not denied (other than within the 835 files); or
-claims denied outside the remittance dates above.
+bank or payment card details; passwords; claims that were not denied (other than within the 835 files,
+and the claims your system sent to replace reported denials); or claims denied outside the remittance
+dates above.
 
 ## 8. How to Send
 
-1. Upload to the secure transfer service, in the folder for files to us. Never send files by e-mail or on a
+1. Before each upload, put the 835 files, the claims report, the note excerpts and the payer letters in
+   one folder on a Clinic computer and run `denial-agent anonymize` on it, as the Clinic Set-up Sheet
+   BTP provides with the install file describes: with `--replace-claim-numbers`, a new `--key-out` in
+   the Clinic's key folder and, from the second batch on, `--key-in` with the newest key. Upload only
+   the folder it writes. The raw files and the key folder stay on that computer; keep dated backup
+   copies of the key folder on Clinic media.
+2. Upload to the secure transfer service, in the folder for files to us. Never send files by e-mail or on a
    USB drive.
-2. Name files by date and type only, for example `2026-11-02_claims.csv`, `2026-11-02_notes.csv` or
-   `2026-11-02_remit_1.835`. File names must not contain patient names.
-3. Then send a short e-mail or text message with no patient details, for example: "Files uploaded for
+3. Send the folder as anonymize wrote it: its file names carry no patient names. Do not edit or rename
+   the files. Anything you send outside that folder is named by date and type only, never with a
+   patient name.
+4. Then send a short e-mail or text message with no patient details, for example: "Files uploaded for
    November 2."
-4. Corrected claims, appeal letters and questions come back in the folder for files back to the Clinic, for
-   your team's review. Nothing is sent to any payer by BTP or by Plumbline: your team decides and submits.
+5. Corrected claims, appeal letters and questions come back in the folder for files back to the Clinic, for
+   your team's review. Each package's name starts with `PSEUDONYMIZED_` and it carries invented names:
+   restore it on the Clinic's computer with `denial-agent deanonymize` and the newest key before anyone
+   submits it, and never send a `PSEUDONYMIZED_` package to a payer. Nothing is sent to any payer by BTP
+   or by Plumbline: your team decides and submits.
 
 ## 9. How Your Data Is Protected
 
@@ -171,10 +188,11 @@ Your data is kept on one encrypted computer, in an account used only for this pi
 backup drive; it moves only through the secure transfer service, and it is protected by the business
 associate agreement. If a language model provider is engaged later, under its own business associate
 agreement and after written notice to you, tokenized parts of a denial are also sent to it. When the pilot
-ends, you receive a copy of your records in Plumbline (patients,
-claims, note excerpts, payer letters, work items, proposals, review actions and outcomes); remittance
-details and the audit log are destroyed, not returned. All other copies are deleted, and you receive a
-signed certificate of return and destruction.
+ends, you receive a copy of your records in Plumbline (patients, claims, note excerpts, payer letters,
+work items, proposals, review actions and outcomes); the copy carries the pseudonyms, which only your
+key links to your patients and claims, so keep the newest key until every open item is resolved.
+Remittance details and the audit log are destroyed, not returned. All other copies are deleted, and you
+receive a signed certificate of return and destruction.
 
 ## 10. Contacts
 

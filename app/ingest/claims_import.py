@@ -18,6 +18,12 @@ every row before writing anything (an invalid file is a ``failed`` batch whose e
 numbers and field names only; a value longer than its database column is rejected the same way,
 so SQLite and Postgres behave alike), flushes as it goes and leaves the commit to the caller.
 After a claims import, remittance claims still unmatched (an 835 imported first) are matched.
+
+A claim export that carries the ``pseudonymized_batch`` column ``denial-agent anonymize`` writes is a
+pseudonymized batch (docs/SPEC.md section 16, ``app.review.pseudonymized``): every claim of the import
+is marked in ``Claim.extra``, the mark survives a later import of the claim without the column, and
+the export marks every package of such a claim. Nothing else about the import changes: the column is
+left out of the rows like any other column the contract does not name.
 """
 
 from __future__ import annotations
@@ -58,6 +64,7 @@ from app.models import (
     RemittanceLine,
 )
 from app.redact.injection import detect_injection
+from app.review import pseudonymized
 from app.schemas import CLAIM_EXPORT_COLUMNS, ClaimExportRow, NoteRow, PayerDocumentRow
 
 log = logging.getLogger(__name__)
@@ -177,6 +184,14 @@ def _too_long(row: BaseModel, limits: Mapping[str, int]) -> list[str]:
         for field, limit in limits.items()
         if isinstance((value := getattr(row, field, None)), str) and len(value) > limit
     )
+
+
+def _header(text: str) -> list[str]:
+    """The stripped column names of the first row (what ``_read_rows`` matched against)."""
+    try:
+        return [name.strip() for name in next(csv.reader(io.StringIO(text)), [])]
+    except csv.Error:
+        return []
 
 
 def _check_claim_structure(rows: list[tuple[int, ClaimExportRow]]) -> list[str]:
@@ -327,6 +342,7 @@ def _upsert_claim(
     patient: Patient,
     claims_cache: dict[str, Claim],
     counts: dict[str, int],
+    pseudonymized_batch: bool = False,
 ) -> Claim:
     first = group[0]
     control_number = first.claim_control_number
@@ -356,6 +372,8 @@ def _upsert_claim(
     claim.prior_auth_number = first.prior_auth_number
     claim.original_submission_date = first.original_submission_date
     claim.import_batch_id = batch.id
+    if pseudonymized_batch:  # sticky: a later import without the marker column never clears it
+        claim.extra = {**(claim.extra or {}), pseudonymized.EXTRA_KEY: True}
 
     original: Claim | None = None
     if first.original_claim_control_number:
@@ -427,7 +445,11 @@ def _companion_duplicate(session: Session, kind: str, file_sha256: str) -> bool:
 def import_claims_csv(
     session: Session, source: str | Path, clinic_id: int, created_by: str = "system"
 ) -> ImportBatch:
-    """Import a claim export (one row per claim line). Returns the ImportBatch; the caller commits."""
+    """Import a claim export (one row per claim line). Returns the ImportBatch; the caller commits.
+
+    A file whose header carries the marker column of a pseudonymized batch marks every claim it
+    carries (``Claim.extra``), through the browser upload and the CLI import alike.
+    """
     kind = str(ImportKind.CLAIMS)
     src = read_source(source, default_name="claims.csv")
     sha = sha256_hex(src.raw)
@@ -448,6 +470,7 @@ def import_claims_csv(
         )
 
     counts: dict[str, int] = {key: 0 for key in CLAIM_COUNT_KEYS}
+    marked = pseudonymized.is_pseudonymized_header(_header(src.text))
     groups: dict[str, list[ClaimExportRow]] = {}
     for _, row in rows:
         groups.setdefault(row.claim_control_number, []).append(row)
@@ -468,6 +491,7 @@ def import_claims_csv(
             patient=patient,
             claims_cache=claims,
             counts=counts,
+            pseudonymized_batch=marked,
         )
 
     # An 835 imported before this export left its CLPs unmatched; they can be resolved now.

@@ -8,18 +8,26 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          fetch-depth: 0 # gitleaks scans the whole history
+          fetch-depth: 0 # the secret scan reads the whole history
 
-      - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+      - name: Secret scan (the whole history)
+        # The gitleaks binary, pinned and checked against the release's checksums, over every commit.
+        # (The gitleaks action scans only the commits of a push, from the first one's parent, so a push
+        # that starts at the repository's first commit failed before scanning anything.)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
-          # A repository owned by a GitHub *organization* also needs a (free) license key in the
-          # GITLEAKS_LICENSE secret, or this step fails on its first run; personal accounts do not:
-          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_VERSION: 8.24.3
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "${base}/${archive}"
+          curl -sSfLO "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          awk -v f="${archive}" '$2 == f' "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "${archive}" gitleaks
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/gitleaks" git --redact --verbose --config .gitleaks.toml .
 
       - uses: astral-sh/setup-uv@v3
         with:

@@ -1495,6 +1495,27 @@ def test_a_failed_write_leaves_nothing_behind(tmp_path, monkeypatch):
     assert not list((tmp_path / "keys").iterdir())
 
 
+def test_an_output_folder_is_renamed_into_place_and_never_over_an_existing_one(tmp_path):
+    """The staged folder becomes the output folder on every platform (a folder cannot be
+    hard-linked, so Linux and macOS rename it too), and a folder that already holds a file is never
+    replaced: publishing into it fails, leaves its file alone and leaves no temporary behind."""
+    anonymize_paths.publish_folder(tmp_path / "out", {"a.csv": b"first"})
+    assert (tmp_path / "out" / "a.csv").read_bytes() == b"first"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".")]
+
+    taken = tmp_path / "taken"
+    taken.mkdir()
+    (taken / "keep.txt").write_bytes(b"keep")
+    with pytest.raises(OSError):
+        anonymize_paths.publish_folder(taken, {"a.csv": b"second"})
+    staged = tmp_path / ".staged"
+    staged.mkdir()
+    with pytest.raises(OSError):
+        anonymize_paths._rename_new(staged, taken)
+    assert sorted(p.name for p in taken.iterdir()) == ["keep.txt"]
+    assert (taken / "keep.txt").read_bytes() == b"keep" and staged.is_dir()
+
+
 def test_a_key_of_another_clinic_is_refused(tmp_path, capsys):
     first = _small_batch(tmp_path, SEED + 17, 6, "first")
     _out, key, _result = _anonymize(first, tmp_path, "first_out")

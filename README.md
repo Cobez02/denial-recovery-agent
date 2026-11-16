@@ -298,7 +298,7 @@ compose stack is defined and reviewed but is not exercised by the automated test
 uv run pytest -q
 ```
 
-1013 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
+1014 tests across 28 files at the time of writing (the opt-in `live_llm` test skips without an API
 key), all on SQLite with the stub model client and inline jobs: no Docker, Redis, network or API key. `docs/TESTING.md` maps the plan's testing table
 and every milestone's done-when check to the test files and gives the per-file counts. The labeled
 synthetic set (chiropractic, `synthetic/fixtures/labeled_set_v2`) classifies at 150/150 categories

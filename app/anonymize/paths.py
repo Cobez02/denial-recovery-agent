@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import errno
 import getpass
 import json
 import os
@@ -176,6 +177,14 @@ def _rename_new(source: Path, target: Path) -> None:
     """Rename without ever replacing an existing target."""
     if os.name == "nt":
         os.rename(source, target)  # refuses an existing target on Windows
+        return
+    if source.is_dir() and not source.is_symlink():
+        # A folder cannot be hard-linked. rename() refuses a target folder that holds anything and
+        # a target that is a file; Publication.publish removed an empty target folder, and one that
+        # has appeared since is refused here.
+        if os.path.lexists(target):
+            raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
+        os.rename(source, target)
         return
     os.link(source, target)  # refuses an existing target
     os.unlink(source)

@@ -358,10 +358,10 @@ def _import(session: Session, clinic: Clinic, batch_dir: Path) -> dict[str, dict
 
 
 def _work_items(session: Session) -> dict[str, dict[str, Any]]:
-    """What the pipeline decided per claim. The confidence is read as a float, as the app's export and
-    API read it: the session keeps the float the pipeline set (expire_on_commit=False) while an item
-    loaded again from the database holds a Decimal, and which one a run sees depends on the session's
-    memory, not on the decision."""
+    """What the pipeline decided per claim. The confidence and the priority score are read as floats,
+    as the app's export and API read them: both are Numeric columns the pipeline sets with a float, the
+    session keeps that float (expire_on_commit=False) while an item loaded again from the database holds
+    a Decimal, and which one a run sees depends on the session's memory, not on the decision."""
     items: dict[str, dict[str, Any]] = {}
     stmt = select(WorkItem, Claim.claim_control_number).join(Claim, WorkItem.claim_id == Claim.id)
     for work_item, ccn in session.execute(stmt):
@@ -377,7 +377,7 @@ def _work_items(session: Session) -> dict[str, dict[str, Any]]:
             "flags": sorted(work_item.flags or []),
             "deadline": work_item.deadline,
             "deadline_kind": work_item.deadline_kind,
-            "priority_score": work_item.priority_score,
+            "priority_score": float(work_item.priority_score),
             "status": str(work_item.status),
         }
     return items

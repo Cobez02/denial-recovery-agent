@@ -15,6 +15,32 @@ synthetic data until the clinic BAA, the model-provider BAA and the laptop secur
   [Running real data](#running-real-data)
 - Every `.env` key: `scripts/env-notes.md`; synthetic data: `synthetic/README.md`
 
+## Screenshots
+
+Everything below is synthetic: the bundled generator's chiropractic batch, imported and processed
+with the offline stub model, then 30 fixes approved, submitted and answered by follow-up 835s.
+
+**Review queue.** Every open denial with its category and confidence, the proposed action, the
+dollars at stake, the deadline and the flags a reviewer should see first.
+
+![Review queue](docs/screenshots/queue.png)
+
+**A denial with a drafted appeal.** Claim facts, the remittance adjustments with their CARC and RARC
+meanings, the payer's letter and the clinical notes on the left. On the right, the proposal with
+every citation it rests on and the appeal letter, ready to edit, approve or reject.
+
+![Work item with a drafted appeal](docs/screenshots/appeal.png)
+
+**A corrected claim that changes a code.** Each changed field before and after, with its reason. A
+coding change cannot be approved until the reviewer attaches the quoted note sentence behind it.
+
+![Work item with a corrected claim](docs/screenshots/corrected-claim.png)
+
+**Dashboard.** Recovered dollars and the overturn rate once the payers answer the resubmitted
+claims, review time, deadline buckets, and the same figures by category and by payer.
+
+![Dashboard](docs/screenshots/dashboard.png)
+
 ## Quick start (no Docker, no API key)
 
 Requirements: Python 3.12+ and [uv](https://docs.astral.sh/uv/). The commands below are the same on

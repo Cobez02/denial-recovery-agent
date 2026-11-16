@@ -47,7 +47,8 @@ _SPECIAL: dict[str, str] = {
     "ŋ": "n",
 }
 _APOSTROPHES = frozenset("’‘ʼ`´ʹ′‛")
-_DASHES = frozenset("‐‑‒–—―−")
+# Hyphen, non-breaking hyphen, figure dash, en dash, em dash, horizontal bar and minus sign.
+_DASHES = frozenset("\u2010\u2011\u2012\u2013\u2014\u2015\u2212")
 
 
 @functools.lru_cache(maxsize=8192)
@@ -218,7 +219,7 @@ def name_steps(value: str) -> str:
     """Steps for a name as written: its parts (split at spaces, hyphens, apostrophes and inner
     capitals) joined by an optional separator, so every way of joining them matches."""
     parts: list[str] = []
-    for word in re.split(r"[\s'’\-‐‑‒–—]+", fold(value)):
+    for word in re.split(r"[\s'\u2019\-\u2010\u2011\u2012\u2013\u2014]+", fold(value)):
         for part in _camel_parts(word):
             letters = "".join(ch for ch in part if ch.isalnum()).lower()
             if letters:

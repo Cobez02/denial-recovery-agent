@@ -126,8 +126,8 @@ def maintenance_sentences(ctx: DenialContext) -> list[tuple[NoteContext, str]]:
 
 def filing_indicator(ctx: DenialContext) -> str | None:
     """The claim filing indicator (CLP06: MB, 16, MC, 12, ...) when the remittance context carries
-    it. RemittanceContext gains the field with the integrator's foundation change; until then this
-    is None and the payer-specific situations ask the reviewer to confirm the payer instead."""
+    it. RemittanceContext does not carry the field yet, so until it does this is None and the
+    payer-specific situations ask the reviewer to confirm the payer instead."""
     value = getattr(ctx.remittance, "filing_indicator", None)
     return str(value).strip().upper() if value else None
 

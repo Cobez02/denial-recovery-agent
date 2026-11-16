@@ -1,4 +1,4 @@
-# Denial Recovery Agent — local MVP
+# Denial Recovery Agent - local MVP
 
 Reads insurance remittance files (X12 835) and a clinic's claim export, classifies each denial,
 proposes a fix (corrected claim, appeal, or a question for the clinic), drafts the appeal letter and
